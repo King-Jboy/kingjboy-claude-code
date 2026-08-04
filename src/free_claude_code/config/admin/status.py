@@ -45,10 +45,16 @@ def provider_config_status(
             continue
 
         configuration_attrs = descriptor.configuration_attrs()
+        pooled = bool(
+            descriptor.credential_pool_attr is not None
+            and _value_for_settings_attr(state, descriptor.credential_pool_attr).strip()
+        )
         missing_attrs = tuple(
             attr
             for attr in configuration_attrs
             if not _value_for_settings_attr(state, attr).strip()
+            # A configured key pool stands in for the single credential.
+            and not (pooled and attr == descriptor.credential_attr)
         )
         configured = not missing_attrs
         configuration = " + ".join(

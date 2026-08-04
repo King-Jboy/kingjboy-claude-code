@@ -98,6 +98,7 @@ async function load() {
   await hydrateModelOptions();
   await validate(false);
   await refreshLocalStatus();
+  await refreshKeyPools();
   updateDirtyState();
   showMessage("");
 }
@@ -805,8 +806,11 @@ function changedValues() {
 
 function updateDirtyState() {
   const count = Object.keys(changedValues()).length;
-  byId("dirtyState").textContent =
+  const dirty = byId("dirtyState");
+  dirty.textContent =
     count === 0 ? "No changes" : `${count} unsaved change${count === 1 ? "" : "s"}`;
+  // Unsaved work is the one state in the save bar worth colouring.
+  dirty.dataset.dirty = count === 0 ? "false" : "true";
   byId("applyButton").disabled = count === 0;
 }
 
@@ -866,6 +870,37 @@ async function refreshLocalStatus() {
       : provider.base_url;
     updateProviderCard(provider.provider_id, provider.status, provider.label, meta);
   });
+}
+
+async function refreshKeyPools() {
+  let pools = {};
+  try {
+    pools = (await api("/admin/api/providers/key-pools")).key_pools || {};
+  } catch {
+    return; // Pool health is advisory; never let it block the page.
+  }
+  Object.entries(pools).forEach(([providerId, pool]) => {
+    const card = document.querySelector(`[data-provider="${providerId}"]`);
+    if (!card) return;
+    let line = card.querySelector(".provider-pool");
+    if (!line) {
+      line = document.createElement("div");
+      line.className = "provider-pool";
+      card.querySelector(".provider-meta").after(line);
+    }
+    line.textContent = keyPoolSummary(pool);
+    line.dataset.degraded = pool.ready < pool.size ? "true" : "false";
+  });
+}
+
+function keyPoolSummary(pool) {
+  const parts = [`${pool.size} keys`, `${pool.ready} ready`];
+  if (pool.cooling) parts.push(`${pool.cooling} cooling`);
+  if (pool.retired) parts.push(`${pool.retired} retired`);
+  if (pool.ready === 0 && pool.soonest_ready_in !== null) {
+    parts.push(`next in ${pool.soonest_ready_in}s`);
+  }
+  return `Key pool: ${parts.join(" · ")}`;
 }
 
 async function testProvider(providerId, button) {
@@ -958,6 +993,46 @@ function showMessage(message, kind = "") {
   area.textContent = message;
   area.className = `message-area ${kind}`.trim();
 }
+
+const THEME_STORAGE_KEY = "fcc-admin-theme";
+
+function storedThemeChoice() {
+  try {
+    const value = localStorage.getItem(THEME_STORAGE_KEY);
+    return value === "light" || value === "dark" ? value : "system";
+  } catch {
+    // Storage can be denied outright; the system preference still applies.
+    return "system";
+  }
+}
+
+function applyThemeChoice(choice) {
+  if (choice === "system") {
+    delete document.documentElement.dataset.theme;
+  } else {
+    document.documentElement.dataset.theme = choice;
+  }
+  try {
+    if (choice === "system") {
+      localStorage.removeItem(THEME_STORAGE_KEY);
+    } else {
+      localStorage.setItem(THEME_STORAGE_KEY, choice);
+    }
+  } catch {
+    // A denied write costs persistence, not the current selection.
+  }
+  document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.themeChoice === choice),
+    );
+  });
+}
+
+document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+  button.addEventListener("click", () => applyThemeChoice(button.dataset.themeChoice));
+});
+applyThemeChoice(storedThemeChoice());
 
 byId("validateButton").addEventListener("click", () => validate(true));
 byId("applyButton").addEventListener("click", apply);

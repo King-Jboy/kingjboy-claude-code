@@ -1,6 +1,7 @@
 """Provider configuration construction from neutral catalog metadata."""
 
 from free_claude_code.application.errors import ApplicationUnavailableError
+from free_claude_code.config.api_keys import parse_api_key_list
 from free_claude_code.config.provider_catalog import ProviderDescriptor
 from free_claude_code.config.settings import Settings
 from free_claude_code.providers.base import ProviderConfig
@@ -14,13 +15,31 @@ def string_setting(settings: Settings, attr_name: str | None, default: str = "")
     return value if isinstance(value, str) else default
 
 
+def provider_credential_pool(
+    descriptor: ProviderDescriptor, settings: Settings
+) -> tuple[str, ...]:
+    """Return the configured pool of interchangeable keys, if this provider has one."""
+    if descriptor.credential_pool_attr is None:
+        return ()
+    raw = string_setting(settings, descriptor.credential_pool_attr)
+    env_name = descriptor.credential_pool_attr.upper()
+    return parse_api_key_list(raw, env_name=env_name)
+
+
 def provider_credential(descriptor: ProviderDescriptor, settings: Settings) -> str:
-    """Return the configured credential for a provider descriptor."""
+    """Return the configured credential for a provider descriptor.
+
+    A pool stands in for the single credential when only the pool is configured,
+    so the shared client and preflight paths always hold a usable key.
+    """
     if descriptor.static_credential is not None:
         return descriptor.static_credential
     if descriptor.credential_attr:
-        return string_setting(settings, descriptor.credential_attr)
-    return ""
+        credential = string_setting(settings, descriptor.credential_attr)
+        if credential.strip():
+            return credential
+    pool = provider_credential_pool(descriptor, settings)
+    return pool[0] if pool else ""
 
 
 def has_provider_configuration(
@@ -29,8 +48,19 @@ def has_provider_configuration(
     """Return whether all provider-defining settings are present."""
     attrs = descriptor.configuration_attrs()
     if attrs:
-        return all(string_setting(settings, attr).strip() for attr in attrs)
+        return all(_attr_configured(descriptor, settings, attr) for attr in attrs)
     return descriptor.static_credential is not None
+
+
+def _attr_configured(
+    descriptor: ProviderDescriptor, settings: Settings, attr: str
+) -> bool:
+    if string_setting(settings, attr).strip():
+        return True
+    # A configured key pool makes its singular credential attribute redundant.
+    return attr == descriptor.credential_attr and bool(
+        provider_credential_pool(descriptor, settings)
+    )
 
 
 def require_provider_credential(
@@ -68,9 +98,13 @@ def build_provider_config(
             f"{env_name} is not set. Add it to your .env file."
         )
     proxy = string_setting(settings, descriptor.proxy_attr)
+    # A single configured key is not a pool: leaving it empty keeps single-key
+    # setups on the existing provider-wide admission path unchanged.
+    pool = provider_credential_pool(descriptor, settings)
     return ProviderConfig(
         api_key=credential,
         base_url=resolved_base_url,
+        api_keys=pool if len(pool) > 1 else (),
         rate_limit=settings.provider_rate_limit,
         rate_window=settings.provider_rate_window,
         max_concurrency=settings.provider_max_concurrency,

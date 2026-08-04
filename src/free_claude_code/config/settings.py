@@ -3,9 +3,10 @@
 from functools import lru_cache
 from typing import Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .api_keys import parse_api_key_list
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
@@ -30,6 +31,12 @@ class Settings(BaseSettings):
 
     # ==================== OpenRouter Config ====================
     open_router_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
+    # Optional pool of interchangeable keys as a JSON list; overrides the single
+    # key above. Stored raw so the Admin textarea round-trips exactly what the
+    # user typed; ``config.api_keys`` owns parsing.
+    open_router_api_keys: str = Field(
+        default="", validation_alias="OPENROUTER_API_KEYS"
+    )
 
     # ==================== Mistral La Plateforme ====================
     mistral_api_key: str = Field(default="", validation_alias="MISTRAL_API_KEY")
@@ -129,6 +136,9 @@ class Settings(BaseSettings):
 
     # ==================== NVIDIA NIM Config ====================
     nvidia_nim_api_key: str = ""
+    # Optional pool of interchangeable keys as a JSON list; overrides the single
+    # key above. See ``open_router_api_keys`` for why this stays a raw string.
+    nvidia_nim_api_keys: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEYS")
 
     # ==================== LM Studio Config ====================
     lm_studio_base_url: str = Field(
@@ -354,6 +364,13 @@ class Settings(BaseSettings):
         if v == "" or v is None:
             return None
         return v
+
+    @field_validator("nvidia_nim_api_keys", "open_router_api_keys")
+    @classmethod
+    def validate_api_key_pool(cls, value: str, info: ValidationInfo) -> str:
+        """Fail startup on a malformed pool rather than quietly serving one key."""
+        parse_api_key_list(value, env_name=(info.field_name or "").upper())
+        return value
 
     @field_validator("log_level")
     @classmethod

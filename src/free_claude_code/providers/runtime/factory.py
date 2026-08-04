@@ -21,6 +21,12 @@ ProviderFactory = Callable[
     [ProviderConfig, Settings, ProviderAdmissionController], BaseProvider
 ]
 
+# Pooled keys multiply provider quota, but concurrency is bounded by local
+# sockets and event-loop work rather than by quota, and one client drives only
+# a handful of parallel requests. Cap the bulkhead so a large pool cannot open
+# an unbounded number of simultaneous upstream streams.
+MAX_POOLED_CONCURRENCY = 20
+
 
 def _create_nvidia_nim(
     config: ProviderConfig,
@@ -177,11 +183,17 @@ def create_provider(
         raise UnknownProviderError.for_provider(provider_id, PROVIDER_CATALOG)
 
     config = build_provider_config(descriptor, settings)
+    # Each pooled key enforces its own window, so the provider-wide gate must
+    # admit the pooled total; otherwise it would cap the pool at one key's rate.
+    pool_scale = max(1, len(config.api_keys))
     admission = ProviderAdmissionController(
         provider_name=provider_id,
-        rate_limit=config.rate_limit or 40,
+        rate_limit=(config.rate_limit or 40) * pool_scale,
         rate_window=config.rate_window or 60.0,
-        max_concurrency=config.max_concurrency,
+        max_concurrency=min(
+            config.max_concurrency * pool_scale,
+            max(config.max_concurrency, MAX_POOLED_CONCURRENCY),
+        ),
     )
     factory = (injected_factories or {}).get(provider_id)
     if provider_id in _INJECTED_PROVIDER_IDS and factory is None:

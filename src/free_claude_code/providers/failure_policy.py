@@ -1,9 +1,12 @@
 """Provider-owned SDK classification and retry qualification."""
 
 import json
+import math
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import replace
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -410,6 +413,34 @@ def _body_to_text(body: Any) -> str:
 
 def _has_marker(text: str, markers: frozenset[str]) -> bool:
     return any(marker in text for marker in markers)
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """Return the upstream ``Retry-After`` delay in seconds, when one was sent.
+
+    Accepts both documented encodings: a delta in seconds and an HTTP-date.
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get("retry-after")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    stripped = value.strip()
+    try:
+        seconds = float(stripped)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(stripped)
+        except TypeError, ValueError, OverflowError:
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = (retry_at - datetime.now(UTC)).total_seconds()
+    if not math.isfinite(seconds):
+        return None
+    return max(0.0, seconds)
 
 
 def underlying_provider_error(exc: Exception) -> Exception:

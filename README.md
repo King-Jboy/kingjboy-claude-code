@@ -21,6 +21,9 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 
 [Quick Start](#quick-start) · [Providers](#choose-a-provider) · [Clients](#connect-your-client) · [Integrations](#optional-integrations) · [Manage](#manage-your-installation)
 
+> A personal fork of [Alishahryar1/free-claude-code](https://github.com/Alishahryar1/free-claude-code), MIT licensed to Ali Khokhar.
+> This fork adds credential pooling, `fcc-doctor`, and a Claude-Code-only installer. See [What This Fork Changes](#what-this-fork-changes).
+
 </div>
 
 <div align="center">
@@ -52,6 +55,8 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 - Switch among 31 cloud and local providers from the Admin UI.
 - Use each coding agent's native model picker.
 - Route Fable, Opus, Sonnet, Haiku, and fallback traffic to different models.
+- Pool many NVIDIA NIM or OpenRouter keys into one self-healing virtual key.
+- Diagnose a broken setup in one command with `fcc-doctor`.
 - Keep streaming, tool use, reasoning, and image input across compatible models.
 - Connect Claude Code and Codex in VS Code or Claude Code through JetBrains ACP.
 - Optionally run Claude Code sessions through Discord or Telegram with voice-note transcription.
@@ -77,7 +82,7 @@ Windows PowerShell:
 
 Re-run the same command whenever you want to update. You can review the installers before running them: [install.sh](scripts/install.sh) and [install.ps1](scripts/install.ps1).
 
-The installer asks which coding agents to install or verify. Choose at least one; skipped agents are left unchanged.
+The installer sets up Claude Code alongside FCC. Other coding agents are left unchanged; install them yourself if you want to use `fcc-codex` or `fcc-pi`.
 
 ### 2. Start FCC
 
@@ -271,6 +276,62 @@ Open **Admin UI → Model Config → Reasoning** and select the behavior you wan
 | **Inherit** (Fable, Opus, Sonnet, and Haiku only) | Use the root Reasoning selection. |
 
 Providers that do not support a selected control retain their own behavior.
+
+### Key Pools (NVIDIA NIM and OpenRouter)
+
+If you hold several API keys for NVIDIA NIM or OpenRouter, FCC can treat them as one virtual key. Open **Admin UI → Providers**, find **NVIDIA NIM API Key Pool** or **OpenRouter API Key Pool**, and paste a JSON list:
+
+```json
+["key-one", "key-two", "key-three"]
+```
+
+Click **Validate**, then **Apply**. There is no limit on how many keys you add, and the pool replaces the single API key field for that provider.
+
+Each key gets its own rate-limit window, and all keys run at the same time, so the pool's throughput is the sum of its keys rather than one key's ceiling. Per request, FCC picks the key with the most headroom left:
+
+| Upstream response | What FCC does |
+| --- | --- |
+| `401` | Retires that key for the session, then immediately tries another. |
+| `403` | Sidelines that key and tries another, but does **not** retire it. |
+| `429` | Cools that key until the reset time the provider reported, then immediately tries another. |
+| `5xx`, timeout, connection error | Treats it as a backend problem, not a key problem, and applies the normal shared backoff. |
+
+`401` and `403` are handled differently because providers disagree about which one means "bad key". OpenRouter answers `401`, which is unambiguous. NVIDIA NIM answers `403` — but other providers use `403` to refuse the *request* (content policy, or a model the account cannot reach). Retiring on `403` would let a single refused prompt walk the pool and kill every key. So a `403` only sidelines its key; the error is reported to you unchanged once **every** key has refused the same request alike, which is the only proof that the request, not the keys, was at fault.
+
+When a provider states its own reset time (`Retry-After` or `X-RateLimit-Reset`) FCC obeys it exactly. When there is no timing at all — the shape of a dead credential — each further refusal from the same key multiplies the wait (3s, 30s, 5min, capped at 10min), so a key that is never coming back drops out of rotation instead of costing a wasted round-trip forever. Any successful request clears that backoff, so a key that starts working again returns on its own.
+
+Switching keys is instant and never uses up a request's retry budget. If every key is briefly rate limited, FCC waits for the first one to free up, up to a total of 60 seconds. If the wait would be longer — for example a daily cap that resets tomorrow — the request fails right away instead of hanging.
+
+One key alone behaves exactly as before, so there is nothing to change if you only have one. Key health is held in memory and resets when FCC restarts. Live pool health appears on each provider card in **Admin UI → Providers** (`Key pool: 14 keys · 12 ready · 2 cooling`), and `fcc-doctor` reports the configured pool sizes.
+
+> **OpenRouter note:** OpenRouter applies free-tier limits per *account*. Keys minted from separate accounts therefore multiply your throughput; several keys on one account give you redundancy rather than more headroom.
+
+### Checking Your Setup
+
+Run `fcc-doctor` when something is off, or before you rely on a long session:
+
+```bash
+fcc-doctor
+```
+
+```
+[  ok  ] managed env: /home/you/.fcc/.env
+[  ok  ] server port: 8082 is free
+[  ok  ] claude cli: /home/you/.local/bin/claude
+[  ok  ] MODEL: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
+[  ok  ] NVIDIA_NIM_API_KEYS: 13 keys pooled
+[ FAIL ] MODEL catalog: open_router no longer advertises moonshotai/kimi-k2.6:free
+         -> Pick a current model in the Admin UI; providers retire these silently.
+```
+
+It checks that your managed env file exists, that every routed model points at a configured provider, that each key pool parses to the size you expect, whether the port is already serving, and whether the Claude Code CLI is on PATH. It also asks each provider whether your configured model is *still* in its catalog — providers move models off their free tiers without warning, and otherwise you only find out when a request fails mid-session.
+
+| Flag | Effect |
+| --- | --- |
+| `--offline` | Skip every check that contacts a provider. |
+| `--json` | Emit findings as JSON for scripting. |
+
+It exits non-zero if anything failed, so you can gate a script on it. Doctor never builds a provider or sends a completion, so it costs no credits.
 
 <a id="connect-your-client"></a>
 
@@ -535,6 +596,26 @@ Windows PowerShell:
 - [Architecture and extension guide](ARCHITECTURE.md)
 - [Contributing guide](CONTRIBUTING.md)
 
+<a id="what-this-fork-changes"></a>
+
+## What This Fork Changes
+
+Everything below is additional to upstream [Alishahryar1/free-claude-code](https://github.com/Alishahryar1/free-claude-code).
+
+**Credential pooling.** `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS` accept a JSON list of keys that behave as one high-throughput, self-healing virtual key. Dead keys are walked past, rate-limited keys are cooled for exactly as long as the provider asked, and repeat offenders back off on an escalating schedule. See [Key Pools](#key-pools-nvidia-nim-and-openrouter).
+
+Verified live against both providers: 20 concurrent requests spread across all 14 OpenRouter keys, and a request still succeeded with three dead keys sitting in front of the working ones.
+
+**`fcc-doctor`.** A one-command health check for config, pools, ports, and — the useful part — whether your configured model is still in its provider's catalog. See [Checking Your Setup](#checking-your-setup).
+
+**Pool visibility in the Admin UI.** Each pooled provider card shows live key health, so silent capacity loss is visible instead of showing up as unexplained slowness.
+
+**Admin saves no longer delete unrecognised variables.** Upstream rewrites `~/.fcc/.env` from its field manifest alone, which silently dropped any variable it did not own. Hand-added variables are now preserved; genuinely retired settings are still cleaned up.
+
+**Claude-Code-only installer.** `install.sh` / `install.ps1` no longer offer to install Codex or Pi. The `fcc-codex` and `fcc-pi` entry points still ship and still work if you install those agents yourself.
+
+**Testing.** Provider behaviour is asserted against responses recorded from the real endpoints rather than hand-written mocks, and the parsers are covered by property tests. Recorded status codes differ by provider — NVIDIA NIM answers `403` for a bad key, OpenRouter answers `401` — and the pool depends on that distinction.
+
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License, unchanged from upstream. Copyright (c) 2026 Ali Khokhar. See [LICENSE](LICENSE) for details.

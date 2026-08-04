@@ -137,6 +137,13 @@ class ProviderRuntimeManager:
     def current_settings(self) -> Settings:
         return self._current.settings
 
+    def key_pool_status(self) -> dict[str, dict[str, object]]:
+        """Return pooled-credential health for the live generation."""
+        return {
+            provider_id: status.as_dict()
+            for provider_id, status in self._current.runtime.key_pool_status().items()
+        }
+
     def cached_model_ids(self) -> dict[str, frozenset[str]]:
         self._synchronize_model_cache_scope()
         return self._model_cache.cached_model_ids()

@@ -55,6 +55,18 @@ REASONING_MIGRATIONS = (
 
 ENV_MIGRATIONS = (HUGGINGFACE_TOKEN_MIGRATION, *REASONING_MIGRATIONS)
 
+# Settings FCC once honoured and no longer reads. An Admin save drops these so
+# a stale value cannot outlive the feature that consumed it. Every other
+# unrecognized key in a managed file is preserved instead of being deleted.
+RETIRED_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "CLAUDE_CLI_BIN",
+        "CLAUDE_WORKSPACE",
+        "ZAI_BASE_URL",
+        *(migration.old_key for migration in ENV_MIGRATIONS),
+    }
+)
+
 
 def migrate_owned_env_files() -> tuple[Path, ...]:
     """Apply key migrations to repo and managed dotenv files."""

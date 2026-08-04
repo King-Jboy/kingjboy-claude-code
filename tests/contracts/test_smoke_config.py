@@ -183,7 +183,7 @@ def test_openrouter_provider_smoke_uses_concrete_free_model(monkeypatch) -> None
     models = config.provider_smoke_models()
 
     assert [model.provider for model in models] == ["open_router"]
-    assert models[0].full_model == "open_router/moonshotai/kimi-k2.6:free"
+    assert models[0].full_model == "open_router/google/gemma-4-26b-a4b-it:free"
     assert models[0].source == "provider_default"
 
 
