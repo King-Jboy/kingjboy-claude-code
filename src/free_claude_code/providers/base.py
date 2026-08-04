@@ -15,6 +15,7 @@ from free_claude_code.core.diagnostics import (
 )
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
 from free_claude_code.core.trace import trace_event
+from free_claude_code.providers.key_pool import KeyPoolStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,10 @@ class ProviderConfig:
     proxy: str = ""
     log_raw_sse_events: bool = False
     log_api_error_tracebacks: bool = False
+    # Interchangeable credentials for providers whose catalog entry declares a
+    # key pool. Empty for every provider configured with a single credential,
+    # and populated only when two or more keys make a pool meaningful.
+    api_keys: tuple[str, ...] = ()
 
 
 class BaseProvider(ABC):
@@ -99,6 +104,10 @@ class BaseProvider(ABC):
     @abstractmethod
     async def cleanup(self) -> None:
         """Release any resources held by this provider."""
+
+    def key_pool_status(self) -> KeyPoolStatus | None:
+        """Return pooled-credential health, or ``None`` when not pooled."""
+        return None
 
     @abstractmethod
     async def list_model_infos(self) -> frozenset[ProviderModelInfo]:

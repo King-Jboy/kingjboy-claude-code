@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "4.16.7"
+version = "5.4.0"
 description = "Local proxy connecting coding agents to OpenAI-compatible AI providers"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -31,6 +31,7 @@ dependencies = [
 
 [project.scripts]
 fcc-server = "free_claude_code.cli.entrypoints:serve"
+fcc-doctor = "free_claude_code.cli.entrypoints:doctor"
 fcc-claude = "free_claude_code.cli.launchers.claude:launch"
 fcc-codex = "free_claude_code.cli.launchers.codex:launch"
 fcc-pi = "free_claude_code.cli.launchers.pi:launch"
@@ -76,6 +77,11 @@ dev = [
     "ty>=0.0.60",
     "ruff>=0.15.22",
     "pytest-xdist>=3.8.0",
+    # Replay recorded upstream responses so provider behaviour is asserted from
+    # what providers actually sent, not from what a hand-written mock assumes.
+    "respx>=0.22.0",
+    # Property tests for parsers whose inputs are far wider than any example set.
+    "hypothesis>=6.140.2",
 ]
 
 [tool.ruff]

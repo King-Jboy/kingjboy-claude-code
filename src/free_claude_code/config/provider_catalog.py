@@ -69,6 +69,9 @@ class ProviderDescriptor:
     credential_env: str | None = None
     credential_url: str | None = None
     credential_attr: str | None = None
+    # Optional settings attribute holding a JSON list of interchangeable keys.
+    # A configured pool satisfies ``credential_attr`` on its own.
+    credential_pool_attr: str | None = None
     static_credential: str | None = None
     default_base_url: str | None = None
     base_url_attr: str | None = None
@@ -93,6 +96,7 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
         credential_env="NVIDIA_NIM_API_KEY",
         credential_url="https://build.nvidia.com/settings/api-keys",
         credential_attr="nvidia_nim_api_key",
+        credential_pool_attr="nvidia_nim_api_keys",
         default_base_url=NVIDIA_NIM_DEFAULT_BASE,
         proxy_attr="nvidia_nim_proxy",
     ),
@@ -122,6 +126,7 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
         credential_env="OPENROUTER_API_KEY",
         credential_url="https://openrouter.ai/keys",
         credential_attr="open_router_api_key",
+        credential_pool_attr="open_router_api_keys",
         default_base_url=OPENROUTER_DEFAULT_BASE,
         proxy_attr="open_router_proxy",
     ),

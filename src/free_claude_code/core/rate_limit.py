@@ -40,15 +40,43 @@ class StrictSlidingWindowLimiter:
         """
         return await self._acquire(allowed)
 
+    # ``headroom`` and ``next_available_in`` are synchronous reads used to rank
+    # limiters against each other. They never await, so their eviction pass
+    # cannot interleave with a locked acquisition on the same event loop.
+    def headroom(self) -> int:
+        """Return how many acquisitions the current window still admits."""
+        self._evict_expired(time.monotonic())
+        return max(0, self._rate_limit - len(self._times))
+
+    def try_acquire(self) -> bool:
+        """Record an acquisition only when the window admits one right now."""
+        now = time.monotonic()
+        self._evict_expired(now)
+        if len(self._times) >= self._rate_limit:
+            return False
+        self._times.append(now)
+        return True
+
+    def next_available_in(self) -> float:
+        """Return seconds until one acquisition frees up (0.0 when admissible now)."""
+        now = time.monotonic()
+        self._evict_expired(now)
+        if len(self._times) < self._rate_limit:
+            return 0.0
+        return max(0.0, (self._times[0] + self._rate_window) - now)
+
+    def _evict_expired(self, now: float) -> None:
+        """Drop timestamps that have left the trailing window."""
+        cutoff = now - self._rate_window
+        while self._times and self._times[0] <= cutoff:
+            self._times.popleft()
+
     async def _acquire(self, allowed: Callable[[], bool] | None) -> bool:
         while True:
             wait_time = 0.0
             async with self._lock:
                 now = time.monotonic()
-                cutoff = now - self._rate_window
-
-                while self._times and self._times[0] <= cutoff:
-                    self._times.popleft()
+                self._evict_expired(now)
 
                 if len(self._times) < self._rate_limit:
                     if allowed is not None and not allowed():

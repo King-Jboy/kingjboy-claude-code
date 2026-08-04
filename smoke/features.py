@@ -36,6 +36,7 @@ README_FEATURES: tuple[str, ...] = (
     "drop_in_codex_replacement",
     "pi_cli_integration",
     "provider_matrix",
+    "provider_key_pool",
     "per_model_mapping",
     "thinking_token_support",
     "heuristic_tool_parser",
@@ -120,6 +121,20 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
         ("providers",),
         ("configured provider credentials/endpoints", "optional FCC_SMOKE_MODEL_*"),
         "selected providers missing credentials are failing missing_env",
+    ),
+    FeatureCoverage(
+        "provider_key_pool",
+        "Many interchangeable keys serve one provider as a self-healing pool",
+        "readme",
+        ("tests/providers/test_key_pool.py", "tests/config/test_api_keys.py"),
+        (),
+        (
+            "test_invalid_credential_status_matches_pool_policy_e2e",
+            "test_dead_keys_never_strand_a_working_key_e2e",
+        ),
+        ("providers",),
+        ("NVIDIA_NIM_API_KEYS", "OPENROUTER_API_KEYS"),
+        "pools with fewer than two keys are missing_env",
     ),
     FeatureCoverage(
         "per_model_mapping",

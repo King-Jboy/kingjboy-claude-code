@@ -346,6 +346,14 @@ configuration vocabulary. FCC-owned dotenv files receive a one-time rename and
 value migration from the retired boolean settings; explicit `FCC_ENV_FILE`
 files are never rewritten and instead receive an actionable startup warning.
 
+[config/api_keys.py](src/free_claude_code/config/api_keys.py) owns credential-pool
+parsing. Pool variables such as `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS`
+hold a JSON list of interchangeable keys; entries are stripped, de-duplicated,
+and order-preserving, with no cap on count. Malformed input fails settings
+construction with the variable name and an example rather than falling back to
+the single key, because a pool that silently shrinks looks like ordinary slowness
+instead of a configuration error.
+
 [config/model_refs.py](src/free_claude_code/config/model_refs.py) owns provider-prefixed model ref
 parsing and configured `MODEL*` inventory. API routing and provider validation
 depend on those helpers instead of adding behavior methods to Settings.
@@ -568,8 +576,10 @@ alias.
 Provider metadata is neutral and centralized in
 [config/provider_catalog.py](src/free_claude_code/config/provider_catalog.py). Each
 `ProviderDescriptor` declares provider ID, display name, authentication kind, locality, credential env
-var, default base URL, settings attribute names, configuration readiness, and
-proxy support. Readiness may require multiple ordinary settings or a non-secret
+var, an optional credential-pool attribute, default base URL, settings attribute
+names, configuration readiness, and proxy support. A configured pool satisfies
+its singular credential attribute, so a provider can be made ready by the pool
+alone. Readiness may require multiple ordinary settings or a non-secret
 project ID; it is not inferred exclusively from API-key presence. The catalog
 does not select a concrete adapter.
 
@@ -584,7 +594,13 @@ The union of those construction owners must exactly equal the neutral provider
 catalog.
 `ProviderRuntime` directly guarantees one provider and admission controller per
 provider ID within a generation; there is no pass-through cache object, process
-singleton, or second admission registry.
+singleton, or second admission registry. A provider whose catalog entry declares
+a credential pool additionally owns one
+[providers/key_pool.py](src/free_claude_code/providers/key_pool.py) `KeyPool`
+holding a per-key rate window and health record. That pool is credential
+selection, not a second admission authority: every attempt still passes the
+single provider-wide controller, whose rate and concurrency budgets are scaled by
+pool size so the shared gate does not cap the pool at one key's rate.
 
 [providers/admission.py](src/free_claude_code/providers/admission.py) owns the
 complete shared upstream-admission lifecycle for that provider generation. A
@@ -605,6 +621,27 @@ to every coalesced logical execution, even if a later recovery generation starts
 New work fails fast during the provider-directed cooldown; once it expires,
 exactly one new caller becomes the next probe. There is no background retry
 worker, copied request queue, or second scheduling system.
+
+[providers/key_pool.py](src/free_claude_code/providers/key_pool.py) owns
+credential pools for providers whose `ProviderDescriptor` declares a
+`credential_pool_attr`. A pool exists only when two or more keys are configured,
+so single-credential setups keep the exact prior admission behavior. Ownership is
+split by what the failure actually means. Key-local outcomes settle inside the
+pool: `401`/`403` retire a key for the process, `429` cools it until the reset the
+provider itself reported through `Retry-After` or `X-RateLimit-Reset`, and either
+way the caller hops to another key. A hop consumes no `ProviderRetrySession`
+attempt, so a large pool is never bounded by the shared five-attempt budget.
+Everything that is not key-specific - `5xx`, timeouts, connection errors -
+escalates unchanged to the provider-wide recovery episode, so a genuinely failing
+backend is not hammered once per key.
+
+Waiting is gated on wait length rather than attempt count. When every key is
+briefly saturated the pool sleeps until the soonest key frees; when the soonest
+availability exceeds the pool's maximum wait, or every key is retired, it raises
+a terminal non-retryable `ExecutionFailure` instead of parking the client
+connection. Pool state is in-memory and resets on restart, which is
+self-correcting: a key still cooling upstream costs one wasted attempt before its
+fresh `429` re-establishes the cooldown.
 
 Retired generations retain their own synchronization state until request leases
 drain, while new generations and separate server instances never reuse it. Hot
@@ -823,10 +860,11 @@ usage quirks such as DeepSeek prompt-cache counters.
 1. Add provider metadata to [config/provider_catalog.py](src/free_claude_code/config/provider_catalog.py).
 2. Add credentials and related settings to [config/settings.py](src/free_claude_code/config/settings.py)
    and [.env.example](.env.example) when user configurable.
-3. Let Admin UI provider credential, configurable base URL, and proxy fields come from the
-   catalog. Add admin-only help text or provider-specific fields under
+3. Let Admin UI provider credential, credential-pool, configurable base URL, and proxy fields
+   come from the catalog. Add admin-only help text or provider-specific fields under
    [config/admin/](src/free_claude_code/config/admin/) only when the generated manifest is
-   insufficient.
+   insufficient. Set `credential_pool_attr` only when the upstream genuinely
+   accepts many interchangeable keys with independent quotas.
 4. Add an `OpenAIChatProfile` under [providers/openai_chat/](src/free_claude_code/providers/openai_chat/) when
    request policy fully describes the upstream.
 5. Add a specialized provider package and sparse factory entry only when the
@@ -917,6 +955,14 @@ failures use exponential backoff with jitter and honor `Retry-After` as a
 minimum. When partial output exists, the last available attempt is reserved for
 continuation or repair instead of replaying the full request again. Completed
 tool calls can be salvaged without an upstream attempt.
+
+While an already-committed stream waits on mid-stream recovery, the OpenAI-chat
+runner emits Anthropic `ping` keep-alive frames so a long reconnect or pooled-key
+wait never looks like a stalled connection. Keep-alive is gated on the holdback's
+commit state, never on elapsed time: before the first frame escapes, silence is
+required so a failure can still be reported as typed non-2xx JSON with
+`x-should-retry: false`. Consumers ignore unrecognized event types, so the frame
+is inert for non-streaming aggregation and for the Responses assembler.
 
 For streams, upstream acceptance is the first received chunk. Retryable failure
 before that point participates in provider-wide coordinated recovery. Failure

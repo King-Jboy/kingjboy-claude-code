@@ -158,6 +158,7 @@ def provider_field_specs() -> tuple[dict[str, Any], ...]:
 
     return (
         *_credential_field_specs(),
+        *_credential_pool_field_specs(),
         *_cloudflare_account_field_specs(),
         *_vertex_field_specs(),
         *_base_url_field_specs(),
@@ -184,6 +185,31 @@ def _credential_field_specs() -> tuple[dict[str, Any], ...]:
         }
         spec.update(_PROVIDER_FIELD_OVERRIDES.get(descriptor.credential_env, {}))
         specs.append(spec)
+    return tuple(specs)
+
+
+def _credential_pool_field_specs() -> tuple[dict[str, Any], ...]:
+    specs: list[dict[str, Any]] = []
+    for descriptor in PROVIDER_CATALOG.values():
+        if descriptor.credential_pool_attr is None:
+            continue
+        specs.append(
+            {
+                "key": _settings_env_key(descriptor.credential_pool_attr),
+                "label": f"{descriptor.display_name} API Key Pool",
+                "section_id": "providers",
+                "field_type": "textarea",
+                "settings_attr": descriptor.credential_pool_attr,
+                "secret": True,
+                "description": (
+                    "Optional JSON list of interchangeable API keys, for example "
+                    '["key-one", "key-two"]. When two or more keys are set this '
+                    "replaces the single key above: each key gets its own rate "
+                    "window, and a rejected or rate-limited key is skipped "
+                    "automatically."
+                ),
+            }
+        )
     return tuple(specs)
 
 

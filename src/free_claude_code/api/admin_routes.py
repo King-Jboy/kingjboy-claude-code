@@ -1,5 +1,6 @@
 """Local admin UI routes and APIs."""
 
+import asyncio
 import ipaddress
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ LOCAL_PROVIDER_PATHS = {
     "llamacpp": "/models",
     "ollama": "/api/tags",
 }
+LOCAL_PROBE_TIMEOUT_SECONDS = 1.5
 
 
 class AdminConfigPayload(BaseModel):
@@ -141,11 +143,31 @@ async def local_provider_status(request: Request):
     require_loopback_admin(request)
     config = load_config_response()
     values = {field["key"]: field["value"] for field in config["fields"]}
-    checks = []
-    for provider_id, path in LOCAL_PROVIDER_PATHS.items():
-        base_url = _local_provider_url(provider_id, values)
-        checks.append(await _check_local_provider(provider_id, base_url, path))
-    return {"providers": checks}
+    # Probe every local provider at once and over one connection pool. Serial
+    # probes made an all-offline check cost the sum of every timeout.
+    async with httpx.AsyncClient(timeout=LOCAL_PROBE_TIMEOUT_SECONDS) as client:
+        checks = await asyncio.gather(
+            *(
+                _check_local_provider(
+                    client,
+                    provider_id,
+                    _local_provider_url(provider_id, values),
+                    path,
+                )
+                for provider_id, path in LOCAL_PROVIDER_PATHS.items()
+            )
+        )
+    return {"providers": list(checks)}
+
+
+@router.get("/admin/api/providers/key-pools")
+async def key_pool_status(
+    request: Request,
+    services: ApiServices = Depends(get_services),
+):
+    """Report pooled-credential health so silent capacity loss is visible."""
+    require_loopback_admin(request)
+    return {"key_pools": services.admin.key_pool_status()}
 
 
 @router.post("/admin/api/providers/{provider_id}/test")
@@ -270,7 +292,7 @@ def _local_provider_url(provider_id: str, values: dict[str, str]) -> str:
 
 
 async def _check_local_provider(
-    provider_id: str, base_url: str, path: str
+    client: httpx.AsyncClient, provider_id: str, base_url: str, path: str
 ) -> dict[str, Any]:
     clean_url = base_url.strip().rstrip("/")
     if not clean_url:
@@ -283,8 +305,7 @@ async def _check_local_provider(
 
     url = f"{clean_url}{path}"
     try:
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            response = await client.get(url)
+        response = await client.get(url)
         ok = 200 <= response.status_code < 300
         return {
             "provider_id": provider_id,

@@ -5,31 +5,26 @@ REPO_ARCHIVE_URL="https://github.com/Alishahryar1/free-claude-code/archive/refs/
 PYTHON_VERSION="3.14.0"
 MIN_UV_VERSION="0.11.16"
 CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
-CODEX_INSTALL_URL="https://chatgpt.com/codex/install.sh"
-PI_INSTALL_URL="https://pi.dev/install.sh"
 UV_INSTALL_URL="https://astral.sh/uv/install.sh"
 FCC_MACOS_BUNDLE_ID="io.github.alishahryar1.free-claude-code"
 FCC_MACOS_OWNER_FILE=".free-claude-code-owner"
-# Include retired entry points so updates reject older FCC processes before replacement.
+# Include retired and unused entry points so updates reject older FCC processes
+# before replacement, even ones this installer no longer sets up.
 FCC_COMMANDS="fcc-desktop fcc-server fcc-claude fcc-codex fcc-pi fcc-init free-claude-code"
 
 dry_run=0
 voice_nim=0
 voice_local=0
 voice_all=0
-install_claude=1
-install_codex=1
-install_pi=1
 torch_backend=""
 temporary_script=""
 tool_bin=""
-pi_available=0
 
 show_usage() {
     cat <<'USAGE'
 Usage: install.sh [options]
 
-Installs or updates Free Claude Code and lets you choose which coding agents to install or verify.
+Installs or updates Free Claude Code, then installs or verifies Claude Code.
 
 Options:
   --voice-nim              Install NVIDIA NIM voice transcription support.
@@ -46,57 +41,6 @@ fail() {
     exit 1
 }
 
-installer_is_interactive() {
-    [ -t 1 ] && ( : </dev/tty ) 2>/dev/null
-}
-
-prompt_yes_no() {
-    question=$1
-    while :; do
-        printf '%s [Y/n] ' "$question" >&4
-        if ! IFS= read -r answer <&3; then
-            fail "Could not read the coding agent selection."
-        fi
-        case "$answer" in
-            ""|[Yy]|[Yy][Ee][Ss]) return 0 ;;
-            [Nn]|[Nn][Oo]) return 1 ;;
-            *) printf 'Please answer Y or N.\n' >&4 ;;
-        esac
-    done
-}
-
-choose_coding_agents() {
-    selection_input=$1
-    selection_output=$2
-    exec 3<"$selection_input"
-    exec 4>"$selection_output"
-
-    while :; do
-        if prompt_yes_no "Install or verify Claude Code for fcc-claude?"; then
-            install_claude=1
-        else
-            install_claude=0
-        fi
-        if prompt_yes_no "Install or verify Codex for fcc-codex?"; then
-            install_codex=1
-        else
-            install_codex=0
-        fi
-        if prompt_yes_no "Install or verify Pi for fcc-pi?"; then
-            install_pi=1
-        else
-            install_pi=0
-        fi
-
-        if [ "$install_claude" -eq 1 ] || [ "$install_codex" -eq 1 ] || [ "$install_pi" -eq 1 ]; then
-            break
-        fi
-        printf 'Select at least one coding agent.\n\n' >&4
-    done
-
-    exec 3<&-
-    exec 4>&-
-}
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -164,24 +108,10 @@ add_known_bin_directories() {
     if [ -n "${HOME:-}" ]; then
         add_path_entry "$HOME/.local/bin"
         add_path_entry "$HOME/.cargo/bin"
-        add_path_entry "${XDG_DATA_HOME:-$HOME/.local/share}/pi-node/current/bin"
     fi
 
     export PATH
     hash -r 2>/dev/null || true
-}
-
-add_pi_bin_directories() {
-    [ "$dry_run" -eq 0 ] || return 0
-    add_known_bin_directories
-    if command -v npm >/dev/null 2>&1; then
-        pi_npm_prefix=$(npm prefix -g 2>/dev/null || npm config get prefix 2>/dev/null || true)
-        if [ -n "$pi_npm_prefix" ]; then
-            add_path_entry "$pi_npm_prefix/bin"
-            export PATH
-            hash -r 2>/dev/null || true
-        fi
-    fi
 }
 
 fcc_process_ids() {
@@ -241,17 +171,10 @@ download_and_run() {
     url=$1
     interpreter=$2
     label=$3
-    non_interactive=${4:-0}
 
     if [ "$dry_run" -eq 1 ]; then
         print_command curl -fsSL "$url" -o "<temporary-script>"
-        if [ "$non_interactive" -eq 1 ]; then
-            printf '+ CODEX_NON_INTERACTIVE=1 '
-            quote_arg "$interpreter"
-            printf ' <temporary-script>\n'
-        else
-            print_command "$interpreter" "<temporary-script>"
-        fi
+        print_command "$interpreter" "<temporary-script>"
         return 0
     fi
 
@@ -268,26 +191,12 @@ download_and_run() {
         fail "The downloaded $label installer was empty."
     fi
 
-    if [ "$non_interactive" -eq 1 ]; then
-        printf '+ CODEX_NON_INTERACTIVE=1 '
-        quote_arg "$interpreter"
-        printf ' '
-        quote_arg "$temporary_script"
-        printf '\n'
-        if CODEX_NON_INTERACTIVE=1 "$interpreter" "$temporary_script"; then
-            :
-        else
-            status=$?
-            fail "$label installation failed with exit code $status."
-        fi
+    print_command "$interpreter" "$temporary_script"
+    if "$interpreter" "$temporary_script"; then
+        :
     else
-        print_command "$interpreter" "$temporary_script"
-        if "$interpreter" "$temporary_script"; then
-            :
-        else
-            status=$?
-            fail "$label installation failed with exit code $status."
-        fi
+        status=$?
+        fail "$label installation failed with exit code $status."
     fi
 
     rm -f "$temporary_script"
@@ -307,31 +216,6 @@ verify_command() {
     run "$command_path" --version
 }
 
-pi_command_is_compatible() {
-    pi_command_path=$(command -v pi 2>/dev/null) || return 1
-    pi_help=$("$pi_command_path" --help 2>/dev/null) || return 1
-    case "$pi_help" in
-        *--extension*) ;;
-        *) return 1 ;;
-    esac
-    case "$pi_help" in
-        *--models*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-verify_pi_command() {
-    if [ "$dry_run" -eq 1 ]; then
-        printf '+ pi --help (verify --extension and --models support)\n'
-        print_command pi --version
-        return 0
-    fi
-
-    pi_command_path=$(command -v pi 2>/dev/null) || fail "Pi was installed, but 'pi' is not available on PATH."
-    pi_command_is_compatible || fail "The 'pi' command at $pi_command_path is not a compatible Pi Coding Agent."
-    run "$pi_command_path" --version
-}
-
 ensure_claude() {
     if command -v claude >/dev/null 2>&1; then
         printf 'Claude Code already found on PATH; verifying it.\n'
@@ -341,70 +225,6 @@ ensure_claude() {
     fi
 
     verify_command claude "Claude Code"
-}
-
-ensure_codex() {
-    if command -v codex >/dev/null 2>&1; then
-        printf 'Codex already found on PATH; verifying it.\n'
-    else
-        download_and_run "$CODEX_INSTALL_URL" sh "Codex" 1
-        add_known_bin_directories
-    fi
-
-    verify_command codex "Codex"
-}
-
-ensure_pi() {
-    pi_available=0
-    add_pi_bin_directories
-    existing_pi_path=$(command -v pi 2>/dev/null || true)
-
-    if [ "$dry_run" -eq 1 ] && command -v pi >/dev/null 2>&1; then
-        printf 'Pi already found on PATH; verifying it.\n'
-    elif pi_command_is_compatible; then
-        printf 'Pi already found on PATH; verifying it.\n'
-    else
-        if [ -n "$existing_pi_path" ]; then
-            printf "The existing 'pi' command at %s is not Pi Coding Agent; installing Pi.\n" "$existing_pi_path"
-        fi
-        download_and_run "$PI_INSTALL_URL" sh "Pi"
-        add_pi_bin_directories
-
-        if [ "$dry_run" -eq 0 ]; then
-            current_pi_path=$(command -v pi 2>/dev/null || true)
-            if [ -z "$current_pi_path" ] ||
-                { [ -n "$existing_pi_path" ] &&
-                    [ "$current_pi_path" = "$existing_pi_path" ] &&
-                    ! pi_command_is_compatible; }; then
-                printf 'Pi was not installed; continuing without it.\n'
-                return 0
-            fi
-        fi
-    fi
-
-    verify_pi_command
-    pi_available=1
-}
-
-ensure_selected_coding_agents() {
-    if [ "$install_claude" -eq 1 ]; then
-        step "Ensuring Claude Code is installed"
-        ensure_claude
-    fi
-
-    if [ "$install_codex" -eq 1 ]; then
-        step "Ensuring Codex is installed"
-        ensure_codex
-    fi
-
-    if [ "$install_pi" -eq 1 ]; then
-        step "Checking or installing Pi"
-        ensure_pi
-    fi
-
-    if [ "$install_claude" -eq 0 ] && [ "$install_codex" -eq 0 ] && [ "$pi_available" -eq 0 ]; then
-        fail "No selected coding agent was installed. Re-run the installer and choose at least one."
-    fi
 }
 
 current_uv_version() {
@@ -586,7 +406,7 @@ configure_and_verify_free_claude_code() {
 
     if [ "$dry_run" -eq 1 ]; then
         print_command uv tool dir --bin
-        printf '+ verify fcc-desktop, fcc-server, fcc-claude, fcc-codex, and fcc-pi in the uv tool bin directory\n'
+        printf '+ verify fcc-desktop, fcc-server, and fcc-claude in the uv tool bin directory\n'
         print_command fcc-server --version
         return 0
     fi
@@ -604,7 +424,7 @@ configure_and_verify_free_claude_code() {
     export PATH
     hash -r 2>/dev/null || true
 
-    for command_name in fcc-desktop fcc-server fcc-claude fcc-codex fcc-pi; do
+    for command_name in fcc-desktop fcc-server fcc-claude; do
         [ -x "$tool_bin/$command_name" ] || fail "Free Claude Code installation did not create $tool_bin/$command_name."
     done
 
@@ -707,20 +527,14 @@ add_known_bin_directories
 step "Checking for running Free Claude Code processes"
 assert_no_fcc_processes_running
 
-if installer_is_interactive; then
-    step "Choosing coding agents"
-    choose_coding_agents /dev/tty /dev/tty
-fi
-
 step "Checking installation prerequisites"
 require_command curl
-if [ "$install_claude" -eq 1 ]; then
-    require_command bash
-fi
+require_command bash
 require_command sh
 require_command mktemp
 
-ensure_selected_coding_agents
+step "Ensuring Claude Code is installed"
+ensure_claude
 
 step "Ensuring uv $MIN_UV_VERSION or newer is installed"
 ensure_uv
@@ -745,13 +559,5 @@ else
     else
         printf '\nFree Claude Code is installed and verified. Start the proxy with: fcc-server\n'
     fi
-    if [ "$install_claude" -eq 1 ]; then
-        printf 'Run Claude Code with: fcc-claude\n'
-    fi
-    if [ "$install_codex" -eq 1 ]; then
-        printf 'Run Codex with: fcc-codex\n'
-    fi
-    if [ "$pi_available" -eq 1 ]; then
-        printf 'Run Pi with: fcc-pi\n'
-    fi
+    printf 'Run Claude Code with: fcc-claude\n'
 fi

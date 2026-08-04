@@ -4,6 +4,7 @@ import asyncio
 import sys
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,7 @@ from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import (
     AnthropicStreamLedger,
     accept_tool_json_repair,
+    anthropic_ping_frame,
     continuation_suffix,
     make_response_recovery_body,
     make_text_recovery_body,
@@ -48,6 +50,7 @@ from free_claude_code.providers.http import (
     close_provider_stream,
     maybe_await_aclose,
 )
+from free_claude_code.providers.key_pool import KeyPool, KeyPoolStatus
 from free_claude_code.providers.model_listing import extract_openai_model_infos
 from free_claude_code.providers.stream_recovery import (
     RecoveryController,
@@ -78,6 +81,25 @@ from .usage import (
 
 OpenAIAsyncCredentialProvider = Callable[[], Awaitable[str]]
 
+# Keep-alive cadence for an already-committed stream that is waiting on
+# recovery. A gap this short stays well inside any client's stream-idle budget.
+KEEPALIVE_INTERVAL_SECONDS = 1.5
+
+
+async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
+    """Return whether ``task`` finished within ``timeout`` seconds."""
+    done, _ = await asyncio.wait((task,), timeout=timeout)
+    return bool(done)
+
+
+async def _discard_pending_task(task: asyncio.Task[Any]) -> None:
+    """Cancel and drain a task the caller stopped awaiting."""
+    if task.done():
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
 
 @dataclass(frozen=True, slots=True)
 class _CollectedRecoveryOutput:
@@ -107,36 +129,67 @@ class OpenAIChatProvider(BaseProvider):
         # later requests clamp proactively instead of paying the 400 each time.
         self._model_output_caps: dict[str, int] = {}
         self._admission = admission
-        http_client = None
-        if config.proxy:
-            http_client = httpx.AsyncClient(
-                proxy=config.proxy,
-                timeout=httpx.Timeout(
-                    config.http_read_timeout,
-                    connect=config.http_connect_timeout,
-                    read=config.http_read_timeout,
-                    write=config.http_write_timeout,
-                ),
-            )
-        self._client = AsyncOpenAI(
-            api_key=api_key_provider or self._api_key,
+        self._default_headers = default_headers
+        self._client = self._build_client(api_key_provider or self._api_key)
+        self._key_pool = self._build_key_pool(config.api_keys)
+
+    def _build_client(
+        self, credential: str | OpenAIAsyncCredentialProvider
+    ) -> AsyncOpenAI:
+        """Build one client bound to a single credential.
+
+        Each client owns its proxy transport, so closing one pooled client never
+        strands the others.
+        """
+        config = self._config
+        timeout = httpx.Timeout(
+            config.http_read_timeout,
+            connect=config.http_connect_timeout,
+            read=config.http_read_timeout,
+            write=config.http_write_timeout,
+        )
+        http_client = (
+            httpx.AsyncClient(proxy=config.proxy, timeout=timeout)
+            if config.proxy
+            else None
+        )
+        return AsyncOpenAI(
+            api_key=credential,
             base_url=self._base_url,
             max_retries=0,
-            default_headers=default_headers,
-            timeout=httpx.Timeout(
-                config.http_read_timeout,
-                connect=config.http_connect_timeout,
-                read=config.http_read_timeout,
-                write=config.http_write_timeout,
-            ),
+            default_headers=self._default_headers,
+            timeout=timeout,
             http_client=http_client,
         )
 
+    def _build_key_pool(self, api_keys: tuple[str, ...]) -> KeyPool | None:
+        """Build a pool only when more than one credential is configured."""
+        if len(api_keys) < 2:
+            return None
+        config = self._config
+        return KeyPool(
+            api_keys,
+            provider_name=self._provider_name,
+            rate_limit=config.rate_limit or 40,
+            rate_window=float(config.rate_window or 60.0),
+            client_factory=self._build_client,
+        )
+
+    def key_pool_status(self) -> KeyPoolStatus | None:
+        """Return pooled-credential health when this provider pools keys."""
+        pool = getattr(self, "_key_pool", None)
+        return None if pool is None else pool.status()
+
     async def cleanup(self) -> None:
-        """Release HTTP client resources."""
-        client = getattr(self, "_client", None)
-        if client is not None:
-            await client.close()
+        """Release HTTP client resources, including every pooled client."""
+        try:
+            client = getattr(self, "_client", None)
+            if client is not None:
+                await client.close()
+        finally:
+            pool = getattr(self, "_key_pool", None)
+            if pool is not None:
+                await pool.aclose()
 
     async def list_model_infos(self) -> frozenset[ProviderModelInfo]:
         """Return model metadata from the OpenAI-compatible models endpoint."""
@@ -146,9 +199,25 @@ class OpenAIChatProvider(BaseProvider):
         return extract_openai_model_infos(payload, provider_name=self._provider_name)
 
     async def _list_models_payload(self) -> Any:
-        """Fetch one OpenAI-compatible model-list payload with shared retries."""
+        """Fetch one OpenAI-compatible model-list payload with shared retries.
+
+        Routed through the pool because most providers do reject an invalid key
+        here, so hopping is what keeps discovery working when the first key is
+        dead. Success is not treated as proof of the credential: the providers
+        that pool keys - NVIDIA NIM and OpenRouter - both serve this endpoint
+        unauthenticated, so a dead key "succeeds" and would otherwise have its
+        backoff reset every refresh.
+        """
+        pool = self._key_pool
+        operation = (
+            self._client.models.list
+            if pool is None
+            else lambda: pool.run_key_local(
+                lambda client: client.models.list(), proves_credential=False
+            )
+        )
         payload = await self._admission.run_with_retry(
-            self._client.models.list,
+            operation,
             provider_failure_override=self._provider_failure_override,
         )
         return payload
@@ -222,10 +291,7 @@ class OpenAIChatProvider(BaseProvider):
             retain_attempt = False
             try:
                 create_body = self._prepare_create_body(body)
-                stream = await self._client.chat.completions.create(
-                    **create_body,
-                    stream=True,
-                )
+                stream = await self._open_chat_stream(create_body)
                 stream = self._normalize_stream(stream, body)
                 retain_attempt = True
                 return stream, body, attempt
@@ -255,6 +321,27 @@ class OpenAIChatProvider(BaseProvider):
                     await attempt.aclose()
 
         raise RuntimeError("provider retry session exhausted without a final error")
+
+    async def _open_chat_stream(self, create_body: dict[str, Any]) -> Any:
+        """Open one upstream stream, hopping past key-local failures when pooled.
+
+        A pooled ``401``/``403``/``429`` is settled inside the pool and costs no
+        provider retry attempt, so a large pool is never limited by the shared
+        five-attempt budget. Everything else propagates to the caller's attempt
+        so genuine backend failures keep their provider-wide recovery episode.
+        """
+        pool = self._key_pool
+        if pool is None:
+            return await self._client.chat.completions.create(
+                **create_body,
+                stream=True,
+            )
+        return await pool.run_key_local(
+            lambda client: client.chat.completions.create(
+                **create_body,
+                stream=True,
+            )
+        )
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Return the provider-specific stream view consumed by the base runner."""
@@ -602,15 +689,27 @@ class _OpenAIChatStreamRunner:
                     continue
 
                 if decision.action == RecoveryFailureAction.MIDSTREAM_RECOVERY:
-                    try:
-                        recovery_events = await self._recovery_events(
+                    recovery_task = asyncio.create_task(
+                        self._recovery_events(
                             body=body,
                             ledger=ledger,
                             error=error,
                             tool_argument_alias_buffers=tool_argument_alias_buffers,
                             output_reasoning=output_reasoning,
                             retry_session=retry_session,
-                        )
+                        ),
+                        name="fcc-provider-midstream-recovery",
+                    )
+                    try:
+                        # Recovery can wait on upstream admission or a pooled key.
+                        # Keep-alive frames are only safe once this response is
+                        # already committed; before that, the HTTP boundary must
+                        # stay free to report a failure as typed non-2xx JSON.
+                        while decision.committed and not await _settled_within(
+                            recovery_task, KEEPALIVE_INTERVAL_SECONDS
+                        ):
+                            yield anthropic_ping_frame()
+                        recovery_events = await recovery_task
                     except Exception as recovery_error:
                         trace_event(
                             stage="provider",
@@ -621,6 +720,8 @@ class _OpenAIChatStreamRunner:
                             exc_type=type(recovery_error).__name__,
                         )
                         recovery_events = None
+                    finally:
+                        await _discard_pending_task(recovery_task)
                     if recovery_events is not None:
                         for event in recovery.flush_uncommitted(decision):
                             yield event

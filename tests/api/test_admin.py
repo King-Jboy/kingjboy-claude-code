@@ -1221,6 +1221,37 @@ def test_admin_local_provider_status_reports_reachable(monkeypatch, tmp_path):
     assert {provider["status"] for provider in providers} == {"reachable"}
 
 
+def test_admin_key_pool_status_reports_counts_without_key_material(
+    monkeypatch, tmp_path
+):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_test_app()
+
+    response = _local_client(app).get("/admin/api/providers/key-pools")
+
+    assert response.status_code == 200
+    pools = response.json()["key_pools"]
+    assert isinstance(pools, dict)
+    for status in pools.values():
+        assert set(status) == {
+            "size",
+            "ready",
+            "cooling",
+            "retired",
+            "soonest_ready_in",
+        }
+
+
+def test_admin_key_pool_status_is_loopback_only(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    app = create_test_app()
+
+    remote_client = TestClient(app, client=("203.0.113.10", 50000))
+
+    assert remote_client.get("/admin/api/providers/key-pools").status_code == 403
+
+
 def test_admin_launch_url_uses_loopback_for_wildcard_host():
     settings = Settings.model_construct(host="0.0.0.0", port=8082)
 

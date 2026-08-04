@@ -1,13 +1,10 @@
 """Provider-owned admission, concurrency, and coordinated retry lifecycle."""
 
 import asyncio
-import math
 import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import TypeVar
 
 from loguru import logger
@@ -18,6 +15,7 @@ from free_claude_code.providers.failure_policy import (
     ProviderFailureOverride,
     ProviderRecoveryExhausted,
     is_retryable_provider_error,
+    retry_after_seconds,
     retryable_upstream_status,
 )
 
@@ -681,7 +679,7 @@ class ProviderAdmissionController:
         exponent = max(0, attempt - 1)
         backoff = min(self._base_delay * (2**exponent), self._max_delay)
         backoff += random.uniform(0, self._jitter)
-        retry_after = _retry_after_seconds(error)
+        retry_after = retry_after_seconds(error)
         return max(backoff, retry_after or 0.0)
 
     @staticmethod
@@ -691,27 +689,3 @@ class ProviderAdmissionController:
         if status is not None:
             return f"Upstream server error ({status})"
         return f"Provider transient error ({type(error).__name__})"
-
-
-def _retry_after_seconds(error: Exception) -> float | None:
-    response = getattr(error, "response", None)
-    headers = getattr(response, "headers", None)
-    if headers is None:
-        return None
-    value = headers.get("retry-after")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    stripped = value.strip()
-    try:
-        seconds = float(stripped)
-    except ValueError:
-        try:
-            retry_at = parsedate_to_datetime(stripped)
-        except TypeError, ValueError, OverflowError:
-            return None
-        if retry_at.tzinfo is None:
-            retry_at = retry_at.replace(tzinfo=UTC)
-        seconds = (retry_at - datetime.now(UTC)).total_seconds()
-    if not math.isfinite(seconds):
-        return None
-    return max(0.0, seconds)

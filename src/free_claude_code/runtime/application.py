@@ -238,6 +238,10 @@ class ApplicationRuntime:
             },
         }
 
+    def key_pool_status(self) -> dict[str, dict[str, Any]]:
+        """Return pooled-credential health per provider, keys never included."""
+        return self.provider_manager.key_pool_status()
+
     async def test_provider(self, provider_id: str) -> dict[str, Any]:
         lease = await self.provider_manager.acquire()
         try:

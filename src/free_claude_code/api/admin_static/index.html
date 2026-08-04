@@ -3,28 +3,80 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>Free Claude Code Admin</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/admin/assets/admin.css" />
+    <script>
+      // Applied before first paint so a stored preference never flashes the
+      // other theme. Mirrors the toggle in admin.js.
+      try {
+        const stored = localStorage.getItem("fcc-admin-theme");
+        if (stored === "light" || stored === "dark") {
+          document.documentElement.dataset.theme = stored;
+        }
+      } catch (error) {
+        // Private-mode storage denial leaves the system preference in charge.
+      }
+    </script>
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">FC</div>
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 1024 1024" fill="none">
+              <g
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="72"
+              >
+                <path d="M220 300h170c24 0 38 9 52 28l130 162c12 15 22 22 46 22h48" />
+                <path d="M220 512h446" />
+                <path d="M220 724h170c24 0 38-9 52-28l130-162c12-15 22-22 46-22h48" />
+              </g>
+              <g fill="currentColor">
+                <circle cx="220" cy="300" r="66" />
+                <circle cx="220" cy="512" r="66" />
+                <circle cx="220" cy="724" r="66" />
+              </g>
+            </svg>
+          </div>
           <div>
             <h1>Free Claude Code</h1>
-            <p>Server Control</p>
+            <p>Server control</p>
           </div>
         </div>
+
         <nav id="sectionNav" class="section-nav" aria-label="Admin views"></nav>
+
+        <div class="sidebar-foot">
+          <div
+            id="themeSwitch"
+            class="theme-switch"
+            role="group"
+            aria-label="Colour theme"
+          >
+            <button class="theme-option" type="button" data-theme-choice="system">
+              Auto
+            </button>
+            <button class="theme-option" type="button" data-theme-choice="light">
+              Light
+            </button>
+            <button class="theme-option" type="button" data-theme-choice="dark">
+              Dark
+            </button>
+          </div>
+          <p class="sidebar-note">
+            Reachable from this machine only. Applying writes the managed env file.
+          </p>
+        </div>
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <div>
-            <h2 id="pageTitle">Providers</h2>
-          </div>
+          <h2 id="pageTitle">Providers</h2>
         </header>
 
         <div id="adminViews" class="admin-views">
@@ -43,12 +95,17 @@
               </div>
               <div id="connectedAccountGrid" class="provider-grid"></div>
             </section>
+
             <section class="provider-strip" aria-label="Provider status">
               <div class="strip-header">
-                <h3>Providers</h3>
+                <div>
+                  <h3>Providers</h3>
+                  <p>Configuration state for every supported upstream.</p>
+                </div>
               </div>
               <div id="providerGrid" class="provider-grid"></div>
             </section>
+
             <div
               id="providersSections"
               class="form-sections"
@@ -79,7 +136,7 @@
           <strong id="dirtyState">No changes</strong>
           <span id="configPath"></span>
         </div>
-        <div id="messageArea" class="message-area"></div>
+        <div id="messageArea" class="message-area" role="status" aria-live="polite"></div>
         <div class="action-buttons">
           <button id="validateButton" class="secondary-button" type="button">Validate</button>
           <button id="applyButton" class="primary-button" type="button" disabled>Apply</button>

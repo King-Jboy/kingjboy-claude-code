@@ -3,9 +3,11 @@
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
+from free_claude_code.config.env_migrations import RETIRED_ENV_KEYS
 from free_claude_code.config.paths import managed_env_path
 from free_claude_code.config.settings import Settings
 
@@ -24,6 +26,7 @@ class PreparedAdminUpdate:
     errors: tuple[str, ...]
     pending_fields: tuple[str, ...]
     path: Path
+    unmanaged_values: dict[str, str] = dataclass_field(default_factory=dict)
 
     @property
     def valid(self) -> bool:
@@ -33,7 +36,7 @@ class PreparedAdminUpdate:
         return {
             "valid": self.valid,
             "errors": list(self.errors),
-            "env_preview": render_env_file(self.target_values, mask_secrets=True),
+            "env_preview": self._env_preview(),
         }
 
     def applied_response(self) -> dict[str, Any]:
@@ -46,13 +49,17 @@ class PreparedAdminUpdate:
             "applied": True,
             "valid": True,
             "errors": [],
-            "env_preview": render_env_file(
-                self.target_values,
-                mask_secrets=True,
-            ),
+            "env_preview": self._env_preview(),
             "path": str(self.path),
             "pending_fields": list(self.pending_fields),
         }
+
+    def _env_preview(self) -> str:
+        return render_env_file(
+            self.target_values,
+            mask_secrets=True,
+            unmanaged=self.unmanaged_values,
+        )
 
 
 def target_values_with_updates(updates: Mapping[str, Any]) -> dict[str, str]:
@@ -86,6 +93,25 @@ def target_values_with_updates(updates: Mapping[str, Any]) -> dict[str, str]:
     for field in FIELDS:
         values.setdefault(field.key, field.default)
     return values
+
+
+def unmanaged_values_from_managed_file() -> dict[str, str]:
+    """Return managed-file entries the Admin manifest does not own.
+
+    The rendered file is built from ``FIELDS`` alone, so anything hand-added to
+    ``~/.fcc/.env`` — a proxy variable, or a key belonging to a newer manifest
+    than this build — would be dropped on the next save. Carrying these through
+    keeps a save from destroying settings the Admin UI never claimed.
+
+    Retired FCC settings are the deliberate exception: the rewrite is what
+    finally clears them, so they stay excluded.
+    """
+
+    return {
+        key: value
+        for key, value in dotenv_values_from_file(managed_env_path()).items()
+        if key not in FIELD_BY_KEY and key not in RETIRED_ENV_KEYS
+    }
 
 
 def effective_values_for_validation(
@@ -157,6 +183,7 @@ def prepare_admin_update(updates: Mapping[str, Any]) -> PreparedAdminUpdate:
         errors=tuple(errors),
         pending_fields=pending_fields,
         path=managed_env_path(),
+        unmanaged_values=unmanaged_values_from_managed_file(),
     )
 
 
@@ -171,7 +198,10 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
     temp_path = path.with_suffix(path.suffix + ".tmp")
     try:
         temp_path.write_text(
-            render_env_file(prepared.target_values),
+            render_env_file(
+                prepared.target_values,
+                unmanaged=prepared.unmanaged_values,
+            ),
             encoding="utf-8",
         )
         os.replace(temp_path, path)
@@ -193,8 +223,18 @@ def quote_env_value(value: str) -> str:
     return value
 
 
-def render_env_file(values: Mapping[str, str], *, mask_secrets: bool = False) -> str:
-    """Render a complete grouped env file."""
+def render_env_file(
+    values: Mapping[str, str],
+    *,
+    mask_secrets: bool = False,
+    unmanaged: Mapping[str, str] | None = None,
+) -> str:
+    """Render a complete grouped env file.
+
+    ``unmanaged`` entries are appended verbatim so hand-added variables survive
+    a save. They are always masked in previews because the manifest carries no
+    secret flag for them.
+    """
 
     lines: list[str] = [
         "# Managed by Free Claude Code /admin.",
@@ -214,5 +254,14 @@ def render_env_file(values: Mapping[str, str], *, mask_secrets: bool = False) ->
             if mask_secrets and field.secret and value:
                 value = MASKED_SECRET
             lines.append(f"{field.key}={quote_env_value(value)}")
+        lines.append("")
+
+    if unmanaged:
+        lines.append("# Not managed by the Admin UI; preserved as written.")
+        for key in sorted(unmanaged):
+            value = unmanaged[key]
+            if mask_secrets and value:
+                value = MASKED_SECRET
+            lines.append(f"{key}={quote_env_value(value)}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

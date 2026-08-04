@@ -35,6 +35,15 @@ def format_sse_event(event_type: str, data: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def anthropic_ping_frame() -> str:
+    """Serialize an Anthropic ``ping`` keep-alive event.
+
+    Consumers ignore unrecognized event types, so a ping is inert for readers
+    that do not need it while keeping a committed stream from going silent.
+    """
+    return format_sse_event("ping", {"type": "ping"})
+
+
 def anthropic_terminal_error_frame(
     message: str, *, error_type: str = "api_error"
 ) -> str:
