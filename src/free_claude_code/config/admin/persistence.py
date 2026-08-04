@@ -210,6 +210,13 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
     return prepared.applied_response()
 
 
+# Characters that make dotenv read a bare value as syntax rather than data.
+# The apostrophe matters as much as the double quote: dotenv opens a
+# single-quoted string on it, so a bare "'" was an unparseable line that
+# dropped the value, and a bare "'x'" silently came back as "x".
+_ENV_CHARS_REQUIRING_QUOTES = ('"', "'", "#", "=", "$")
+
+
 def quote_env_value(value: str) -> str:
     """Quote a value when dotenv syntax requires it."""
 
@@ -217,7 +224,7 @@ def quote_env_value(value: str) -> str:
         return ""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     if any(char.isspace() for char in value) or any(
-        char in value for char in ('"', "#", "=", "$")
+        char in value for char in _ENV_CHARS_REQUIRING_QUOTES
     ):
         return f'"{escaped}"'
     return value
