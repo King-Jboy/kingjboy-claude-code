@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Free Claude Code</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="brand">Free Claude Code</span>
+      <span id="status" class="status" data-state="unknown">not connected</span>
+      <button id="settings-toggle" class="ghost" type="button" title="Connection settings">
+        Settings
+      </button>
+    </header>
+
+    <form id="settings" class="settings" hidden>
+      <label>
+        Proxy URL
+        <input id="base-url" type="url" placeholder="http://127.0.0.1:8081" required />
+      </label>
+      <label>
+        Auth token
+        <input id="auth-token" type="password" placeholder="blank if ANTHROPIC_AUTH_TOKEN is unset" />
+      </label>
+      <label>
+        Model
+        <select id="model"></select>
+      </label>
+      <label class="checkbox">
+        <input id="page-tools" type="checkbox" checked />
+        Let the model read the active tab
+      </label>
+      <div class="settings-actions">
+        <button id="connect" type="submit">Connect</button>
+        <span id="settings-note" class="note"></span>
+      </div>
+    </form>
+
+    <main id="transcript" class="transcript" aria-live="polite"></main>
+
+    <form id="composer" class="composer">
+      <textarea
+        id="prompt"
+        rows="3"
+        placeholder="Ask about this page… (Enter to send, Shift+Enter for a newline)"
+      ></textarea>
+      <div class="composer-actions">
+        <button id="clear" class="ghost" type="button">Clear</button>
+        <button id="send" type="submit">Send</button>
+      </div>
+    </form>
+
+    <script src="sidepanel.js" type="module"></script>
+  </body>
+</html>

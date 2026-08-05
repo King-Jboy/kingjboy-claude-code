@@ -39,6 +39,17 @@ def context(argv: Sequence[str] | None = None) -> None:
     raise SystemExit(run(argv))
 
 
+def extension(argv: Sequence[str] | None = None) -> None:
+    """Locate the Chrome side panel (registered as ``fcc-extension``)."""
+    if _print_version_if_requested(argv):
+        return
+
+    # Imported lazily so --version stays a metadata-only path.
+    from free_claude_code.cli.extension import run
+
+    raise SystemExit(run(argv))
+
+
 def _print_version_if_requested(argv: Sequence[str] | None) -> bool:
     args = sys.argv[1:] if argv is None else argv
     if "--version" not in args:

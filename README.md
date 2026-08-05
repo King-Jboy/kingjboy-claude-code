@@ -59,6 +59,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 - Diagnose a broken setup in one command with `fcc-doctor`.
 - Keep streaming, tool use, reasoning, and image input across compatible models.
 - Connect Claude Code and Codex in VS Code or Claude Code through JetBrains ACP.
+- Debug the page you are on from a Chrome side panel with `fcc-extension`.
 - Optionally run Claude Code sessions through Discord or Telegram with voice-note transcription.
 - Protect the local proxy with optional token authentication.
 
@@ -426,6 +427,46 @@ It exits non-zero if anything failed, so you can gate a script on it. Doctor nev
 For terminal use, start `fcc-server`, then run `fcc-claude`, `fcc-codex`, or `fcc-pi`. Use the guides below for editor integrations.
 
 <details>
+<summary><strong>Chrome side panel</strong></summary>
+
+A Manifest V3 extension that puts a chat panel beside the page you are working on, with tools that read the page for you. Useful for front-end debugging: it can read the DOM and the tab's console output without you pasting anything.
+
+Print the directory to load and the details to paste:
+
+```bash
+fcc-extension
+```
+
+Then load it once:
+
+1. Open `chrome://extensions`
+2. Turn on **Developer mode**
+3. **Load unpacked**, and choose the directory `fcc-extension` printed
+
+Open the panel from the toolbar. It auto-connects to the proxy at the saved URL and fills its model picker from `/v1/models`, so `MODEL_CATALOG_SCOPE` and `PINNED_MODELS` shape the dropdown exactly as they do in the Admin UI.
+
+If your proxy has `ANTHROPIC_AUTH_TOKEN` set, `fcc-extension` masks it by default; add `--show-token` to print it. Leave the panel's token field blank when the variable is unset.
+
+**Tools the model can call**
+
+| Tool | What it reads |
+| --- | --- |
+| `page_info` | URL, title, viewport of the active tab |
+| `read_page` | Rendered text or raw HTML, whole document or one CSS selector |
+| `read_console` | Console output and uncaught errors recorded since page load |
+
+Untick **Let the model read the active tab** in the panel's settings to send no tools at all.
+
+**Limits worth knowing**
+
+- **It cannot run shell commands.** A browser extension has no way to spawn a process. The panel reads pages; the terminal agents (`fcc-claude` and friends) run commands.
+- **The console recorder attaches at page load.** Tabs already open when you installed the extension record nothing until you reload them.
+- **`chrome://`, the Web Store, and other extensions are closed to it** by Chrome policy, not by choice.
+- **Codespaces and other web IDEs** are readable as pages, but their terminals run on a remote container the extension cannot reach.
+
+</details>
+
+<details>
 <summary><strong>Claude Code in VS Code</strong></summary>
 
 Install the [Claude Code extension](https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code). Open VS Code's user settings as JSON and add:
@@ -703,6 +744,8 @@ Verified live against both providers: 20 concurrent requests spread across all 1
 **A model list you curate.** `MODEL_CATALOG_SCOPE=configured` narrows the client and Admin model lists to what you route to, and `PINNED_MODELS` is a shortlist you add to and remove from freely. See [Your Own Model List](#your-own-model-list).
 
 **A context-window table you can regenerate.** `fcc-context` measures your routable models and records them in `~/.fcc/context.md`, reading published metadata where a provider offers it. See [Finding A Model's Context Window](#finding-a-models-context-window).
+
+**A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page, with tools that read the DOM and the tab's console. It cannot run shell commands — no extension can — so it complements the terminal agents rather than replacing them. See [Connect Your Client](#connect-your-client).
 
 **`count_tokens` off the event loop.** The token-count endpoint ran tiktoken inline in the async handler, stalling every in-flight stream for the duration (~90ms on a 100k-token request). It now runs in a worker thread.
 
