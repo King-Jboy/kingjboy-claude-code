@@ -746,6 +746,8 @@ Windows PowerShell:
 
 Everything below is additional to upstream [Alishahryar1/free-claude-code](https://github.com/Alishahryar1/free-claude-code).
 
+**A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page you are developing, with tools that read the DOM and that tab's console — so debugging a page no longer means pasting a stack trace into a terminal. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host. That path is gated behind a per-extension registration, a `BROWSER_SHELL_ENABLED` switch, per-command approval in the panel, and a directory confinement — because the obvious alternative, an exec endpoint on `fcc-server`, would be unauthenticated LAN-reachable RCE given that server binds `0.0.0.0` by default and skips auth when `ANTHROPIC_AUTH_TOKEN` is blank. See [Connect Your Client](#connect-your-client).
+
 **Credential pooling.** `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS` accept a JSON list of keys that behave as one high-throughput, self-healing virtual key. Dead keys are walked past, rate-limited keys are cooled for exactly as long as the provider asked, and repeat offenders back off on an escalating schedule. See [Key Pools](#key-pools-nvidia-nim-and-openrouter).
 
 Verified live against both providers: 20 concurrent requests spread across all 14 OpenRouter keys, and a request still succeeded with three dead keys sitting in front of the working ones.
@@ -761,8 +763,6 @@ Verified live against both providers: 20 concurrent requests spread across all 1
 **A model list you curate.** `MODEL_CATALOG_SCOPE=configured` narrows the client and Admin model lists to what you route to, and `PINNED_MODELS` is a shortlist you add to and remove from freely. See [Your Own Model List](#your-own-model-list).
 
 **A context-window table you can regenerate.** `fcc-context` measures your routable models and records them in `~/.fcc/context.md`, reading published metadata where a provider offers it. See [Finding A Model's Context Window](#finding-a-models-context-window).
-
-**A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page, with tools that read the DOM and the tab's console. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host — gated behind a registration step, a `BROWSER_SHELL_ENABLED` switch, per-command approval, and a directory confinement, because the obvious alternative of an exec endpoint on `fcc-server` would be unauthenticated LAN-reachable RCE. See [Connect Your Client](#connect-your-client).
 
 **`count_tokens` off the event loop.** The token-count endpoint ran tiktoken inline in the async handler, stalling every in-flight stream for the duration (~90ms on a 100k-token request). It now runs in a worker thread.
 
