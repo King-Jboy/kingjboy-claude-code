@@ -11,6 +11,7 @@ from free_claude_code.cli.process_registry import (
     register_pid,
     unregister_pid,
 )
+from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 from free_claude_code.core.trace import trace_event
 
 from .claude import (
@@ -37,6 +38,7 @@ class ManagedClaudeSession:
         claude_bin: str = "claude",
         auth_token: str = "",
         *,
+        context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW,
         log_raw_cli_diagnostics: bool = False,
     ):
         self.config = ManagedClaudeConfig(
@@ -45,6 +47,7 @@ class ManagedClaudeSession:
             allowed_dirs=[os.path.normpath(d) for d in (allowed_dirs or [])],
             claude_bin=claude_bin,
             auth_token=auth_token,
+            context_window=context_window,
         )
         self.workspace = self.config.workspace_path
         self.proxy_root_url = self.config.proxy_root_url

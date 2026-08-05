@@ -1,3 +1,4 @@
+import inspect
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -453,6 +454,18 @@ def test_count_tokens_endpoint(client: TestClient):
     assert response.status_code == 200
     assert "input_tokens" in response.json()
     assert response.headers["request-id"].startswith("req_")
+
+
+def test_count_tokens_runs_off_the_event_loop():
+    """Token counting is pure CPU work, so the route must not be a coroutine.
+
+    An ``async def`` here would run tiktoken inline on the event loop and stall
+    every in-flight stream for as long as the count takes (~90ms at 100k
+    tokens). Declaring it ``def`` hands it to Starlette's worker threadpool.
+    """
+    from free_claude_code.api.routes import count_tokens
+
+    assert not inspect.iscoroutinefunction(count_tokens)
 
 
 def test_stop_endpoint_no_workflow_no_cli_503(client: TestClient):

@@ -5,7 +5,11 @@ from typing import Literal
 from pydantic import BaseModel
 
 from free_claude_code.application.ports import RequestRuntimePort
-from free_claude_code.config.model_refs import configured_chat_model_refs
+from free_claude_code.config.model_refs import (
+    ModelCatalogScope,
+    configured_chat_model_refs,
+    pinned_model_refs,
+)
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.gateway_model_ids import (
     gateway_model_id,
@@ -80,7 +84,14 @@ SUPPORTED_CLAUDE_MODELS = [
 def build_models_list_response(
     settings: Settings, runtime: RequestRuntimePort
 ) -> ModelsListResponse:
-    """Return configured, cached, and compatibility model ids."""
+    """Return configured, pinned, cached, and compatibility model ids.
+
+    Discovered models are omitted under ``MODEL_CATALOG_SCOPE=configured``. A
+    two-provider setup can discover several hundred ids of unknown health, and
+    a client model picker listing all of them buries the routes that work.
+    ``PINNED_MODELS`` is how a scoped list grows beyond the five routing slots,
+    so it is always listed.
+    """
     models: list[ModelResponse] = []
     seen: set[str] = set()
 
@@ -95,13 +106,25 @@ def build_models_list_response(
             supports_thinking=supports_thinking,
         )
 
-    for model_info in runtime.cached_prefixed_model_infos():
+    for pinned in pinned_model_refs(settings):
+        provider_id, _, model_id = pinned.partition("/")
         _append_provider_model_variants(
             models,
             seen,
-            model_info.model_id,
-            supports_thinking=model_info.supports_thinking,
+            pinned,
+            supports_thinking=runtime.cached_model_supports_thinking(
+                provider_id, model_id
+            ),
         )
+
+    if settings.model_catalog_scope is ModelCatalogScope.ALL:
+        for model_info in runtime.cached_prefixed_model_infos():
+            _append_provider_model_variants(
+                models,
+                seen,
+                model_info.model_id,
+                supports_thinking=model_info.supports_thinking,
+            )
 
     for model in SUPPORTED_CLAUDE_MODELS:
         _append_unique_model(models, seen, model)

@@ -25,6 +25,10 @@ from free_claude_code.config.admin.manifest import FIELDS
 from free_claude_code.config.admin.status import provider_config_status
 from free_claude_code.config.admin.values import load_value_state
 from free_claude_code.config.api_keys import parse_api_key_list
+from free_claude_code.config.context_windows import (
+    CONTEXT_WINDOWS_FILENAME,
+    resolve_client_context_window,
+)
 from free_claude_code.config.model_refs import parse_model_name, parse_provider_type
 from free_claude_code.config.paths import managed_env_path
 from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
@@ -143,6 +147,37 @@ def check_providers(settings: Settings) -> Iterator[Finding]:
             )
 
 
+def check_context_window(settings: Settings) -> Iterator[Finding]:
+    """Report the context window advertised to launched client CLIs.
+
+    Saying where the number came from is the point: the same value means very
+    different things when it was measured for your model versus when it is the
+    conservative fallback nothing matched.
+    """
+    resolved = resolve_client_context_window(
+        settings, configured=settings.client_context_window
+    )
+    detail = f"{resolved.value:,} tokens"
+    if resolved.source == CONTEXT_WINDOWS_FILENAME:
+        yield Finding(
+            Level.OK,
+            "context window",
+            f"{detail} (from {CONTEXT_WINDOWS_FILENAME} for {resolved.model_ref})",
+        )
+        return
+    if resolved.source == "default":
+        yield Finding(
+            Level.OK,
+            "context window",
+            f"{detail} (default; no {CONTEXT_WINDOWS_FILENAME} entry for your "
+            "models -- run fcc-context)",
+        )
+        return
+    yield Finding(
+        Level.OK, "context window", f"{detail} (set by CLIENT_CONTEXT_WINDOW)"
+    )
+
+
 def check_key_pools(settings: Settings) -> Iterator[Finding]:
     """Report the parsed size of every configured credential pool."""
     env_names = {field.settings_attr: field.key for field in FIELDS}
@@ -233,6 +268,7 @@ def collect_findings(settings: Settings, *, offline: bool) -> list[Finding]:
         *check_port(settings),
         *check_claude_cli(),
         *check_providers(settings),
+        *check_context_window(settings),
         *check_key_pools(settings),
     ]
     if not offline:

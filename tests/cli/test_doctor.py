@@ -10,6 +10,7 @@ import respx
 
 from free_claude_code.cli import doctor
 from free_claude_code.cli.doctor import Finding, Level
+from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 from free_claude_code.config.settings import Settings
 
 
@@ -18,6 +19,66 @@ def _settings(**overrides: Any) -> Settings:
     values: dict[str, Any] = {"_env_file": None}
     values.update(overrides)
     return Settings(**values)
+
+
+def _home_with_context_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str
+) -> None:
+    """Point the context-window lookup at a temp home holding this table."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    table = tmp_path / ".fcc" / "context.md"
+    table.parent.mkdir(parents=True, exist_ok=True)
+    table.write_text(body, encoding="utf-8")
+
+
+def test_a_recorded_window_is_reported_with_the_model_it_came_from(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _home_with_context_table(
+        monkeypatch,
+        tmp_path,
+        "## nvidia_nim\n\n| Model | Context | Source |\n| --- | ---: | --- |\n"
+        "| `deepseek-ai/deepseek-v4-flash` | 1,048,576 | measured |\n",
+    )
+    settings = _settings(model="nvidia_nim/deepseek-ai/deepseek-v4-flash")
+
+    (finding,) = list(doctor.check_context_window(settings))
+
+    assert finding.level is Level.OK
+    assert "1,048,576 tokens" in finding.detail
+    assert "context.md" in finding.detail
+    assert "nvidia_nim/deepseek-ai/deepseek-v4-flash" in finding.detail
+
+
+def test_an_unrecorded_model_falls_back_and_says_how_to_fix_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The fallback is silent capacity loss unless doctor names the remedy.
+    _home_with_context_table(monkeypatch, tmp_path, "## nvidia_nim\n")
+    settings = _settings(model="nvidia_nim/never/measured")
+
+    (finding,) = list(doctor.check_context_window(settings))
+
+    assert f"{DEFAULT_CLIENT_CONTEXT_WINDOW:,} tokens" in finding.detail
+    assert "fcc-context" in finding.detail
+
+
+def test_an_explicit_window_overrides_the_recorded_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _home_with_context_table(
+        monkeypatch,
+        tmp_path,
+        "## nvidia_nim\n\n| Model | Context | Source |\n| --- | ---: | --- |\n"
+        "| `a/b` | 1,000,000 | measured |\n",
+    )
+    # Deliberately not the fallback value, so a regression that ignored the
+    # setting could not pass by coincidence.
+    settings = _settings(model="nvidia_nim/a/b", CLIENT_CONTEXT_WINDOW=300000)
+
+    (finding,) = list(doctor.check_context_window(settings))
+
+    assert finding.detail == "300,000 tokens (set by CLIENT_CONTEXT_WINDOW)"
 
 
 def test_a_configured_pool_reports_its_parsed_size() -> None:

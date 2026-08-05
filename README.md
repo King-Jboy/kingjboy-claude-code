@@ -264,6 +264,92 @@ Use the tag shown by `ollama list` with the `ollama/` prefix. `OLLAMA_BASE_URL` 
 
 For example, route Opus to `nvidia_nim/nvidia/nemotron-3-super-120b-a12b`, Sonnet to `open_router/openrouter/free`, Haiku to `lmstudio/qwen3.5-coder`, and keep `MODEL` on `zai/glm-5.2`.
 
+### Client Context Window
+
+The context window is the token budget FCC hands to a CLI it launches. Claude Code compacts against exactly this number, so it decides when your session starts dropping history.
+
+**Leave Client Context Window (`CLIENT_CONTEXT_WINDOW`) blank and it resolves itself** from the routed model's row in `~/.fcc/context.md`. Switch `MODEL` and the window switches with it — there is no second setting to keep in sync. Generate that table once with [the probe script](#finding-a-models-context-window):
+
+```bash
+fcc-context
+```
+
+The number cannot be discovered at request time, which is why a recorded table exists at all: most OpenAI-compatible `/v1/models` responses carry no context length, and NVIDIA NIM returns only `id`, `object`, `created`, and `owned_by`.
+
+Resolution order:
+
+| Situation | Window used |
+| --- | --- |
+| `CLIENT_CONTEXT_WINDOW` set to a number | that number, always |
+| Blank, routed model is in `context.md` | the recorded value |
+| Blank, several routes recorded | the **smallest**, since one number covers every tier the client can select |
+| Blank, nothing recorded | `262144` — a guess, so run `fcc-context` instead of relying on it |
+
+`fcc-doctor` prints the window and where it came from:
+
+```
+[  ok  ] context window: 262,144 tokens (from context.md for nvidia_nim/deepseek-ai/deepseek-v4-pro)
+```
+
+> The VS Code and JetBrains integrations below launch Claude Code themselves, so they never read any of this. Set `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in their own config to the value `fcc-doctor` reports.
+
+### Your Own Model List
+
+Two configured providers can advertise several hundred models, and a client model picker lists each one twice (thinking and no-thinking). Most are not models you would route to, and some no longer serve requests.
+
+Two settings turn that into a shortlist you control:
+
+**Model List Scope** (`MODEL_CATALOG_SCOPE`) — set it to **Only my configured models** and both `/v1/models` and the Admin pickers stop listing discovered models.
+
+**My Models** (`PINNED_MODELS`) — a JSON list of `provider/model` refs that are *always* offered. This is what makes the shortlist yours rather than just your five routing slots:
+
+```json
+[
+  "nvidia_nim/deepseek-ai/deepseek-v4-flash",
+  "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
+  "open_router/z-ai/glm-5.2:free"
+]
+```
+
+Add a line to add a model, delete a line to remove one. Entries do not have to be discovered yet — a slug you type is selectable immediately, which is how you reach a model the provider added since your last refresh.
+
+So a scoped list contains your `MODEL` and `MODEL_*` routes, plus everything in **My Models**, plus the Claude alias ids clients need. Nothing is locked away: the Admin model fields still accept any slug you type, and **Refresh Models** lists everything your providers report whatever the scope says.
+
+### Finding A Model's Context Window
+
+`fcc-context` fills in `~/.fcc/context.md`, the table FCC reads to resolve the window automatically:
+
+```bash
+fcc-context
+```
+
+**The table holds exactly the models you can route to** — everything in `PINNED_MODELS` plus your `MODEL` / `MODEL_*` routes, and nothing else. It stays a short list of models you actually use rather than a catalogue that only grows.
+
+So the loop is: add a model to **My Models**, re-run, its window joins the table. Unpin one and it leaves on the next run. Models already recorded are not probed again, so adding a model costs one probe rather than a full sweep:
+
+```
+nvidia_nim: no published context length, probing
+  7 already known, probing 1
+    stepfun-ai/step-3.7-flash                        262,144
+```
+
+It reads the number where a provider publishes it and measures it where one does not. OpenRouter reports `context_length` for every model, so those are instant and need no key. NVIDIA NIM publishes nothing, so each model gets one deliberately oversized request and the script reads the ceiling out of the rejection:
+
+```
+This model's maximum context length is 262144 tokens. However, your messages
+resulted in 360007 tokens. Please reduce the length of the messages.
+```
+
+That costs no inference, because the probe deliberately overshoots — a rejection states the ceiling no matter how far over you were. Only a model that *accepts* the probe has to be re-probed larger.
+
+```bash
+fcc-context --all        # whole catalog, slow
+fcc-context --refresh    # re-measure recorded models
+fcc-context --models nvidia_nim/meta/llama-3.3-70b-instruct
+```
+
+`--provider` limits what gets re-measured, not what the table contains, so an OpenRouter-only run leaves your NVIDIA NIM rows alone. Keys come from `~/.fcc/.env` and a configured pool is used round-robin, so one key's rate limit does not stall the run. A model a provider lists but does not serve to your account is recorded with the reason instead of a number — on NVIDIA NIM that turns out to be most of the catalog, which is why `--all` is rarely worth running.
+
 ### Reasoning Control
 
 Open **Admin UI → Model Config → Reasoning** and select the behavior you want.
@@ -350,14 +436,14 @@ Install the [Claude Code extension](https://marketplace.visualstudio.com/items?i
   { "name": "ANTHROPIC_BASE_URL", "value": "http://localhost:8082" },
   { "name": "ANTHROPIC_AUTH_TOKEN", "value": "freecc" },
   { "name": "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "value": "1" },
-  { "name": "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "value": "190000" },
+  { "name": "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "value": "262144" },
   { "name": "DISABLE_AUTOUPDATER", "value": "1" },
   { "name": "DISABLE_FEEDBACK_COMMAND", "value": "1" },
   { "name": "DISABLE_ERROR_REPORTING", "value": "1" }
 ]
 ```
 
-Match the port and authentication token to the Admin UI, then reload the extension.
+Match the port and authentication token to the Admin UI, then reload the extension. Match `CLAUDE_CODE_AUTO_COMPACT_WINDOW` to **Client Context Window** in the Admin UI — these editor integrations do not go through `fcc-claude`, so they cannot read the setting themselves.
 
 </details>
 
@@ -433,14 +519,14 @@ Set the environment for `acp.registry.claude-acp`:
   "ANTHROPIC_BASE_URL": "http://localhost:8082",
   "ANTHROPIC_AUTH_TOKEN": "freecc",
   "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
-  "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "190000",
+  "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "262144",
   "DISABLE_AUTOUPDATER": "1",
   "DISABLE_FEEDBACK_COMMAND": "1",
   "DISABLE_ERROR_REPORTING": "1"
 }
 ```
 
-Match the port and token to the Admin UI, then restart the IDE.
+Match the port and token to the Admin UI, then restart the IDE. Match `CLAUDE_CODE_AUTO_COMPACT_WINDOW` to **Client Context Window** in the Admin UI, as above.
 
 </details>
 
@@ -611,6 +697,14 @@ Verified live against both providers: 20 concurrent requests spread across all 1
 **Pool visibility in the Admin UI.** Each pooled provider card shows live key health, so silent capacity loss is visible instead of showing up as unexplained slowness.
 
 **Admin saves no longer delete unrecognised variables.** Upstream rewrites `~/.fcc/.env` from its field manifest alone, which silently dropped any variable it did not own. Hand-added variables are now preserved; genuinely retired settings are still cleaned up.
+
+**A context window that follows the model.** Upstream hardcodes the launched CLI's context budget at 190,000 tokens. On a larger model that silently throws the difference away — DeepSeek V4 Flash on NVIDIA NIM accepts 1,048,576, so five sixths of the context went unused and sessions compacted early. The window is now read from the routed model's measured entry, so switching `MODEL` switches it. See [Client Context Window](#client-context-window).
+
+**A model list you curate.** `MODEL_CATALOG_SCOPE=configured` narrows the client and Admin model lists to what you route to, and `PINNED_MODELS` is a shortlist you add to and remove from freely. See [Your Own Model List](#your-own-model-list).
+
+**A context-window table you can regenerate.** `fcc-context` measures your routable models and records them in `~/.fcc/context.md`, reading published metadata where a provider offers it. See [Finding A Model's Context Window](#finding-a-models-context-window).
+
+**`count_tokens` off the event loop.** The token-count endpoint ran tiktoken inline in the async handler, stalling every in-flight stream for the duration (~90ms on a 100k-token request). It now runs in a worker thread.
 
 **Claude-Code-only installer.** `install.sh` / `install.ps1` no longer offer to install Codex or Pi. The `fcc-codex` and `fcc-pi` entry points still ship and still work if you install those agents yourself.
 

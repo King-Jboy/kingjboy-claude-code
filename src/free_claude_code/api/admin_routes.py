@@ -18,7 +18,11 @@ from free_claude_code.application.model_metadata import ProviderModelRefreshResu
 from free_claude_code.config.admin.manifest import FIELD_BY_KEY
 from free_claude_code.config.admin.persistence import validate_updates
 from free_claude_code.config.admin.values import load_config_response
-from free_claude_code.config.model_refs import configured_chat_model_refs
+from free_claude_code.config.model_refs import (
+    ModelCatalogScope,
+    configured_chat_model_refs,
+    pinned_model_refs,
+)
 from free_claude_code.config.provider_catalog import (
     PROVIDER_CATALOG,
     ProviderAuthKind,
@@ -253,21 +257,28 @@ async def refresh_models(
 ):
     require_loopback_admin(request)
     result = await services.admin.refresh_models()
-    return _model_options(services, refresh_result=result)
+    # Refreshing is an explicit "show me what the providers have" action, so it
+    # ignores MODEL_CATALOG_SCOPE. That keeps the scoped default short without
+    # stranding anyone who wants to switch to a model they have not configured.
+    return _model_options(services, refresh_result=result, include_discovered=True)
 
 
 def _model_options(
     services: ApiServices,
     *,
     refresh_result: ProviderModelRefreshResult | None = None,
+    include_discovered: bool | None = None,
 ) -> dict[str, list[str]]:
-    configured = {
-        ref.model_ref
-        for ref in configured_chat_model_refs(services.requests.current_settings())
-    }
-    discovered = {
-        info.model_id for info in services.requests.cached_prefixed_model_infos()
-    }
+    settings = services.requests.current_settings()
+    configured = {ref.model_ref for ref in configured_chat_model_refs(settings)}
+    configured |= set(pinned_model_refs(settings))
+    if include_discovered is None:
+        include_discovered = settings.model_catalog_scope is ModelCatalogScope.ALL
+    discovered = (
+        {info.model_id for info in services.requests.cached_prefixed_model_infos()}
+        if include_discovered
+        else set()
+    )
     failed_provider_ids = (
         refresh_result.failed_provider_ids if refresh_result is not None else ()
     )
