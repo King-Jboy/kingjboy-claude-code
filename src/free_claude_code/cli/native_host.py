@@ -122,12 +122,20 @@ def _write_manifest(path: Path, manifest: dict[str, object]) -> None:
 
 
 def _install_windows(manifest: dict[str, object]) -> tuple[str, ...]:
+    path = stored_manifest_path()
+    _write_manifest(path, manifest)
+
+    # This early return is what makes winreg usable below. The module is type
+    # checked under every platform, and winreg's members are all gated behind
+    # sys.platform == "win32" -- so without narrowing here, a Linux checker
+    # sees an empty module and every call is an error. The caller already
+    # dispatches on platform; this narrows it for the checker as well.
+    if sys.platform != "win32":
+        return ()
+
     # Windows-only stdlib module; importing it at module scope would break
     # every other platform's import of this file.
     import winreg
-
-    path = stored_manifest_path()
-    _write_manifest(path, manifest)
 
     registered: list[str] = []
     for target in browser_targets("win32"):
@@ -171,6 +179,10 @@ def install(extension_id: str) -> tuple[str, ...]:
 
 
 def _uninstall_windows() -> tuple[str, ...]:
+    # Narrowed for the same reason as _install_windows.
+    if sys.platform != "win32":
+        return ()
+
     import winreg
 
     removed: list[str] = []
