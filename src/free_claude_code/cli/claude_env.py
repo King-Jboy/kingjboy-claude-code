@@ -4,8 +4,8 @@ from collections.abc import Mapping
 
 from free_claude_code.cli.local_http import with_local_proxy_bypass
 from free_claude_code.cli.proxy_auth import proxy_auth_token
+from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 
-CLAUDE_CODE_AUTO_COMPACT_WINDOW = "190000"
 CLAUDE_BINARY_NAME = "claude"
 
 
@@ -14,8 +14,14 @@ def build_claude_proxy_env(
     proxy_root_url: str,
     auth_token: str,
     base_env: Mapping[str, str],
+    context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW,
 ) -> dict[str, str]:
-    """Return the canonical environment for Claude Code proxy sessions."""
+    """Return the canonical environment for Claude Code proxy sessions.
+
+    ``context_window`` is what Claude Code compacts against. It is a user
+    setting rather than a constant because the routed model owns the real
+    limit and most OpenAI-compatible ``/v1/models`` responses omit it.
+    """
 
     # Claude's aggregate traffic flag also suppresses gateway model discovery.
     env = with_local_proxy_bypass(
@@ -30,7 +36,7 @@ def build_claude_proxy_env(
     env["ANTHROPIC_BASE_URL"] = proxy_root_url
     env["ANTHROPIC_AUTH_TOKEN"] = proxy_auth_token(auth_token)
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(context_window)
     env["DISABLE_AUTOUPDATER"] = "1"
     env["DISABLE_FEEDBACK_COMMAND"] = "1"
     env["DISABLE_ERROR_REPORTING"] = "1"

@@ -143,13 +143,19 @@ async def probe_responses(_auth=Depends(require_proxy_auth)):
 
 
 @router.post("/v1/messages/count_tokens")
-async def count_tokens(
+def count_tokens(
     request: Request,
     request_data: TokenCountRequest,
     settings: Settings = Depends(get_settings),
     _auth=Depends(require_proxy_auth),
 ):
-    """Count tokens for a request."""
+    """Count tokens for a request.
+
+    Deliberately synchronous so Starlette runs it in a worker thread. Counting
+    is pure CPU work through tiktoken and costs ~90ms on a 100k-token request;
+    awaiting nothing on the event loop would stall every in-flight stream for
+    that long.
+    """
     handler = TokenCountHandler(settings, token_counter=get_token_count)
     return handler.count(request_data, request_id=get_request_id(request))
 

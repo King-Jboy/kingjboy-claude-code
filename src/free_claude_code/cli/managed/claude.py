@@ -11,6 +11,7 @@ from free_claude_code.cli.claude_env import (
     CLAUDE_BINARY_NAME,
     build_claude_proxy_env,
 )
+from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 
 MANAGED_CLAUDE_MODEL_TIER = "fable"
 
@@ -43,6 +44,7 @@ class ManagedClaudeConfig:
     allowed_dirs: list[str] = field(default_factory=list)
     claude_bin: str = CLAUDE_BINARY_NAME
     auth_token: str = ""
+    context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW
 
 
 @dataclass(slots=True)
@@ -79,6 +81,7 @@ def build_managed_claude_invocation(
             proxy_root_url=config.proxy_root_url,
             auth_token=config.auth_token,
             base_env=base_env,
+            context_window=config.context_window,
         ),
         cwd=config.workspace_path,
         trace_metadata={
@@ -99,6 +102,7 @@ def build_managed_claude_env(
     proxy_root_url: str,
     auth_token: str,
     base_env: Mapping[str, str],
+    context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW,
 ) -> dict[str, str]:
     """Return a Claude Code task environment that targets the local proxy."""
 
@@ -106,6 +110,7 @@ def build_managed_claude_env(
         proxy_root_url=proxy_root_url,
         auth_token=auth_token,
         base_env=base_env,
+        context_window=context_window,
     )
     env["DISABLE_TELEMETRY"] = "1"
     env["TERM"] = "dumb"

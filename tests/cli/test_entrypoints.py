@@ -13,6 +13,7 @@ from urllib.request import Request
 
 import pytest
 
+from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 from free_claude_code.config.settings import Settings
 
 
@@ -21,6 +22,7 @@ def _launcher_settings(
     port: int = 8082,
     token: str = "freecc",
     open_admin_browser: bool = True,
+    client_context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW,
 ) -> Settings:
     return Settings.model_construct(
         host="0.0.0.0",
@@ -28,6 +30,7 @@ def _launcher_settings(
         anthropic_auth_token=token,
         model="nvidia_nim/test-model",
         open_admin_browser=open_admin_browser,
+        client_context_window=client_context_window,
     )
 
 
@@ -91,6 +94,7 @@ def test_cli_scripts_are_registered() -> None:
     assert pyproject["project"]["scripts"] == {
         "fcc-server": "free_claude_code.cli.entrypoints:serve",
         "fcc-doctor": "free_claude_code.cli.entrypoints:doctor",
+        "fcc-context": "free_claude_code.cli.entrypoints:context",
         "fcc-claude": "free_claude_code.cli.launchers.claude:launch",
         "fcc-codex": "free_claude_code.cli.launchers.codex:launch",
         "fcc-pi": "free_claude_code.cli.launchers.pi:launch",
@@ -411,7 +415,7 @@ def test_claude_child_env_targets_current_proxy_config() -> None:
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9090"
     assert env["ANTHROPIC_AUTH_TOKEN"] == "proxy-token"
     assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == str(DEFAULT_CLIENT_CONTEXT_WINDOW)
     assert env["DISABLE_AUTOUPDATER"] == "1"
     assert env["DISABLE_FEEDBACK_COMMAND"] == "1"
     assert env["DISABLE_ERROR_REPORTING"] == "1"
@@ -421,6 +425,54 @@ def test_claude_child_env_targets_current_proxy_config() -> None:
     assert "ANTHROPIC_API_URL" not in env
     assert "ANTHROPIC_API_KEY" not in env
     assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in env
+
+
+def test_claude_child_env_advertises_the_requested_context_window() -> None:
+    """A caller-supplied window replaces the conservative default verbatim."""
+
+    from free_claude_code.cli.claude_env import build_claude_proxy_env
+
+    env = build_claude_proxy_env(
+        proxy_root_url="http://127.0.0.1:8082",
+        auth_token="proxy-token",
+        base_env={},
+        context_window=262144,
+    )
+
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "262144"
+
+
+def test_launch_claude_advertises_the_configured_context_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLIENT_CONTEXT_WINDOW reaches the launched CLI, not the module default."""
+
+    from free_claude_code.cli.launchers.claude import launch
+
+    settings = _launcher_settings(client_context_window=262144)
+
+    with (
+        patch(
+            "free_claude_code.cli.launchers.claude.get_settings", return_value=settings
+        ),
+        patch(
+            "free_claude_code.cli.launchers.claude.preflight_proxy", return_value=None
+        ),
+        patch(
+            "free_claude_code.cli.launchers.common.shutil.which",
+            return_value="resolved-claude.cmd",
+        ),
+        patch("free_claude_code.cli.launchers.common.subprocess.Popen") as popen,
+        patch("free_claude_code.cli.launchers.common.register_pid"),
+        patch("free_claude_code.cli.launchers.common.unregister_pid"),
+        pytest.raises(SystemExit),
+    ):
+        popen.return_value.pid = 12345
+        popen.return_value.wait.return_value = 0
+        launch([])
+
+    child_env = popen.call_args.kwargs["env"]
+    assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "262144"
 
 
 def test_claude_child_env_uses_sentinel_for_blank_configured_auth_token() -> None:
@@ -478,7 +530,9 @@ def test_launch_claude_passes_args_and_child_env(
     assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9191"
     assert child_env["ANTHROPIC_AUTH_TOKEN"] == "proxy-token"
     assert child_env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-    assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
+    assert child_env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == str(
+        DEFAULT_CLIENT_CONTEXT_WINDOW
+    )
     assert child_env["DISABLE_AUTOUPDATER"] == "1"
     assert child_env["DISABLE_FEEDBACK_COMMAND"] == "1"
     assert child_env["DISABLE_ERROR_REPORTING"] == "1"

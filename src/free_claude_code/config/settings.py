@@ -13,6 +13,7 @@ from .env_files import (
     env_file_override,
     settings_env_files,
 )
+from .model_refs import ModelCatalogScope, parse_model_ref_list
 from .nim import NimSettings
 from .provider_catalog import BEDROCK_DEFAULT_BASE, SUPPORTED_PROVIDER_IDS
 from .reasoning import ReasoningPreference
@@ -169,6 +170,29 @@ class Settings(BaseSettings):
     model_opus: str | None = Field(default=None, validation_alias="MODEL_OPUS")
     model_sonnet: str | None = Field(default=None, validation_alias="MODEL_SONNET")
     model_haiku: str | None = Field(default=None, validation_alias="MODEL_HAIKU")
+
+    # Context window advertised to launched client CLIs. Providers rarely
+    # publish a per-model context length (NVIDIA NIM's /v1/models carries only
+    # id/object/created/owned_by), so it cannot be discovered at runtime.
+    # Blank resolves it from the routed model's row in ~/.fcc/context.md, so
+    # changing MODEL changes the window; a value here overrides that lookup.
+    client_context_window: int | None = Field(
+        default=None,
+        validation_alias="CLIENT_CONTEXT_WINDOW",
+        gt=0,
+    )
+
+    # Whether client and admin model lists include every discovered provider
+    # model or only the configured routes and the pinned list.
+    model_catalog_scope: ModelCatalogScope = Field(
+        default=ModelCatalogScope.ALL,
+        validation_alias="MODEL_CATALOG_SCOPE",
+    )
+
+    # Extra provider/model refs to keep in the model lists, as a JSON list.
+    # Stored raw so the Admin textarea round-trips what the user typed;
+    # ``pinned_model_refs`` owns parsing.
+    pinned_models: str = Field(default="", validation_alias="PINNED_MODELS")
 
     # ==================== Per-Provider Proxy ====================
     openai_proxy: str = Field(default="", validation_alias="OPENAI_PROXY")
@@ -365,11 +389,26 @@ class Settings(BaseSettings):
             return None
         return v
 
+    @field_validator("client_context_window", mode="before")
+    @classmethod
+    def parse_optional_context_window(cls, v: Any) -> Any:
+        """Treat a blank field as "resolve it from context.md"."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @field_validator("nvidia_nim_api_keys", "open_router_api_keys")
     @classmethod
     def validate_api_key_pool(cls, value: str, info: ValidationInfo) -> str:
         """Fail startup on a malformed pool rather than quietly serving one key."""
         parse_api_key_list(value, env_name=(info.field_name or "").upper())
+        return value
+
+    @field_validator("pinned_models")
+    @classmethod
+    def validate_pinned_models(cls, value: str) -> str:
+        """Fail startup on a malformed pinned list rather than dropping it."""
+        parse_model_ref_list(value, env_name="PINNED_MODELS")
         return value
 
     @field_validator("log_level")

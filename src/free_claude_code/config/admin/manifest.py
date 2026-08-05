@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from free_claude_code.config.model_refs import ModelCatalogScope
 from free_claude_code.config.reasoning import (
     ROOT_REASONING_PREFERENCES,
     ROUTE_REASONING_PREFERENCES,
@@ -172,6 +173,49 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "optional_model",
         settings_attr="model_haiku",
         description="Select None to use the Default Model for Haiku requests.",
+    ),
+    ConfigFieldSpec(
+        "MODEL_CATALOG_SCOPE",
+        "Model List Scope",
+        "models",
+        "select",
+        settings_attr="model_catalog_scope",
+        default=ModelCatalogScope.ALL.value,
+        options=(
+            ConfigOptionSpec(ModelCatalogScope.ALL.value, "All discovered models"),
+            ConfigOptionSpec(
+                ModelCatalogScope.CONFIGURED.value, "Only my configured models"
+            ),
+        ),
+        description=(
+            "Shrinks the model lists offered here and to client CLIs. Refresh Models "
+            "still lists everything a provider reports, so you can always browse."
+        ),
+    ),
+    ConfigFieldSpec(
+        "PINNED_MODELS",
+        "My Models",
+        "models",
+        "textarea",
+        settings_attr="pinned_models",
+        description=(
+            "JSON list of provider/model refs to keep in every model list, for "
+            'example ["nvidia_nim/deepseek-ai/deepseek-v4-flash"]. This is how '
+            "you grow the list beyond the five routing slots above; add or "
+            "remove a line to change what your pickers offer."
+        ),
+    ),
+    ConfigFieldSpec(
+        "CLIENT_CONTEXT_WINDOW",
+        "Client Context Window",
+        "models",
+        "number",
+        settings_attr="client_context_window",
+        description=(
+            "Tokens a launched CLI compacts against. Leave blank to use the "
+            "routed model's row in context.md, so switching models switches the "
+            "window. Set a number only to override that."
+        ),
     ),
     ConfigFieldSpec(
         "REASONING_POLICY",

@@ -8,6 +8,7 @@ from free_claude_code.cli.claude_env import (
     CLAUDE_BINARY_NAME,
     build_claude_proxy_env,
 )
+from free_claude_code.config.context_windows import resolve_client_context_window
 from free_claude_code.config.server_urls import local_proxy_root_url
 from free_claude_code.config.settings import get_settings
 
@@ -43,6 +44,9 @@ def launch(argv: Sequence[str] | None = None) -> None:
             proxy_root_url=proxy_root_url,
             auth_token=settings.anthropic_auth_token,
             base_env=os.environ,
+            context_window=resolve_client_context_window(
+                settings, configured=settings.client_context_window
+            ).value,
         ),
         binary_name=binary_name,
         display_name=_DISPLAY_NAME,

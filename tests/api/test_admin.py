@@ -15,6 +15,7 @@ from free_claude_code.application.model_metadata import (
     ProviderModelRefreshResult,
 )
 from free_claude_code.config.admin.values import MASKED_SECRET
+from free_claude_code.config.model_refs import ModelCatalogScope
 from free_claude_code.config.server_urls import local_admin_url
 from free_claude_code.config.settings import Settings
 from tests.api.support import create_test_app, provider_manager_for_app
@@ -491,6 +492,85 @@ def test_admin_models_include_configured_and_cached_canonical_slugs():
         ],
         "failed_providers": [],
     }
+
+
+def test_admin_models_under_configured_scope_list_only_configured_routes():
+    settings = Settings()
+    settings.model = "nvidia_nim/configured-model"
+    settings.model_opus = "open_router/anthropic/configured-opus"
+    settings.open_router_api_key = "open-router-key"
+    settings.model_catalog_scope = ModelCatalogScope.CONFIGURED
+    app = create_test_app(settings)
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {
+            ProviderModelInfo("anthropic/configured-opus"),
+            ProviderModelInfo("meta/llama-3.3"),
+        },
+    )
+
+    response = _local_client(app).get("/admin/api/models")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "models": [
+            "nvidia_nim/configured-model",
+            "open_router/anthropic/configured-opus",
+        ],
+        "failed_providers": [],
+    }
+
+
+def test_admin_models_offer_the_pinned_list_under_the_configured_scope():
+    settings = Settings()
+    settings.model = "nvidia_nim/configured-model"
+    settings.open_router_api_key = "open-router-key"
+    settings.model_catalog_scope = ModelCatalogScope.CONFIGURED
+    settings.pinned_models = (
+        '["open_router/meta/llama-3.3", "open_router/z-ai/glm-5.2:free"]'
+    )
+    app = create_test_app(settings)
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("meta/llama-3.3"), ProviderModelInfo("unwanted/model")},
+    )
+
+    response = _local_client(app).get("/admin/api/models")
+
+    assert response.status_code == 200
+    assert response.json()["models"] == [
+        "nvidia_nim/configured-model",
+        "open_router/meta/llama-3.3",
+        "open_router/z-ai/glm-5.2:free",
+    ]
+
+
+def test_admin_model_refresh_ignores_the_configured_scope():
+    """Refresh is the browse action, so scoping must not hide discovered models."""
+
+    settings = Settings()
+    settings.model = "deepseek/deepseek-chat"
+    settings.deepseek_api_key = "deepseek-key"
+    settings.model_catalog_scope = ModelCatalogScope.CONFIGURED
+    app = create_test_app(settings)
+    runtime = app.state.services.admin
+
+    async def refresh_models() -> ProviderModelRefreshResult:
+        provider_manager_for_app(app).cache_model_infos(
+            "deepseek",
+            {ProviderModelInfo("deepseek-reasoner")},
+        )
+        return ProviderModelRefreshResult(refreshed_provider_ids=("deepseek",))
+
+    runtime.refresh_models = AsyncMock(side_effect=refresh_models)
+
+    response = _local_client(app).post("/admin/api/models/refresh")
+
+    assert response.status_code == 200
+    assert response.json()["models"] == [
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-reasoner",
+    ]
 
 
 def test_admin_model_refresh_returns_the_updated_canonical_catalog():

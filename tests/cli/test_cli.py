@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 from free_claude_code.messaging.event_parser import parse_cli_event
 
 # --- Existing Parser Tests ---
@@ -620,7 +621,9 @@ class TestManagedClaudeSession:
             env = mock_exec.call_args.kwargs["env"]
             assert env["ANTHROPIC_AUTH_TOKEN"] == "proxy-token"
             assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
-            assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "190000"
+            assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == str(
+                DEFAULT_CLIENT_CONTEXT_WINDOW
+            )
             assert env["DISABLE_TELEMETRY"] == "1"
             assert "ANTHROPIC_API_KEY" not in env
             assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in env

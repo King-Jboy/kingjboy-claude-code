@@ -29,6 +29,7 @@ from free_claude_code.config.admin.persistence import (
 )
 from free_claude_code.config.admin.status import provider_config_status
 from free_claude_code.config.admin.values import load_value_state
+from free_claude_code.config.context_windows import resolve_client_context_window
 from free_claude_code.config.env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
     process_env_key_is_effective,
@@ -416,6 +417,9 @@ class ApplicationRuntime:
             proxy_root_url=local_proxy_root_url(settings),
             allowed_dirs=allowed_dirs,
             auth_token=settings.anthropic_auth_token,
+            context_window=resolve_client_context_window(
+                settings, configured=settings.client_context_window
+            ).value,
             log_raw_cli_diagnostics=settings.log_raw_cli_diagnostics,
             log_messaging_error_details=settings.log_messaging_error_details,
         )
