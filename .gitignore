@@ -3,6 +3,7 @@ __pycache__
 .cursor
 .pytest_cache
 .ruff_cache
+.hypothesis
 .serena
 .venv
 agent_workspace

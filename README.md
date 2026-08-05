@@ -22,7 +22,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 [Quick Start](#quick-start) · [Providers](#choose-a-provider) · [Clients](#connect-your-client) · [Integrations](#optional-integrations) · [Manage](#manage-your-installation)
 
 > A personal fork of [Alishahryar1/free-claude-code](https://github.com/Alishahryar1/free-claude-code), MIT licensed to Ali Khokhar.
-> This fork adds credential pooling, `fcc-doctor`, and a Claude-Code-only installer. See [What This Fork Changes](#what-this-fork-changes).
+> This fork adds credential pooling, a Chrome side panel, `fcc-doctor`, `fcc-context`, a curated model list, and a Claude-Code-only installer. See [What This Fork Changes](#what-this-fork-changes).
 
 </div>
 
