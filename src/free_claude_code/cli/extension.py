@@ -7,6 +7,10 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from free_claude_code.cli.bridge import shell_root
+from free_claude_code.cli.native_host import RegistrationError, stored_manifest_path
+from free_claude_code.cli.native_host import install as install_bridge
+from free_claude_code.cli.native_host import uninstall as uninstall_bridge
 from free_claude_code.config.server_urls import local_proxy_root_url
 from free_claude_code.config.settings import Settings
 
@@ -21,16 +25,22 @@ REQUIRED_ASSETS = (
     "console_probe.js",
     "page_tools.js",
     "service_worker.js",
+    "shell_tool.js",
     "sidepanel.css",
     "sidepanel.html",
     "sidepanel.js",
 )
 
 _USAGE = (
-    "Usage: fcc-extension [--path] [--show-token] [--json]\n\n"
-    "  --path        Print only the extension directory, for scripting.\n"
-    "  --show-token  Print the proxy token instead of masking it.\n"
-    "  --json        Emit the connection details as JSON.\n"
+    "Usage: fcc-extension [--path] [--show-token] [--json]\n"
+    "       fcc-extension install --extension-id ID\n"
+    "       fcc-extension uninstall\n\n"
+    "  --path            Print only the extension directory, for scripting.\n"
+    "  --show-token      Print the proxy token instead of masking it.\n"
+    "  --json            Emit the connection details as JSON.\n\n"
+    "  install           Let the side panel run shell commands, by registering\n"
+    "                    the fcc-bridge host for this one extension ID.\n"
+    "  uninstall         Remove that registration.\n"
 )
 
 
@@ -68,7 +78,31 @@ def _token_line(token: str, *, reveal: bool) -> str:
     return "  Auth token   (set - re-run with --show-token to print it)"
 
 
-def _report(details: dict[str, str | bool], *, reveal: bool) -> str:
+def _shell_lines(settings: Settings) -> tuple[str, ...]:
+    """Describe the command bridge: whether it is registered, and whether it is on."""
+
+    registered = stored_manifest_path().is_file()
+    if not registered:
+        return (
+            "",
+            "To let the panel run shell commands (optional):",
+            "  fcc-extension install --extension-id ID   (the ID is on the card)",
+        )
+    if not settings.browser_shell_enabled:
+        # Registered but disabled is the deliberate default, not a half-install.
+        return (
+            "",
+            "Command bridge  registered, but disabled.",
+            "  Set BROWSER_SHELL_ENABLED=true in ~/.fcc/.env to allow commands.",
+        )
+    return (
+        "",
+        "Command bridge  enabled.",
+        f"  Commands run under {shell_root(settings)} and need your approval each time.",
+    )
+
+
+def _report(details: dict[str, str | bool], settings: Settings, *, reveal: bool) -> str:
     token = str(details["auth_token"])
     return "\n".join(
         (
@@ -83,10 +117,63 @@ def _report(details: dict[str, str | bool], *, reveal: bool) -> str:
             "Then open the side panel from the toolbar and paste:",
             f"  Proxy URL    {details['proxy_url']}",
             _token_line(token, reveal=reveal),
+            *_shell_lines(settings),
             "",
             "The panel needs fcc-server running to answer anything.",
         )
     )
+
+
+def _run_install(args: Sequence[str]) -> int:
+    if "--extension-id" not in args:
+        print(
+            "install needs the extension ID: fcc-extension install --extension-id ID\n"
+            "Load the extension at chrome://extensions first; the ID is on its card.",
+            file=sys.stderr,
+        )
+        return 2
+
+    position = list(args).index("--extension-id") + 1
+    if position >= len(args):
+        print("--extension-id needs a value.", file=sys.stderr)
+        return 2
+
+    try:
+        registered = install_bridge(args[position])
+    except RegistrationError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+
+    if not registered:
+        print(
+            "No Chromium-family browser profile was found to register with.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        "\n".join(
+            (
+                f"Registered the command bridge with: {', '.join(registered)}",
+                "",
+                "Two things still have to be true before any command runs:",
+                "  1. BROWSER_SHELL_ENABLED=true in ~/.fcc/.env",
+                "  2. You approve each command in the side panel",
+                "",
+                "Restart the browser so it picks up the new host.",
+            )
+        )
+    )
+    return 0
+
+
+def _run_uninstall() -> int:
+    removed = uninstall_bridge()
+    if removed:
+        print(f"Removed the command bridge from: {', '.join(removed)}")
+    else:
+        print("The command bridge was not registered.")
+    return 0
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -96,6 +183,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     if "--help" in args or "-h" in args:
         print(_USAGE)
         return 0
+
+    if args and args[0] == "uninstall":
+        return _run_uninstall()
+    if args and args[0] == "install":
+        return _run_install(args)
 
     if absent := missing_assets():
         print(
@@ -130,5 +222,5 @@ def run(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(details, indent=2))
         return 0
 
-    print(_report(details, reveal="--show-token" in args))
+    print(_report(details, settings, reveal="--show-token" in args))
     return 0

@@ -6,6 +6,7 @@
 // through the service worker instead would only add a message hop.
 
 import { PAGE_TOOLS, runPageTool } from "./page_tools.js";
+import { SHELL_TOOL, bridgeStatus, runShellCommand } from "./shell_tool.js";
 
 const SETTINGS_KEY = "fcc.connection";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8081";
@@ -14,13 +15,22 @@ const MAX_TOKENS = 8192;
 // the user's quota ran out. Real page-debugging turns settle in two or three.
 const MAX_TOOL_ROUNDS = 12;
 
-const SYSTEM_PROMPT =
+const BASE_PROMPT =
   "You are Free Claude Code running in a Chrome side panel, helping the user with the web " +
   "page they are looking at. When they refer to 'this page', 'the console', or 'the error', " +
   "use your tools to look rather than asking them to paste. Read the smallest region that " +
   "answers the question -- prefer a CSS selector over the whole document. You cannot click, " +
-  "type, navigate, or run shell commands; say so plainly if asked, and tell the user what to " +
-  "do instead. Be concise: this panel is narrow.";
+  "type, or navigate; say so plainly if asked, and tell the user what to do instead. " +
+  "Be concise: this panel is narrow.";
+
+const SHELL_PROMPT =
+  " You can also run shell commands on the user's machine with run_command. Each one is " +
+  "shown to them for approval before it runs, so send one purposeful command at a time and " +
+  "explain what you expect from it. Assume nothing about the result until you see it.";
+
+function systemPrompt() {
+  return shell.usable ? BASE_PROMPT + SHELL_PROMPT : BASE_PROMPT;
+}
 
 const ui = {
   status: document.getElementById("status"),
@@ -31,6 +41,7 @@ const ui = {
   authToken: document.getElementById("auth-token"),
   model: document.getElementById("model"),
   pageTools: document.getElementById("page-tools"),
+  shellState: document.getElementById("shell-state"),
   transcript: document.getElementById("transcript"),
   composer: document.getElementById("composer"),
   prompt: document.getElementById("prompt"),
@@ -41,6 +52,16 @@ const ui = {
 /** Conversation history in Messages API shape, replayed on every request. */
 let history = [];
 let busy = false;
+
+/**
+ * Command bridge state, probed once at startup.
+ *
+ * `usable` gates whether run_command is advertised at all. Offering a tool that
+ * cannot work wastes a round trip and teaches the model to expect a shell that
+ * is not there -- the bridge is unregistered by default, and disabled even when
+ * registered until BROWSER_SHELL_ENABLED is set.
+ */
+let shell = { usable: false, root: "" };
 
 // ---------- connection settings ----------
 
@@ -274,11 +295,12 @@ async function requestTurn(settings) {
   const body = {
     model: settings.model,
     max_tokens: MAX_TOKENS,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt(),
     messages: history,
     stream: true,
   };
-  if (settings.pageTools) body.tools = PAGE_TOOLS;
+  const tools = [...(settings.pageTools ? PAGE_TOOLS : []), ...(shell.usable ? [SHELL_TOOL] : [])];
+  if (tools.length) body.tools = tools;
 
   const response = await fetch(`${settings.baseUrl}/v1/messages`, {
     method: "POST",
@@ -300,6 +322,63 @@ function describeToolCall(name, input) {
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join(" ");
   return detail ? `↳ ${name} ${detail}` : `↳ ${name}`;
+}
+
+/**
+ * Show a command and wait for the user to allow or refuse it.
+ *
+ * This is the control the shell bridge rests on. Everything else -- the
+ * allowed_origins pin, BROWSER_SHELL_ENABLED, the directory confinement --
+ * limits the blast radius; this is what decides whether a command runs at all.
+ * So it renders the exact string that will be executed, and defaults to nothing
+ * happening if the user simply closes the panel.
+ */
+function requestApproval({ command, cwd }) {
+  return new Promise((resolve) => {
+    const card = document.createElement("div");
+    card.className = "turn approval";
+
+    const label = document.createElement("p");
+    label.className = "approval-label";
+    label.textContent = cwd ? `Run in ${cwd}` : "Run this command";
+
+    const line = document.createElement("code");
+    line.className = "approval-command";
+    line.textContent = command;
+
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
+    const deny = document.createElement("button");
+    deny.className = "ghost";
+    deny.type = "button";
+    deny.textContent = "Deny";
+    const allow = document.createElement("button");
+    allow.type = "button";
+    allow.textContent = "Run";
+
+    const settle = (approved) => {
+      actions.remove();
+      card.dataset.outcome = approved ? "approved" : "denied";
+      label.textContent = approved ? label.textContent : "Denied";
+      resolve(approved);
+    };
+    deny.addEventListener("click", () => settle(false));
+    allow.addEventListener("click", () => settle(true));
+
+    actions.append(deny, allow);
+    card.append(label, line, actions);
+    ui.transcript.append(card);
+    ui.transcript.scrollTop = ui.transcript.scrollHeight;
+    allow.focus();
+  });
+}
+
+async function runTool(call) {
+  if (call.name === SHELL_TOOL.name) {
+    return runShellCommand(call.input, { requestApproval });
+  }
+  addTurn("tool", describeToolCall(call.name, call.input));
+  return runPageTool(call.name, call.input);
 }
 
 async function runConversation(settings) {
@@ -324,8 +403,7 @@ async function runConversation(settings) {
 
     const results = [];
     for (const call of toolCalls) {
-      addTurn("tool", describeToolCall(call.name, call.input));
-      const { content: text, is_error } = await runPageTool(call.name, call.input);
+      const { content: text, is_error } = await runTool(call);
       results.push({ type: "tool_result", tool_use_id: call.id, content: text, is_error });
     }
     history.push({ role: "user", content: results });
@@ -395,12 +473,32 @@ ui.prompt.addEventListener("keydown", (event) => {
 
 ui.clear.addEventListener("click", showEmptyState);
 
+async function probeBridge() {
+  const status = await bridgeStatus();
+  shell = { usable: status.available && status.enabled, root: status.root };
+
+  if (shell.usable) {
+    ui.shellState.textContent = `Shell commands run under ${shell.root}, and you approve each one.`;
+    return;
+  }
+  if (status.available) {
+    ui.shellState.textContent =
+      "Shell bridge registered but off. Set BROWSER_SHELL_ENABLED=true in ~/.fcc/.env.";
+    return;
+  }
+  // chrome.runtime.id is this extension's ID, which is otherwise something the
+  // user has to go and copy off the chrome://extensions card by hand.
+  ui.shellState.textContent =
+    `Shell commands off. To enable: fcc-extension install --extension-id ${chrome.runtime.id}`;
+}
+
 (async function start() {
   const settings = await loadSettings();
   ui.baseUrl.value = settings.baseUrl;
   ui.authToken.value = settings.authToken;
   ui.pageTools.checked = settings.pageTools;
   showEmptyState();
+  await probeBridge();
 
   // Auto-connect: the common case is a proxy already running at the saved URL,
   // and making the user press Connect every time the panel reopens is friction

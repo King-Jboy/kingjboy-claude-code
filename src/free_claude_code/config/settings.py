@@ -364,6 +364,17 @@ class Settings(BaseSettings):
         default="", validation_alias="ANTHROPIC_AUTH_TOKEN"
     )
 
+    # ==================== Browser Shell Bridge ====================
+    # Off by default, and deliberately not implied by installing the Chrome
+    # extension: this is the switch that lets a browser run commands on this
+    # machine. Turning it on is a separate, deliberate act.
+    browser_shell_enabled: bool = Field(
+        default=False, validation_alias="BROWSER_SHELL_ENABLED"
+    )
+    # Commands may only run inside this directory tree. Blank means the home
+    # directory, which is broad; point it at a project root in practice.
+    browser_shell_root: str = Field(default="", validation_alias="BROWSER_SHELL_ROOT")
+
     # Handle empty strings for optional string fields
     @field_validator(
         "telegram_bot_token",

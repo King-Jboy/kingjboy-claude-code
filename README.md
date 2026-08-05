@@ -59,7 +59,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 - Diagnose a broken setup in one command with `fcc-doctor`.
 - Keep streaming, tool use, reasoning, and image input across compatible models.
 - Connect Claude Code and Codex in VS Code or Claude Code through JetBrains ACP.
-- Debug the page you are on from a Chrome side panel with `fcc-extension`.
+- Debug the page you are on from a Chrome side panel with `fcc-extension`, optionally running approved shell commands.
 - Optionally run Claude Code sessions through Discord or Telegram with voice-note transcription.
 - Protect the local proxy with optional token authentication.
 
@@ -457,9 +457,26 @@ If your proxy has `ANTHROPIC_AUTH_TOKEN` set, `fcc-extension` masks it by defaul
 
 Untick **Let the model read the active tab** in the panel's settings to send no tools at all.
 
+**Running shell commands (optional, off by default)**
+
+Manifest V3 cannot spawn a process, so this goes through a Chrome Native Messaging host — `fcc-bridge`. That moves the boundary from the network to the OS: only the browser can reach it, and only for the one extension ID named in the host manifest. An HTTP endpoint on `fcc-server` would not be equivalent, because that server binds `0.0.0.0` by default and skips auth entirely when `ANTHROPIC_AUTH_TOKEN` is blank.
+
+Three things must all be true before a single command runs:
+
+1. **The bridge is registered for your extension.** The panel's settings pane prints the exact command, with your ID already filled in:
+   ```bash
+   fcc-extension install --extension-id <id>
+   ```
+   Restart the browser afterwards. `fcc-extension uninstall` removes it.
+2. **`BROWSER_SHELL_ENABLED=true`** in `~/.fcc/.env`. Registering the bridge is deliberately not enough on its own.
+3. **You approve the command.** The panel shows the exact string and waits. Nothing runs until you click **Run**.
+
+Commands are confined to `BROWSER_SHELL_ROOT` (default: your home directory — narrow it to a project root). A `cwd` that resolves outside that tree is refused, not clamped. Output is capped, there is no interactive stdin, and every command is appended to `~/.fcc/logs/bridge.log` with its exit code.
+
+The shell is PowerShell on Windows (`pwsh`, falling back to `powershell`) and `$SHELL` elsewhere — not `cmd.exe`, which is what the naive choice would have given you.
+
 **Limits worth knowing**
 
-- **It cannot run shell commands.** A browser extension has no way to spawn a process. The panel reads pages; the terminal agents (`fcc-claude` and friends) run commands.
 - **The console recorder attaches at page load.** Tabs already open when you installed the extension record nothing until you reload them.
 - **`chrome://`, the Web Store, and other extensions are closed to it** by Chrome policy, not by choice.
 - **Codespaces and other web IDEs** are readable as pages, but their terminals run on a remote container the extension cannot reach.
@@ -745,7 +762,7 @@ Verified live against both providers: 20 concurrent requests spread across all 1
 
 **A context-window table you can regenerate.** `fcc-context` measures your routable models and records them in `~/.fcc/context.md`, reading published metadata where a provider offers it. See [Finding A Model's Context Window](#finding-a-models-context-window).
 
-**A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page, with tools that read the DOM and the tab's console. It cannot run shell commands — no extension can — so it complements the terminal agents rather than replacing them. See [Connect Your Client](#connect-your-client).
+**A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page, with tools that read the DOM and the tab's console. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host — gated behind a registration step, a `BROWSER_SHELL_ENABLED` switch, per-command approval, and a directory confinement, because the obvious alternative of an exec endpoint on `fcc-server` would be unauthenticated LAN-reachable RCE. See [Connect Your Client](#connect-your-client).
 
 **`count_tokens` off the event loop.** The token-count endpoint ran tiktoken inline in the async handler, stalling every in-flight stream for the duration (~90ms on a 100k-token request). It now runs in a worker thread.
 

@@ -96,6 +96,7 @@ def test_cli_scripts_are_registered() -> None:
         "fcc-doctor": "free_claude_code.cli.entrypoints:doctor",
         "fcc-context": "free_claude_code.cli.entrypoints:context",
         "fcc-extension": "free_claude_code.cli.entrypoints:extension",
+        "fcc-bridge": "free_claude_code.cli.entrypoints:bridge",
         "fcc-claude": "free_claude_code.cli.launchers.claude:launch",
         "fcc-codex": "free_claude_code.cli.launchers.codex:launch",
         "fcc-pi": "free_claude_code.cli.launchers.pi:launch",

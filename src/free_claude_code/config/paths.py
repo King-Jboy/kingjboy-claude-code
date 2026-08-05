@@ -9,6 +9,7 @@ LEGACY_XDG_CONFIG_DIRNAME = ".config"
 MESSAGING_STATE_DIRNAME = "agent_workspace"
 FCC_LOGS_DIRNAME = "logs"
 SERVER_LOG_FILENAME = "server.log"
+BRIDGE_LOG_FILENAME = "bridge.log"
 CODEX_MODEL_CATALOG_FILENAME = "codex-model-catalog.json"
 AUTH_DIRNAME = "auth"
 OPENAI_AUTH_FILENAME = "openai.json"
@@ -47,6 +48,12 @@ def server_log_path() -> Path:
     """Return the canonical server log path."""
 
     return config_dir_path() / FCC_LOGS_DIRNAME / SERVER_LOG_FILENAME
+
+
+def bridge_log_path() -> Path:
+    """Return the audit log path for commands run through the browser bridge."""
+
+    return config_dir_path() / FCC_LOGS_DIRNAME / BRIDGE_LOG_FILENAME
 
 
 def codex_model_catalog_path() -> Path:

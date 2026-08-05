@@ -277,6 +277,54 @@ button.ghost:hover:not(:disabled) {
   font-size: 12px;
 }
 
+/* Approval card. Deliberately the loudest thing in the transcript: it is the
+   only place the user decides whether something runs on their machine. */
+.approval {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  white-space: normal;
+}
+
+.approval[data-outcome="denied"] {
+  border-color: var(--line);
+  background: transparent;
+  opacity: 0.6;
+}
+
+.approval[data-outcome="approved"] {
+  border-color: var(--line);
+  background: transparent;
+}
+
+.approval-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.approval-command {
+  display: block;
+  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  background: var(--input);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.shell-state {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .empty {
   margin: auto;
   max-width: 260px;
