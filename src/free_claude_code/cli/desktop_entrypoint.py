@@ -21,6 +21,6 @@ def launch(argv: Sequence[str] | None = None) -> None:
         print("FCC Desktop is supported on Windows and macOS.", file=sys.stderr)
         raise SystemExit(1)
 
-    from free_claude_code.cli.desktop_tray import launch as launch_tray
+    from free_claude_code.cli.desktop_window import launch as launch_window
 
-    launch_tray()
+    launch_window()

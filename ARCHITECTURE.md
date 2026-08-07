@@ -237,14 +237,25 @@ old and replacement graphs. On final shutdown it best-effort kills registered
 child processes.
 
 [cli/desktop.py](src/free_claude_code/cli/desktop.py) owns the platform-neutral
-desktop lifecycle. An operating-system file lock admits one desktop host, the
-tray remains on the process main thread for native event-loop compatibility, and
-one worker runs the same in-process `ServerSupervisor` with console output and
-automatic browser launch disabled. A second desktop launch waits for health,
-opens the existing Admin page, and exits. Tray restart delegates to the canonical
-supervisor; tray quit requests the same graceful ASGI and application-runtime
-shutdown as `fcc-server`. [cli/desktop_tray.py](src/free_claude_code/cli/desktop_tray.py)
-owns only native status-area presentation and callbacks.
+desktop lifecycle. An operating-system file lock admits one desktop host, the UI
+adapter remains on the process main thread for native event-loop compatibility,
+and one worker runs the same in-process `ServerSupervisor` with console output
+and automatic browser launch disabled. The controller holds a supervisor factory
+rather than an instance, because `request_stop` latches permanently and a server
+stopped from Admin has to be replaced rather than restarted. A second desktop
+launch waits for health, opens the existing Admin page, and exits. Restart
+delegates to the canonical supervisor; quit requests the same graceful ASGI and
+application-runtime shutdown as `fcc-server`.
+
+[cli/desktop_window.py](src/free_claude_code/cli/desktop_window.py) is the UI
+adapter `fcc-desktop` launches: a pywebview window whose shell page hosts the
+Admin UI. The shell is loaded from disk and calls into this process over the
+pywebview bridge rather than over HTTP, because its job is to stay useful when
+the server is stopped, which is exactly when the Admin API cannot answer. The
+window owns the main thread, so [cli/desktop_tray.py](src/free_claude_code/cli/desktop_tray.py)
+runs detached beside it and keeps the proxy serving when the window is closed;
+where a platform refuses to detach a tray, the window runs alone and closing it
+quits. The tray owns only native status-area presentation and callbacks.
 
 [runtime/bootstrap.py](src/free_claude_code/runtime/bootstrap.py) is the single production composition function. The CLI
 supervisor supplies one settings snapshot and its restart callback; bootstrap

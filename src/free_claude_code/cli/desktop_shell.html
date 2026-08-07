@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Free Claude Code</title>
+    <style>
+      /* Palette lifted from admin.css so the recovery screen and the Admin UI
+         it replaces read as one window rather than two products. Standalone
+         because this page is loaded from disk before any server exists to
+         serve a stylesheet. */
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --text: #1c2024;
+        --text-strong: #0c0e11;
+        --muted: #5c6470;
+        --line: rgba(12, 14, 17, 0.09);
+        --line-strong: rgba(12, 14, 17, 0.16);
+        --accent: #c2410c;
+        --accent-hover: #9a3412;
+        --accent-ink: #ffffff;
+        --accent-soft: rgba(249, 115, 22, 0.1);
+        --danger: #b3261e;
+        --radius-control: 10px;
+        --radius-card: 14px;
+        --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0a0c11;
+          --panel: #12151d;
+          --text: #e7e9ee;
+          --text-strong: #ffffff;
+          --muted: #9aa3b2;
+          --line: rgba(255, 255, 255, 0.08);
+          --line-strong: rgba(255, 255, 255, 0.15);
+          --accent: #f97316;
+          --accent-hover: #fb8b3c;
+          --accent-ink: #1a0c02;
+          --accent-soft: rgba(249, 115, 22, 0.14);
+          --danger: #f87171;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-sans);
+        font-size: 14px;
+      }
+
+      /* The Admin UI gets the whole window. No shell chrome above it: the page
+         already carries its own header, and a second bar would be two titles
+         for one screen. */
+      #admin {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+
+      #admin[hidden] {
+        display: none;
+      }
+
+      .recovery {
+        display: flex;
+        height: 100%;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 32px;
+        text-align: center;
+      }
+
+      .recovery[hidden] {
+        display: none;
+      }
+
+      .mark {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        background: linear-gradient(140deg, var(--accent), var(--accent-hover));
+        box-shadow: 0 0 0 6px var(--accent-soft);
+      }
+
+      h1 {
+        margin: 6px 0 0;
+        font-size: 19px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        color: var(--text-strong);
+      }
+
+      p {
+        margin: 0;
+        max-width: 46ch;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      button {
+        margin-top: 6px;
+        padding: 9px 18px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-control);
+        background: var(--accent);
+        color: var(--accent-ink);
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 140ms ease;
+      }
+
+      button:hover:not(:disabled) {
+        background: var(--accent-hover);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
+      .detail {
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <iframe id="admin" title="Free Claude Code Admin" hidden></iframe>
+
+    <section id="recovery" class="recovery">
+      <div class="mark" aria-hidden="true"></div>
+      <h1 id="recoveryTitle">Starting the server</h1>
+      <p id="recoveryBody">The Admin UI opens as soon as the server is listening.</p>
+      <button id="startButton" type="button" hidden>Start server</button>
+      <p id="recoveryDetail" class="detail"></p>
+    </section>
+
+    <script>
+      // This page is the one part of the desktop app that does not come from
+      // the server, which is the whole point: it has to keep working when the
+      // server is stopped, and that is exactly when the Admin UI cannot load.
+      // Every call here goes to Python, never over HTTP.
+      const POLL_MS = 700;
+
+      const admin = document.getElementById("admin");
+      const recovery = document.getElementById("recovery");
+      const title = document.getElementById("recoveryTitle");
+      const body = document.getElementById("recoveryBody");
+      const detail = document.getElementById("recoveryDetail");
+      const startButton = document.getElementById("startButton");
+
+      let shownState = null;
+      let loadedUrl = null;
+
+      const COPY = {
+        Starting: {
+          title: "Starting the server",
+          body: "The Admin UI opens as soon as the server is listening.",
+          action: false,
+        },
+        Stopping: {
+          title: "Stopping the server",
+          body: "Waiting for in-flight work to finish.",
+          action: false,
+        },
+        Stopped: {
+          title: "The server is stopped",
+          body: "Nothing is proxying requests right now. Starting it brings the Admin UI back.",
+          action: true,
+        },
+      };
+
+      function showAdmin(url) {
+        // Only ever assigned once per server generation. Re-assigning on every
+        // poll would reload the Admin UI out from under whoever is typing.
+        if (loadedUrl !== url) {
+          admin.src = url;
+          loadedUrl = url;
+        }
+        admin.hidden = false;
+        recovery.hidden = true;
+      }
+
+      function showRecovery(state) {
+        const copy = COPY[state] ?? COPY.Stopped;
+        title.textContent = copy.title;
+        body.textContent = copy.body;
+        startButton.hidden = !copy.action;
+        startButton.disabled = false;
+        admin.hidden = true;
+        recovery.hidden = false;
+      }
+
+      async function tick() {
+        try {
+          const info = await window.pywebview.api.state();
+          if (info.state === "Running") {
+            showAdmin(info.admin_url);
+          } else {
+            // A restart passes through Stopping and Starting in milliseconds.
+            // Dropping the iframe for that would reload the Admin UI on every
+            // restart, so the recovery screen is only for a settled state.
+            if (info.state !== shownState) showRecovery(info.state);
+            loadedUrl = null;
+          }
+          shownState = info.state;
+          detail.textContent = "";
+        } catch (error) {
+          detail.textContent = String(error);
+        }
+        window.setTimeout(tick, POLL_MS);
+      }
+
+      startButton.addEventListener("click", async () => {
+        startButton.disabled = true;
+        title.textContent = "Starting the server";
+        body.textContent = "The Admin UI opens as soon as the server is listening.";
+        startButton.hidden = true;
+        await window.pywebview.api.start_server();
+      });
+
+      // The bridge is injected asynchronously, so nothing may call it before
+      // this fires.
+      window.addEventListener("pywebviewready", tick);
+    </script>
+  </body>
+</html>
