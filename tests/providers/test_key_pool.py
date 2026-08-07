@@ -385,14 +385,34 @@ async def test_an_authentication_failure_still_retires_permanently() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_cooling_key_is_skipped_while_healthy_keys_serve() -> None:
+async def test_a_rate_limit_cools_every_key_because_the_limit_is_account_scoped() -> (
+    None
+):
+    # Both pooled providers meter per account, so one 429 refuses every key.
+    # Hopping would re-send an already-declined request: OpenRouter charges the
+    # retry to the same daily quota and NIM lengthens the lockout for it.
     pool = _pool(("a", "b"))
     lease = await pool.acquire()
 
     action = pool.record_failure(lease, _status_error(429, **{"retry-after": "30"}))
 
-    assert action is KeyFailureAction.HOP
-    assert await _keys_used(pool, 3) == ["b", "b", "b"]
+    assert action is KeyFailureAction.ESCALATE
+    assert pool.status().cooling == 2
+    assert pool.status().ready == 0
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_charges_no_key_a_retirement_strike() -> None:
+    # An account-wide refusal implicates no individual credential, so it must
+    # not walk any key toward retirement.
+    pool = _pool(("a", "b"))
+    lease = await pool.acquire()
+
+    pool.record_failure(lease, _status_error(429))
+
+    assert pool.status().retired == 0
 
     await pool.aclose()
 
@@ -413,9 +433,10 @@ async def test_a_short_cooldown_is_waited_out_rather_than_failed() -> None:
 @pytest.mark.asyncio
 async def test_a_long_cooldown_fails_immediately_instead_of_parking() -> None:
     pool = _pool(("a", "b"))
-    for _ in range(2):
-        lease = await pool.acquire()
-        pool.record_failure(lease, _status_error(429, **{"retry-after": "7200"}))
+    lease = await pool.acquire()
+    # One refusal is enough: it cools the whole pool, because it describes the
+    # account rather than the key it happened to arrive on.
+    pool.record_failure(lease, _status_error(429, **{"retry-after": "7200"}))
 
     started = time.monotonic()
     with pytest.raises(ExecutionFailure) as error:
@@ -437,7 +458,7 @@ async def test_rate_limit_reset_epoch_milliseconds_is_read_as_a_deadline() -> No
 
     pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": reset_ms}))
 
-    with pytest.raises(ExecutionFailure, match="rate limited"):
+    with pytest.raises(ExecutionFailure, match="rate limiting this account"):
         await pool.acquire()
 
     await pool.aclose()
@@ -451,7 +472,7 @@ async def test_rate_limit_reset_epoch_seconds_is_read_as_a_deadline() -> None:
 
     pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": reset_s}))
 
-    with pytest.raises(ExecutionFailure, match="rate limited"):
+    with pytest.raises(ExecutionFailure, match="rate limiting this account"):
         await pool.acquire()
 
     await pool.aclose()
@@ -464,7 +485,7 @@ async def test_a_headerless_rate_limit_cools_for_one_window() -> None:
 
     pool.record_failure(lease, _status_error(429))
 
-    with pytest.raises(ExecutionFailure, match="rate limited"):
+    with pytest.raises(ExecutionFailure, match="rate limiting this account"):
         await pool.acquire()
 
     await pool.aclose()
@@ -660,7 +681,10 @@ def _patch_pooled_create(pool: KeyPool, outcomes: dict[str, object]):
 
 
 @pytest.mark.asyncio
-async def test_pooled_stream_hops_past_a_rate_limited_key() -> None:
+async def test_a_pooled_stream_does_not_burn_the_pool_on_a_rate_limit() -> None:
+    # The second key would have served this mock, but a real provider would
+    # have refused it too - the limit is on the account. Spending the pool to
+    # discover that costs quota per key and, on NIM, lengthens the lockout.
     provider = _pooled_provider("a", "b")
     pool = provider._key_pool
     assert pool is not None
@@ -672,9 +696,10 @@ async def test_pooled_stream_hops_past_a_rate_limited_key() -> None:
     with ExitStack() as stack:
         for patcher in _patch_pooled_create(pool, outcomes):
             stack.enter_context(patcher)
-        opened = await provider._open_chat_stream({"model": "m", "messages": []})
+        with pytest.raises(httpx.HTTPStatusError):
+            await provider._open_chat_stream({"model": "m", "messages": []})
 
-    assert opened == "opened-stream"
+    assert pool.status().ready == 0, "the refusal applies to every key"
 
     await provider.cleanup()
 

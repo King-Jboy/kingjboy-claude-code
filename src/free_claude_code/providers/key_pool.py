@@ -4,13 +4,28 @@ A pool turns N interchangeable API keys into one virtual key. Each key owns an
 independent rate window and health record, so a revoked or rate-limited key is
 skipped while the remaining keys keep serving at full speed.
 
+A pool only ever buys resilience, never throughput. Both providers that accept
+key lists meter requests per *account*, not per key: OpenRouter states it
+governs capacity globally, and NVIDIA staff confirm NIM's limit is applied at
+the account level. Extra keys therefore add no capacity, and the pool must not
+pretend otherwise. What it does buy is surviving a single revoked credential
+without an outage.
+
 Ownership is deliberately split. Key-local outcomes are settled here: ``401``
-retires a key, ``429`` cools it until the reset the provider itself reported,
-and either way the caller hops to another key without spending a provider retry
-attempt. Everything that is not key-specific - ``5xx``, timeouts, connection
-errors - escalates to the provider-wide recovery episode owned by
-:mod:`free_claude_code.providers.admission`, so a genuinely failing backend is
-not hammered once per key.
+retires the one key it names and the caller hops past it, because a rejected
+credential really is a property of that key. Everything that is not key-specific
+- ``5xx``, timeouts, connection errors - escalates to the provider-wide recovery
+episode owned by :mod:`free_claude_code.providers.admission`, so a genuinely
+failing backend is not hammered once per key.
+
+``429`` is emphatically *not* key-local, and hopping on one is actively harmful.
+The refusal describes the account, so every key in the pool is equally refused;
+re-sending on the next key only repeats a request the provider already declined.
+OpenRouter counts each failed attempt against the same daily quota, and NIM
+lengthens the lockout on every request made while blocked, so walking an N-key
+pool burns quota N times faster and deepens the very ban it is trying to escape.
+A ``429`` therefore cools every key alike for the stated reset and escalates, so
+recovery happens where capacity actually differs - another provider or model.
 
 ``403`` sits between those two. NVIDIA NIM answers ``403`` for an invalid key,
 while other providers use it to refuse a request outright, and the response
@@ -280,8 +295,12 @@ class KeyPool:
             self._cool(key, error, reason="permission")
             return KeyFailureAction.HOP_AMBIGUOUS
         if isinstance(error, openai.RateLimitError) or status == 429:
-            self._cool(key, error, reason="rate limit")
-            return KeyFailureAction.HOP
+            # Account-scoped, so every key is refused alike and hopping would
+            # re-send an already-declined request - burning shared quota and,
+            # on NIM, extending the lockout per attempt. Cool the pool and let
+            # a provider or model with separate capacity take over.
+            self._cool_all(error, reason="rate limit")
+            return KeyFailureAction.ESCALATE
         return KeyFailureAction.ESCALATE
 
     def _retire(self, key: _PooledKey, *, reason: str) -> KeyFailureAction:
@@ -330,6 +349,54 @@ class KeyPool:
             usable_keys=self._usable_count(),
             pool_size=len(self._keys),
         )
+
+    def _cool_all(self, error: BaseException, *, reason: str) -> None:
+        """Cool every live key alike for a refusal that describes the account.
+
+        The cooldown is computed once and applied to all keys. Charging each key
+        its own escalating strike would retire a whole healthy pool over a single
+        shared window, which is the opposite of what the refusal proved.
+        """
+        cooldown = self._account_cooldown_seconds(error)
+        until = time.monotonic() + cooldown
+        cooled = 0
+        for key in self._keys:
+            if key.dead:
+                continue
+            key.cooling_until = max(key.cooling_until, until)
+            cooled += 1
+        logger.info(
+            "{} key pool cooling all {} live keys for {:.1f}s after upstream {} "
+            "(the limit is account-scoped, so hopping cannot help)",
+            self._provider_name,
+            cooled,
+            cooldown,
+            reason,
+        )
+        trace_event(
+            stage="provider",
+            event="provider.key_pool.account_cooling",
+            source="provider",
+            provider=self._provider_name,
+            reason=reason,
+            cooldown_s=round(cooldown, 3),
+            cooled_keys=cooled,
+            pool_size=len(self._keys),
+        )
+
+    def _account_cooldown_seconds(self, error: BaseException) -> float:
+        """Return how long the whole account is refused for.
+
+        A stated reset is obeyed verbatim. Absent one, wait a single rate window
+        rather than escalating: nothing about an account-wide refusal implicates
+        any individual credential, so there is no strike to charge.
+        """
+        stated = retry_after_seconds(error)
+        if stated is None:
+            stated = _rate_limit_reset_seconds(error)
+        if stated is not None:
+            return max(0.0, stated)
+        return max(0.0, self._rate_window)
 
     def _cooldown_seconds(self, key: _PooledKey, error: BaseException) -> float:
         """Honour the provider's own reset, and escalate only when guessing.
@@ -452,13 +519,18 @@ class KeyPool:
         )
 
     def _pool_exhausted_failure(self, wait: float) -> ExecutionFailure:
+        # Say plainly that more keys will not help. This message is the one an
+        # operator sees when the account's own limit is what ran out, and the
+        # obvious reading - "the pool is too small" - is the wrong one.
         return ExecutionFailure(
             kind=FailureKind.RATE_LIMIT,
             status_code=429,
             message=(
-                f"Every {self._provider_name} API key in the pool is rate "
-                f"limited. The soonest key frees in about "
-                f"{_humanize_wait(wait)}."
+                f"{self._provider_name} is rate limiting this account for about "
+                f"{_humanize_wait(wait)}. The limit is per account, not per key, "
+                f"so the {len(self._keys)} pooled keys are all refused alike and "
+                f"adding more will not raise it. Route to another provider or "
+                f"model for capacity."
             ),
             retryable=False,
         )

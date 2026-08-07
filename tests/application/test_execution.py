@@ -6,10 +6,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from free_claude_code.application.execution import ProviderExecutor
-from free_claude_code.application.routing import ResolvedModel, RoutedMessagesRequest
+from free_claude_code.application.routing import (
+    ModelRouter,
+    ResolvedModel,
+    RoutedMessagesRequest,
+)
+from free_claude_code.config.model_refs import model_fallback_refs
 from free_claude_code.config.reasoning import ReasoningPreference
+from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic.models import Message, MessagesRequest
 from free_claude_code.core.async_iterators import AsyncCloseable
+from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import ReasoningPolicy
 
 
@@ -186,3 +193,186 @@ def test_executor_preflight_failure_stays_before_token_count_and_stream() -> Non
 
     token_counter.assert_not_called()
     assert provider.stream_calls == []
+
+
+class RateLimitedProvider(FakeProvider):
+    """A provider whose capacity has run out before it emits anything."""
+
+    def stream_response(
+        self,
+        request: MessagesRequest,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+        response_model: str | None = None,
+        reasoning: ReasoningPolicy,
+    ) -> AsyncIterator[str]:
+        raise ExecutionFailure(
+            kind=FailureKind.RATE_LIMIT,
+            status_code=429,
+            message="account is rate limited",
+            retryable=False,
+        )
+
+
+class InvalidRequestProvider(FakeProvider):
+    """A provider refusing the request itself, which no peer would accept."""
+
+    def stream_response(
+        self,
+        request: MessagesRequest,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+        response_model: str | None = None,
+        reasoning: ReasoningPolicy,
+    ) -> AsyncIterator[str]:
+        raise ExecutionFailure(
+            kind=FailureKind.INVALID_REQUEST,
+            status_code=400,
+            message="malformed request",
+            retryable=False,
+        )
+
+
+class FailsAfterEmittingProvider(FakeProvider):
+    """A provider that dies once the client already holds part of a message."""
+
+    async def stream_response(
+        self,
+        request: MessagesRequest,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+        response_model: str | None = None,
+        reasoning: ReasoningPolicy,
+    ) -> AsyncIterator[str]:
+        yield "event: message_start\ndata: {}\n\n"
+        raise ExecutionFailure(
+            kind=FailureKind.RATE_LIMIT,
+            status_code=429,
+            message="account is rate limited mid-stream",
+            retryable=False,
+        )
+
+
+def _nim_routed_request() -> RoutedMessagesRequest:
+    request = MessagesRequest(
+        model="model-a",
+        messages=[Message(role="user", content="hello")],
+    )
+    return RoutedMessagesRequest(
+        request=request,
+        resolved=ResolvedModel(
+            original_model="gateway-model",
+            provider_id="nvidia_nim",
+            provider_model="model-a",
+            provider_model_ref="nvidia_nim/model-a",
+            reasoning_preference=ReasoningPreference.CLIENT,
+        ),
+        reasoning=ReasoningPolicy.on(),
+    )
+
+
+def _executor_with_fallbacks(
+    providers: dict[str, FakeProvider],
+    fallbacks: str,
+) -> ProviderExecutor:
+    settings = Settings(MODEL_FALLBACKS=fallbacks)
+    return ProviderExecutor(
+        lambda provider_id: providers[provider_id],
+        token_counter=lambda _messages, _system, _tools: 17,
+        model_router=ModelRouter(settings),
+        fallback_refs=model_fallback_refs(settings),
+    )
+
+
+async def _drain(
+    executor: ProviderExecutor, routed: RoutedMessagesRequest
+) -> list[str]:
+    stream = executor.stream(
+        routed,
+        wire_api="messages",
+        raw_log_label="FULL_PAYLOAD",
+        raw_log_payload={},
+        request_id="req_fallback",
+    )
+    return [chunk async for chunk in stream]
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_model_falls_back_to_the_next_provider() -> None:
+    # The whole point: a capped account must not surface as an error the client
+    # has to back off from, when another provider still has capacity.
+    spare = FakeProvider()
+    executor = _executor_with_fallbacks(
+        {"nvidia_nim": RateLimitedProvider(), "open_router": spare},
+        '["open_router/model-b"]',
+    )
+
+    assert await _drain(executor, _nim_routed_request()) == [
+        "event: message_stop\ndata: {}\n\n"
+    ]
+    assert len(spare.stream_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_request_level_failure_is_not_retried_elsewhere() -> None:
+    # A malformed request fails identically on every provider, so walking the
+    # chain would only multiply latency before returning the same error.
+    spare = FakeProvider()
+    executor = _executor_with_fallbacks(
+        {"nvidia_nim": InvalidRequestProvider(), "open_router": spare},
+        '["open_router/model-b"]',
+    )
+
+    with pytest.raises(ExecutionFailure) as error:
+        await _drain(executor, _nim_routed_request())
+
+    assert error.value.kind is FailureKind.INVALID_REQUEST
+    assert spare.stream_calls == [], "a fallback must not absorb a bad request"
+
+
+@pytest.mark.asyncio
+async def test_a_committed_response_is_never_spliced_onto_a_fallback() -> None:
+    # Once bytes are out the client owns a committed message; continuing it from
+    # a different model would stitch two completions into one reply.
+    spare = FakeProvider()
+    executor = _executor_with_fallbacks(
+        {"nvidia_nim": FailsAfterEmittingProvider(), "open_router": spare},
+        '["open_router/model-b"]',
+    )
+
+    with pytest.raises(ExecutionFailure):
+        await _drain(executor, _nim_routed_request())
+
+    assert spare.stream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_fallback_is_skipped_rather_than_fatal() -> None:
+    # The chain rescues a request that is already failing, so a broken entry in
+    # it must never be the reason a good entry goes unreached.
+    spare = FakeProvider()
+    providers: dict[str, FakeProvider] = {
+        "nvidia_nim": RateLimitedProvider(),
+        "open_router": spare,
+    }
+
+    def resolve(provider_id: str) -> FakeProvider:
+        if provider_id == "mistral":
+            raise RuntimeError("mistral has no credentials configured")
+        return providers[provider_id]
+
+    settings = Settings(MODEL_FALLBACKS='["mistral/broken", "open_router/model-b"]')
+    executor = ProviderExecutor(
+        resolve,
+        token_counter=lambda _messages, _system, _tools: 17,
+        model_router=ModelRouter(settings),
+        fallback_refs=model_fallback_refs(settings),
+    )
+
+    assert await _drain(executor, _nim_routed_request()) == [
+        "event: message_stop\ndata: {}\n\n"
+    ]
+    assert len(spare.stream_calls) == 1

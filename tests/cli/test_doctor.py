@@ -86,9 +86,21 @@ def test_a_configured_pool_reports_its_parsed_size() -> None:
 
     findings = list(doctor.check_key_pools(settings))
 
-    assert [(f.level, f.check, f.detail) for f in findings] == [
-        (Level.OK, "NVIDIA_NIM_API_KEYS", "3 keys pooled")
-    ]
+    (finding,) = findings
+    assert (finding.level, finding.check) == (Level.OK, "NVIDIA_NIM_API_KEYS")
+    assert finding.detail.startswith("3 keys pooled")
+
+
+def test_a_pool_is_never_reported_as_added_capacity() -> None:
+    # The pool's size is the one number a user will read as throughput, and it
+    # is not. Both pooled providers meter per account, so saying only "3 keys
+    # pooled" is what led to expecting 3x the capacity and finding none.
+    settings = _settings(NVIDIA_NIM_API_KEYS='["a", "b", "c"]')
+
+    (finding,) = list(doctor.check_key_pools(settings))
+
+    assert "per account" in finding.detail
+    assert "no throughput" in finding.detail
 
 
 def test_a_single_key_warns_that_no_pool_is_built() -> None:
@@ -258,3 +270,42 @@ def test_a_missing_managed_env_warns(monkeypatch, tmp_path: Path) -> None:
 
     assert finding.level is Level.WARN
     assert "Admin UI" in finding.remedy
+
+
+def test_a_missing_fallback_chain_is_warned_about() -> None:
+    # Without a chain there is nowhere for a capped account to go, and the
+    # coding agent is the one that ends up showing the error.
+    settings = _settings()
+
+    (finding,) = list(doctor.check_model_fallbacks(settings))
+
+    assert finding.level is Level.WARN
+    assert "reaches your client as an error" in finding.detail
+
+
+def test_a_fallback_on_another_provider_is_reported_ok() -> None:
+    settings = _settings(
+        MODEL="nvidia_nim/model-a",
+        MODEL_FALLBACKS='["open_router/model-b"]',
+    )
+
+    (finding,) = list(doctor.check_model_fallbacks(settings))
+
+    assert finding.level is Level.OK
+    assert finding.detail == "1 configured"
+
+
+def test_a_fallback_on_the_same_provider_is_warned_about_without_overstating() -> None:
+    # Providers publish different limits per model, so a same-provider hop can
+    # still find capacity - the warning must not claim otherwise. What it costs
+    # is that one account-wide cap takes the whole chain down at once.
+    settings = _settings(
+        MODEL="nvidia_nim/model-a",
+        MODEL_FALLBACKS='["nvidia_nim/model-b"]',
+    )
+
+    (finding,) = list(doctor.check_model_fallbacks(settings))
+
+    assert finding.level is Level.WARN
+    assert "providers you already route to" in finding.detail
+    assert "this helps" in finding.remedy

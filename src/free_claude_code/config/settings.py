@@ -194,6 +194,14 @@ class Settings(BaseSettings):
     # ``pinned_model_refs`` owns parsing.
     pinned_models: str = Field(default="", validation_alias="PINNED_MODELS")
 
+    # Provider/model refs to try, in order, when the routed model has no
+    # capacity left, as a JSON list. This is the only mechanism that survives a
+    # rate limit: the pooled providers meter per account, so every key shares
+    # one quota and hopping keys cannot find more. Capacity differs across
+    # providers, so name refs on *different* providers for this to help.
+    # ``model_fallback_refs`` owns parsing.
+    model_fallbacks: str = Field(default="", validation_alias="MODEL_FALLBACKS")
+
     # ==================== Per-Provider Proxy ====================
     openai_proxy: str = Field(default="", validation_alias="OPENAI_PROXY")
     azure_openai_proxy: str = Field(default="", validation_alias="AZURE_OPENAI_PROXY")
@@ -420,6 +428,17 @@ class Settings(BaseSettings):
     def validate_pinned_models(cls, value: str) -> str:
         """Fail startup on a malformed pinned list rather than dropping it."""
         parse_model_ref_list(value, env_name="PINNED_MODELS")
+        return value
+
+    @field_validator("model_fallbacks")
+    @classmethod
+    def validate_model_fallbacks(cls, value: str) -> str:
+        """Fail startup on a malformed fallback list rather than dropping it.
+
+        A fallback chain that silently parsed to empty would look like it was
+        working right up until the moment it was needed.
+        """
+        parse_model_ref_list(value, env_name="MODEL_FALLBACKS")
         return value
 
     @field_validator("log_level")

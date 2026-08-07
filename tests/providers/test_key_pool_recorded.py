@@ -116,10 +116,12 @@ async def test_recorded_rate_limit_headers_drive_the_cooldown() -> None:
     action = pool.record_failure(lease, error.value)
 
     assert error.value.status_code == 429
-    assert action is KeyFailureAction.HOP
+    # Recorded from OpenRouter, whose docs state capacity is governed globally,
+    # so this refusal describes the account and no key can be hopped to.
+    assert action is KeyFailureAction.ESCALATE
     # The reset is a fixed past instant, so the parse floors at zero rather
     # than producing the negative wait an unguarded subtraction would give.
-    assert pool.status().cooling in (0, 1)
+    assert pool.status().cooling in (0, 2)
     await pool.aclose()
 
 
