@@ -206,21 +206,6 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
-        "MODEL_FALLBACKS",
-        "Fallback Models",
-        "models",
-        "textarea",
-        settings_attr="model_fallbacks",
-        description=(
-            "JSON list of provider/model refs to try, in order, when the routed "
-            'model has no capacity left, for example ["open_router/z-ai/'
-            'glm-5.2:free"]. This is the only setting that survives a rate '
-            "limit: providers meter per account, so every key you pool shares "
-            "one quota and no amount of keys adds capacity. Name models on "
-            "different providers, or the fallback runs into the same limit."
-        ),
-    ),
-    ConfigFieldSpec(
         "CLIENT_CONTEXT_WINDOW",
         "Client Context Window",
         "models",

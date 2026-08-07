@@ -29,11 +29,7 @@ from free_claude_code.config.context_windows import (
     CONTEXT_WINDOWS_FILENAME,
     resolve_client_context_window,
 )
-from free_claude_code.config.model_refs import (
-    model_fallback_refs,
-    parse_model_name,
-    parse_provider_type,
-)
+from free_claude_code.config.model_refs import parse_model_name, parse_provider_type
 from free_claude_code.config.paths import managed_env_path
 from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
 from free_claude_code.config.settings import Settings
@@ -220,45 +216,6 @@ def check_key_pools(settings: Settings) -> Iterator[Finding]:
             )
 
 
-def check_model_fallbacks(settings: Settings) -> Iterator[Finding]:
-    """Report whether a rate limit has anywhere to go.
-
-    Without a chain, a capped account reaches the client as a 429 and the coding
-    agent backs off for minutes. With one, the request moves to a provider that
-    still has capacity - the only thing that actually restores service, since no
-    number of keys can.
-    """
-    refs = model_fallback_refs(settings)
-    if not refs:
-        yield Finding(
-            Level.WARN,
-            "MODEL_FALLBACKS",
-            "not set, so a rate limit reaches your client as an error",
-            "List provider/model refs on other providers in the Admin UI.",
-        )
-        return
-
-    routed_providers = {
-        parse_provider_type(model_ref)
-        for _, attr in MODEL_ROUTE_ATTRS
-        if (model_ref := getattr(settings, attr, None))
-    }
-    if any(parse_provider_type(ref) not in routed_providers for ref in refs):
-        yield Finding(Level.OK, "MODEL_FALLBACKS", f"{len(refs)} configured")
-    else:
-        # Not useless: providers publish different limits per model, so a
-        # same-provider hop can still find capacity. It is just the weaker of
-        # the two options, because the account-wide caps still apply to all of
-        # them - so say that rather than implying the chain does nothing.
-        yield Finding(
-            Level.WARN,
-            "MODEL_FALLBACKS",
-            f"{len(refs)} configured, all on providers you already route to",
-            "Per-model limits differ, so this helps, but an account-wide cap "
-            "takes them all down together. Add a ref on another provider.",
-        )
-
-
 def check_models_still_exist(settings: Settings) -> Iterator[Finding]:
     """Confirm each routed model is still advertised by its provider.
 
@@ -324,7 +281,6 @@ def collect_findings(settings: Settings, *, offline: bool) -> list[Finding]:
         *check_providers(settings),
         *check_context_window(settings),
         *check_key_pools(settings),
-        *check_model_fallbacks(settings),
     ]
     if not offline:
         findings.extend(check_models_still_exist(settings))

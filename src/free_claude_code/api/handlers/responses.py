@@ -17,7 +17,6 @@ from free_claude_code.application.errors import ApplicationError, InvalidRequest
 from free_claude_code.application.execution import ProviderExecutor
 from free_claude_code.application.ports import ProviderResolver
 from free_claude_code.application.routing import ModelRouter
-from free_claude_code.config.model_refs import model_fallback_refs
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic import MessagesRequest
 from free_claude_code.core.diagnostics import safe_exception_message
@@ -50,8 +49,6 @@ class ResponsesHandler:
             provider_resolver,
             generation_id=generation_id,
             log_raw_payloads=settings.log_raw_api_payloads,
-            model_router=self._model_router,
-            fallback_refs=model_fallback_refs(settings),
         )
 
     async def create(

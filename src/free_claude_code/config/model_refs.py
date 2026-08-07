@@ -79,19 +79,12 @@ class ChatModelConfig(Protocol):
     model_sonnet: str | None
     model_haiku: str | None
     pinned_models: str
-    model_fallbacks: str
 
 
 def pinned_model_refs(settings: ChatModelConfig) -> tuple[str, ...]:
     """Return the user's pinned provider/model refs."""
 
     return parse_model_ref_list(settings.pinned_models, env_name="PINNED_MODELS")
-
-
-def model_fallback_refs(settings: ChatModelConfig) -> tuple[str, ...]:
-    """Return the ordered provider/model refs to try when capacity runs out."""
-
-    return parse_model_ref_list(settings.model_fallbacks, env_name="MODEL_FALLBACKS")
 
 
 def parse_provider_type(model_ref: str) -> str:
