@@ -52,11 +52,12 @@ class DesktopController:
 
     def __init__(
         self,
-        supervisor: ServerOwner,
+        supervisor_factory: Callable[[], ServerOwner],
         tray_factory: DesktopTrayFactory,
         open_admin: Callable[[], None],
     ) -> None:
-        self._supervisor = supervisor
+        self._supervisor_factory = supervisor_factory
+        self._supervisor = supervisor_factory()
         self._open_admin = open_admin
         self._thread_lock = threading.Lock()
         self._server_thread: threading.Thread | None = None
@@ -104,15 +105,24 @@ class DesktopController:
             if self._server_thread is not None and self._server_thread.is_alive():
                 return
             if not self._supervisor.schedule_run():
-                return
+                # A supervisor that has been asked to stop stays stopped:
+                # schedule_run and request_restart both refuse from then on.
+                # Replacing it is what lets the tray bring the server back after
+                # Admin stops it, instead of leaving a live tray over a server
+                # that can never start again.
+                self._supervisor = self._supervisor_factory()
+                if not self._supervisor.schedule_run():
+                    return
+            supervisor = self._supervisor
             self._server_thread = threading.Thread(
                 target=self._run_server,
+                args=(supervisor,),
                 name="fcc-desktop-server",
             )
             self._server_thread.start()
 
-    def _run_server(self) -> None:
-        self._supervisor.run(open_admin_browser=False)
+    def _run_server(self, supervisor: ServerOwner) -> None:
+        supervisor.run(open_admin_browser=False)
 
 
 def launch_desktop(tray_factory: DesktopTrayFactory) -> None:
@@ -129,11 +139,13 @@ def launch_desktop(tray_factory: DesktopTrayFactory) -> None:
             open_admin_when_ready(settings)
             return
 
-        supervisor = ServerSupervisor(console_logging=False)
-
         def open_current_admin() -> None:
             schedule_open_admin_browser(get_settings())
 
-        DesktopController(supervisor, tray_factory, open_current_admin).run()
+        DesktopController(
+            lambda: ServerSupervisor(console_logging=False),
+            tray_factory,
+            open_current_admin,
+        ).run()
     finally:
         instance_lock.release()

@@ -77,6 +77,17 @@
       <main class="main">
         <header class="topbar">
           <h2 id="pageTitle">Providers</h2>
+          <!-- Lifecycle lives here rather than only in the desktop tray, so the
+               page that configures the server can also run it. -->
+          <div class="server-controls">
+            <span id="serverState" class="status-pill">Checking</span>
+            <button id="restartButton" class="secondary-button" type="button">
+              Restart
+            </button>
+            <button id="stopButton" class="secondary-button danger-button" type="button">
+              Stop
+            </button>
+          </div>
         </header>
 
         <div id="adminViews" class="admin-views">

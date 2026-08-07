@@ -298,13 +298,17 @@ def test_admin_page_no_longer_renders_global_status_header(monkeypatch, tmp_path
 
 
 def test_admin_static_no_longer_fetches_global_status_header():
+    # The decorative header that mirrored host, port and model stays gone. Server
+    # state itself came back with the Restart and Stop controls, because a control
+    # that cannot say whether the server is running is not worth pressing; it
+    # lives in the topbar pill, and probes with fetch rather than api() so a
+    # stopped server reads as state instead of raising a config error.
     script = Path("src/free_claude_code/api/admin_static/admin.js").read_text(
         encoding="utf-8"
     )
 
     assert 'api("/admin/api/status")' not in script
     assert "updateHeader" not in script
-    assert '"Running"' not in script
     assert "serverStatus" not in script
     assert "modelBadge" not in script
 
@@ -1336,3 +1340,63 @@ def test_admin_launch_url_uses_loopback_for_wildcard_host():
     settings = Settings.model_construct(host="0.0.0.0", port=8082)
 
     assert local_admin_url(settings) == "http://127.0.0.1:8082/admin"
+
+
+def test_admin_restart_asks_the_process_that_owns_the_server(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    restarts: list[str] = []
+    app = create_test_app(restart_callback=lambda: restarts.append("restart"))
+
+    response = _local_client(app).post("/admin/api/server/restart")
+
+    assert response.status_code == 200
+    assert response.json() == {"server": "restarting"}
+    # Dispatched as a background task, so the reply is sent before the server
+    # goes down rather than the connection dropping mid-request.
+    assert restarts == ["restart"]
+
+
+def test_admin_stop_asks_the_process_that_owns_the_server(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    stops: list[str] = []
+    app = create_test_app(stop_callback=lambda: stops.append("stop"))
+
+    response = _local_client(app).post("/admin/api/server/stop")
+
+    assert response.status_code == 200
+    assert response.json() == {"server": "stopping"}
+    assert stops == ["stop"]
+
+
+def test_admin_server_controls_do_nothing_without_an_owner(monkeypatch, tmp_path):
+    # Nothing outside the ASGI app can be assumed to be listening: an app built
+    # without callbacks has to answer rather than raise.
+    _set_home(monkeypatch, tmp_path)
+    client = _local_client(create_test_app())
+
+    assert client.post("/admin/api/server/restart").status_code == 200
+    assert client.post("/admin/api/server/stop").status_code == 200
+
+
+def test_admin_server_controls_are_loopback_only(monkeypatch, tmp_path):
+    _set_home(monkeypatch, tmp_path)
+    app = create_test_app()
+
+    remote_client = TestClient(app, client=("203.0.113.10", 50000))
+
+    assert remote_client.post("/admin/api/server/restart").status_code == 403
+    assert remote_client.post("/admin/api/server/stop").status_code == 403
+
+
+def test_admin_status_identifies_each_built_runtime(monkeypatch, tmp_path):
+    # The Admin UI decides a restart finished by seeing a different instance id.
+    # A restart completes in tens of milliseconds, far too fast for a browser to
+    # catch the socket closing, so a shared id would leave the page waiting for
+    # an outage it can never observe.
+    _set_home(monkeypatch, tmp_path)
+
+    first = _local_client(create_test_app()).get("/admin/api/status").json()
+    second = _local_client(create_test_app()).get("/admin/api/status").json()
+
+    assert first["instance"]
+    assert first["instance"] != second["instance"]

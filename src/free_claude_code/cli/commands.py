@@ -156,6 +156,7 @@ class ServerSupervisor:
         asgi_app = build_asgi_app(
             settings,
             restart_callback=self._request_runtime_restart,
+            stop_callback=self._request_runtime_stop,
         )
         config = uvicorn.Config(
             asgi_app,
@@ -186,6 +187,9 @@ class ServerSupervisor:
 
     def _request_runtime_restart(self) -> None:
         self.request_restart()
+
+    def _request_runtime_stop(self) -> None:
+        self.request_stop()
 
 
 def load_server_settings() -> Settings:

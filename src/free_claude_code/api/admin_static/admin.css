@@ -471,11 +471,21 @@ textarea {
 }
 
 .topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 24px;
 }
 
+.server-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .topbar h2 {
-  margin: 0;
+  margin: 0 auto 0 0;
   color: var(--text-strong);
   font-size: 26px;
   font-weight: 680;
@@ -694,6 +704,18 @@ textarea {
 .secondary-button {
   background: transparent;
   color: var(--text);
+}
+
+/* Stop ends the session reading this page, so it is the one control here that
+   carries the danger colour. Declared after .secondary-button on purpose: the
+   two have equal specificity, so the later rule is what decides the colour. */
+.danger-button {
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+.danger-button:hover:not(:disabled) {
+  background: var(--danger-soft);
 }
 
 @media (hover: hover) and (pointer: fine) {

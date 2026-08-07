@@ -8,6 +8,7 @@ import traceback
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 
@@ -49,6 +50,7 @@ from free_claude_code.messaging.voice import Transcriber
 from .provider_manager import ProviderRuntimeManager
 
 RestartCallback = Callable[[], Awaitable[None] | None]
+StopCallback = Callable[[], Awaitable[None] | None]
 
 
 async def best_effort(
@@ -114,11 +116,18 @@ class ApplicationRuntime:
         *,
         transcriber: Transcriber | None,
         restart_callback: RestartCallback | None = None,
+        stop_callback: StopCallback | None = None,
         connected_accounts: Mapping[str, ConnectedAccountPort] | None = None,
     ) -> None:
         self.provider_manager = provider_manager
         self._transcriber = transcriber
         self._restart_callback = restart_callback
+        self._stop_callback = stop_callback
+        # One identity per built runtime, and a restart builds a new one. A
+        # restart can complete in tens of milliseconds, far quicker than any
+        # caller can catch the socket being closed, so "the server came back" is
+        # only observable as this value changing.
+        self._instance_id = uuid4().hex
         self._connected_accounts = dict(connected_accounts or {})
         self._connected_account_revisions = {
             provider_id: manager.status().revision
@@ -227,6 +236,7 @@ class ApplicationRuntime:
         settings = self.settings
         return {
             "status": "running",
+            "instance": self._instance_id,
             "host": settings.host,
             "port": settings.port,
             "model": settings.model,
@@ -312,6 +322,21 @@ class ApplicationRuntime:
 
     async def request_restart(self) -> None:
         callback = self._restart_callback
+        if callback is None:
+            return
+        result = callback()
+        if inspect.isawaitable(result):
+            await result
+
+    async def request_stop(self) -> None:
+        """Ask the process that owns this runtime to shut the server down.
+
+        Separate from `close()`, which releases this runtime's resources but
+        leaves the supervisor free to start another one. Stopping is the whole
+        server going away, so only the owner outside the ASGI app can do it.
+        """
+
+        callback = self._stop_callback
         if callback is None:
             return
         result = callback()

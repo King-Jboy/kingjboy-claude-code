@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import cast
@@ -421,3 +422,29 @@ def test_bootstrap_selects_nvidia_transcriber_without_loading_riva() -> None:
 
 def test_bootstrap_disables_transcription_as_one_owned_resource() -> None:
     assert _create_transcriber(_settings(voice_note_enabled=False)) is None
+
+
+def test_bootstrap_threads_both_lifecycle_callbacks_to_the_runtime(tmp_path):
+    # The Admin server controls are only as connected as this wiring: the ASGI
+    # app cannot restart or stop the process it runs inside, so both callbacks
+    # have to reach the runtime from the supervisor that owns it.
+    events: list[str] = []
+    settings = _settings()
+
+    with (
+        patch(
+            "free_claude_code.runtime.bootstrap.server_log_path",
+            return_value=tmp_path / "server.log",
+        ),
+        patch("free_claude_code.runtime.bootstrap.configure_logging"),
+    ):
+        asgi_app = build_asgi_app(
+            settings,
+            restart_callback=lambda: events.append("restart"),
+            stop_callback=lambda: events.append("stop"),
+        )
+
+    asyncio.run(asgi_app.runtime.request_restart())
+    asyncio.run(asgi_app.runtime.request_stop())
+
+    assert events == ["restart", "stop"]

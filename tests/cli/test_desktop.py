@@ -112,7 +112,7 @@ def test_desktop_controller_owns_server_thread_and_graceful_quit() -> None:
         return tray
 
     main_thread_id = threading.get_ident()
-    controller = DesktopController(supervisor, make_tray, opened.set)
+    controller = DesktopController(lambda: supervisor, make_tray, opened.set)
     controller.run()
 
     assert tray is not None
@@ -180,7 +180,7 @@ def test_restart_during_server_startup_is_accepted_without_waiting() -> None:
         tray = WaitingTray(controller)
         return tray
 
-    controller = DesktopController(supervisor, make_tray, MagicMock())
+    controller = DesktopController(lambda: supervisor, make_tray, MagicMock())
     controller_thread = threading.Thread(target=controller.run)
     controller_thread.start()
     assert tray is not None
@@ -266,7 +266,83 @@ def test_fresh_desktop_launch_disables_console_and_automatic_browser() -> None:
         tray_factory = MagicMock()
         desktop.launch_desktop(tray_factory)
 
-    owner.assert_called_once_with(console_logging=False)
-    assert shell.call_args.args[:2] == (supervisor, tray_factory)
+        # The controller owns supervisor construction now, so the launch hands
+        # it a factory rather than an instance. That is what lets it build a
+        # replacement after Admin stops the server, and it means nothing is
+        # constructed until the controller asks. The factory has to be called
+        # inside the patch, since it resolves ServerSupervisor when invoked.
+        supervisor_factory, passed_tray_factory = shell.call_args.args[:2]
+        owner.assert_not_called()
+        assert supervisor_factory() is supervisor
+        owner.assert_called_once_with(console_logging=False)
+
+    assert passed_tray_factory is tray_factory
     controller.run.assert_called_once_with()
     instance_lock.release.assert_called_once_with()
+
+
+def test_restart_after_an_admin_stop_builds_a_replacement_supervisor() -> None:
+    """A stopped supervisor stays stopped, so the tray needs a fresh one.
+
+    request_stop latches _stop_requested permanently: schedule_run and
+    request_restart both refuse from then on. Without a replacement, Admin's
+    Stop would leave a live tray sitting over a server that can never start
+    again, and the tray's Restart would silently do nothing.
+    """
+
+    class OneShotSupervisor:
+        def __init__(self) -> None:
+            self.status = ServerStatus.STOPPED
+            self.stopped = False
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.run_count = 0
+
+        def schedule_run(self) -> bool:
+            return not self.stopped
+
+        def run(self, *, open_admin_browser: bool | None = None) -> None:
+            self.run_count += 1
+            self.started.set()
+            assert self.release.wait(2)
+
+        def request_restart(self) -> bool:
+            return not self.stopped
+
+        def request_stop(self) -> None:
+            self.stopped = True
+            self.release.set()
+
+    built: list[OneShotSupervisor] = []
+
+    def build_supervisor() -> OneShotSupervisor:
+        supervisor = OneShotSupervisor()
+        built.append(supervisor)
+        return supervisor
+
+    def server_thread_is_alive() -> bool:
+        return any(
+            thread.name == "fcc-desktop-server" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+
+    controller = DesktopController(build_supervisor, MagicMock(), MagicMock())
+    controller.restart_server()
+    assert built[0].started.wait(2)
+
+    # Admin stops the server the way the endpoint does, then the worker has to
+    # actually finish: restart_server reuses a live thread, so asserting before
+    # it exits would test the wrong branch.
+    built[0].request_stop()
+    for _ in range(200):
+        if not server_thread_is_alive():
+            break
+        threading.Event().wait(0.02)
+    assert not server_thread_is_alive()
+
+    controller.restart_server()
+
+    assert len(built) == 2, "a stopped supervisor must be replaced, not reused"
+    assert built[1].started.wait(2)
+    assert built[1].run_count == 1
+    built[1].request_stop()

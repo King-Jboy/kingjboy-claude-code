@@ -142,6 +142,41 @@ async def admin_status(
     return services.admin.admin_status()
 
 
+@router.post("/admin/api/server/restart")
+async def restart_server(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    services: ApiServices = Depends(get_services),
+):
+    """Restart the server that serves this page.
+
+    Dispatched after the response so the browser is told the restart began
+    rather than losing the connection mid-request and reporting a failure the
+    user cannot distinguish from a crash.
+    """
+
+    require_loopback_admin(request)
+    background_tasks.add_task(services.admin.request_restart)
+    return {"server": "restarting"}
+
+
+@router.post("/admin/api/server/stop")
+async def stop_server(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    services: ApiServices = Depends(get_services),
+):
+    """Stop the server, ending the Admin UI with it.
+
+    Deferred for the same reason as restart. Nothing here can start the server
+    again, which is why the UI has to say where the next start comes from.
+    """
+
+    require_loopback_admin(request)
+    background_tasks.add_task(services.admin.request_stop)
+    return {"server": "stopping"}
+
+
 @router.get("/admin/api/providers/local-status")
 async def local_provider_status(request: Request):
     require_loopback_admin(request)

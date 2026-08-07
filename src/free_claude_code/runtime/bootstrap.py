@@ -21,7 +21,7 @@ from free_claude_code.providers.openai_codex import (
 from free_claude_code.providers.runtime import ProviderRuntime
 from free_claude_code.providers.runtime.factory import create_provider
 
-from .application import ApplicationRuntime, RestartCallback
+from .application import ApplicationRuntime, RestartCallback, StopCallback
 from .asgi import RuntimeASGIApp
 from .codex_catalog import CodexModelCatalogPublisher
 from .provider_manager import ProviderRuntimeManager
@@ -30,6 +30,7 @@ from .provider_manager import ProviderRuntimeManager
 def build_asgi_app(
     settings: Settings,
     restart_callback: RestartCallback | None = None,
+    stop_callback: StopCallback | None = None,
 ) -> RuntimeASGIApp:
     """Construct the complete server application and its resource owner."""
     log_path = Path(os.getenv("LOG_FILE", server_log_path()))
@@ -58,6 +59,7 @@ def build_asgi_app(
         provider_manager,
         transcriber=_create_transcriber(settings),
         restart_callback=restart_callback,
+        stop_callback=stop_callback,
         connected_accounts={"openai": openai_auth},
     )
     services = ApiServices(

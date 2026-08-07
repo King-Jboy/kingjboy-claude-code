@@ -219,11 +219,17 @@ def test_serve_supervisor_restarts_when_app_requests_restart() -> None:
     get_settings.cache_clear = MagicMock()
     servers: list[object] = []
     restart_callbacks: list[Callable[[], None]] = []
+    stop_callbacks: list[Callable[[], None]] = []
 
     apps: list[SimpleNamespace] = []
 
-    def build_asgi_app(_settings: Settings, restart_callback: Callable[[], None]):
+    def build_asgi_app(
+        _settings: Settings,
+        restart_callback: Callable[[], None],
+        stop_callback: Callable[[], None],
+    ):
         restart_callbacks.append(restart_callback)
+        stop_callbacks.append(stop_callback)
         app = SimpleNamespace(runtime=SimpleNamespace(is_closed=False))
         apps.append(app)
         return app
@@ -257,6 +263,9 @@ def test_serve_supervisor_restarts_when_app_requests_restart() -> None:
     schedule_open_admin.assert_called_once_with(settings)
     get_settings.cache_clear.assert_called_once()
     kill_all.assert_called_once()
+    # Every generation gets a stop handle too, so Admin's Stop reaches the
+    # supervisor of whichever server is currently running.
+    assert len(stop_callbacks) == len(restart_callbacks)
 
 
 def test_serve_supervisor_refuses_restart_after_incomplete_shutdown() -> None:
@@ -268,7 +277,14 @@ def test_serve_supervisor_refuses_restart_after_incomplete_shutdown() -> None:
     servers: list[object] = []
     restart_callbacks: list[Callable[[], None]] = []
 
-    def build_asgi_app(_settings: Settings, restart_callback: Callable[[], None]):
+    def build_asgi_app(
+        _settings: Settings,
+        restart_callback: Callable[[], None],
+        stop_callback: Callable[[], None],
+    ):
+        # Named to match the keyword the supervisor passes; this test only
+        # exercises the restart path.
+        del stop_callback
         restart_callbacks.append(restart_callback)
         return SimpleNamespace(runtime=SimpleNamespace(is_closed=False))
 

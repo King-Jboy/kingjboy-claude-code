@@ -6,6 +6,8 @@ const state = {
   modelComboboxes: new Set(),
   authPollers: new Map(),
   activeView: "providers",
+  serverPoll: 0,
+  serverBusy: false,
 };
 
 const MASKED_SECRET = "********";
@@ -994,6 +996,139 @@ function showMessage(message, kind = "") {
   area.className = `message-area ${kind}`.trim();
 }
 
+/* ---------- server lifecycle ----------
+ *
+ * The page configures the server and now also runs it, so the desktop tray is
+ * no longer the only way to restart. Nothing here can start a server that is
+ * already down: this code is served by the process it controls, which is why
+ * every failure path names where the next start comes from.
+ */
+
+const SERVER_POLL_MS = 5000;
+const SERVER_PROBE_MS = 400;
+const SERVER_DOWN_TIMEOUT_MS = 15000;
+const SERVER_UP_TIMEOUT_MS = 60000;
+const START_HINT = "Start it from the desktop app, or run fcc-server.";
+
+const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+function setServerState(label, tone = "") {
+  const pill = byId("serverState");
+  pill.textContent = label;
+  pill.className = tone ? `status-pill ${tone}` : "status-pill";
+}
+
+function setServerControlsDisabled(disabled) {
+  byId("restartButton").disabled = disabled;
+  byId("stopButton").disabled = disabled;
+}
+
+/**
+ * Identify the running server, or null when nothing answers.
+ *
+ * The id changes on every restart. Watching for the socket to close instead
+ * does not work: a restart here completes in tens of milliseconds, so any
+ * polling interval slow enough to be polite misses the outage entirely and
+ * cannot tell "already back" from "never left".
+ */
+async function serverInstance() {
+  try {
+    const response = await fetch("/admin/api/status", { cache: "no-store" });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return typeof payload.instance === "string" ? payload.instance : null;
+  } catch {
+    return null;
+  }
+}
+
+const serverIsUp = async () => (await serverInstance()) !== null;
+
+async function waitUntil(predicate, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return true;
+    await sleep(SERVER_PROBE_MS);
+  }
+  return false;
+}
+
+const serverIsDown = async () => !(await serverIsUp());
+
+function scheduleServerPoll(delay = SERVER_POLL_MS) {
+  window.clearTimeout(state.serverPoll);
+  state.serverPoll = window.setTimeout(pollServerState, delay);
+}
+
+async function pollServerState() {
+  if (state.serverBusy) return;
+  const up = await serverIsUp();
+  setServerState(up ? "Running" : "Stopped", up ? "ok" : "error");
+  // Controls are live exactly when the API behind them is, so a server started
+  // elsewhere reconnects this page without a reload.
+  setServerControlsDisabled(!up);
+  scheduleServerPoll();
+}
+
+async function requestServerAction(path) {
+  try {
+    await api(path, { method: "POST" });
+  } catch {
+    // The socket can close before the reply arrives, which is the action
+    // landing rather than failing. Liveness is the only honest answer here.
+  }
+}
+
+async function restartServer() {
+  if (!window.confirm("Restart the server? Requests in flight will be dropped.")) {
+    return;
+  }
+  state.serverBusy = true;
+  window.clearTimeout(state.serverPoll);
+  setServerControlsDisabled(true);
+  setServerState("Restarting", "warn");
+  showMessage("Restarting the server");
+
+  const previous = await serverInstance();
+  await requestServerAction("/admin/api/server/restart");
+  // Done means a different server is answering, not that this one stopped.
+  const back = await waitUntil(async () => {
+    const current = await serverInstance();
+    return current !== null && current !== previous;
+  }, SERVER_UP_TIMEOUT_MS);
+
+  state.serverBusy = false;
+  if (back) {
+    setServerState("Running", "ok");
+    setServerControlsDisabled(false);
+    showMessage("Server restarted");
+    await load();
+  } else {
+    setServerState("Stopped", "error");
+    setServerControlsDisabled(true);
+    showMessage(`The server did not come back. ${START_HINT}`, "error");
+  }
+  scheduleServerPoll();
+}
+
+async function stopServer() {
+  if (!window.confirm("Stop the server? This page stops working until it starts again.")) {
+    return;
+  }
+  state.serverBusy = true;
+  window.clearTimeout(state.serverPoll);
+  setServerControlsDisabled(true);
+  setServerState("Stopping", "warn");
+
+  await requestServerAction("/admin/api/server/stop");
+  await waitUntil(serverIsDown, SERVER_DOWN_TIMEOUT_MS);
+
+  state.serverBusy = false;
+  setServerState("Stopped", "error");
+  showMessage(`Server stopped. ${START_HINT}`);
+  scheduleServerPoll();
+}
+
 const THEME_STORAGE_KEY = "fcc-admin-theme";
 
 function storedThemeChoice() {
@@ -1036,6 +1171,8 @@ applyThemeChoice(storedThemeChoice());
 
 byId("validateButton").addEventListener("click", () => validate(true));
 byId("applyButton").addEventListener("click", apply);
+byId("restartButton").addEventListener("click", restartServer);
+byId("stopButton").addEventListener("click", stopServer);
 document.addEventListener("pointerdown", (event) => {
   state.modelComboboxes.forEach((combobox) => {
     if (combobox.isOpen && !combobox.element.contains(event.target)) combobox.close();
@@ -1045,3 +1182,7 @@ document.addEventListener("pointerdown", (event) => {
 load().catch((error) => {
   showMessage(error.message, "error");
 });
+
+// Runs regardless of whether load() succeeded: a config failure still leaves a
+// server whose state is worth reporting, and worth being able to restart.
+void pollServerState();
