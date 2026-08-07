@@ -6,7 +6,10 @@
  * a cross-origin @import would be blocked by the extension CSP anyway.
  *
  * Sized for a side panel, which is narrow (~320-500px) and full height. Every
- * layout here is single-column; nothing assumes horizontal room.
+ * layout here is single-column; nothing assumes horizontal room. Because that
+ * column is the only axis available, hierarchy is carried by weight, ground,
+ * and a left rule rather than by indentation, which would spend width the
+ * panel does not have.
  */
 
 :root {
@@ -22,12 +25,12 @@
 
   --bg: #f6f7f9;
   --panel: #ffffff;
-  --card: #ffffff;
   --input: #ffffff;
 
   --text: #1c2024;
   --text-strong: #0c0e11;
   --muted: #5c6470;
+  --faint: #858d99;
 
   --line: rgba(12, 14, 17, 0.09);
   --line-strong: rgba(12, 14, 17, 0.16);
@@ -41,21 +44,29 @@
   --ok: #0f7a4a;
   --ok-soft: rgba(16, 185, 129, 0.12);
   --warn: #9a5b00;
+  /* Was referenced by .approval but never defined, so the one card that gates
+     running a command on this machine rendered with no ground at all and read
+     as an ordinary message. */
+  --warn-soft: rgba(245, 158, 11, 0.12);
+  --warn-ring: rgba(245, 158, 11, 0.3);
   --danger: #b3261e;
   --danger-soft: rgba(239, 68, 68, 0.1);
   --neutral-soft: rgba(12, 14, 17, 0.05);
+
+  --shadow-card: 0 1px 2px rgba(12, 14, 17, 0.05);
+  --shadow-raised: 0 6px 16px -6px rgba(12, 14, 17, 0.18);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0a0c11;
     --panel: #12151d;
-    --card: #161a23;
     --input: #0d1016;
 
     --text: #e7e9ee;
     --text-strong: #ffffff;
     --muted: #9aa3b2;
+    --faint: #6b7484;
 
     --line: rgba(255, 255, 255, 0.08);
     --line-strong: rgba(255, 255, 255, 0.15);
@@ -69,9 +80,14 @@
     --ok: #34d399;
     --ok-soft: rgba(52, 211, 153, 0.12);
     --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.14);
+    --warn-ring: rgba(251, 191, 36, 0.34);
     --danger: #f87171;
     --danger-soft: rgba(248, 113, 113, 0.12);
     --neutral-soft: rgba(255, 255, 255, 0.06);
+
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-raised: 0 8px 20px -8px rgba(0, 0, 0, 0.7);
   }
 }
 
@@ -92,7 +108,8 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ---------- Header ---------- */
@@ -107,18 +124,47 @@ body {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-weight: 650;
+  font-size: 12.5px;
+  letter-spacing: -0.01em;
   color: var(--text-strong);
 }
 
+/* The mark is drawn rather than shipped as an asset: one small square keeps the
+   header from being a bare string, with no image to load under the CSP. */
+.brand::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: linear-gradient(140deg, var(--accent), var(--accent-hover));
+  box-shadow: 0 0 0 2.5px var(--accent-soft);
+}
+
 .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-left: auto;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: var(--radius-full);
-  font-size: 11px;
-  font-weight: 550;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   background: var(--neutral-soft);
   color: var(--muted);
+}
+
+.status::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+  opacity: 0.85;
 }
 
 .status[data-state="ok"] {
@@ -136,31 +182,40 @@ body {
 .settings {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
+  gap: 11px;
+  padding: 13px 12px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+  box-shadow: var(--shadow-card);
 }
 
 .settings label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 550;
-  color: var(--muted);
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--faint);
 }
 
 .settings label.checkbox {
   flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
 }
 
 .settings-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-top: 1px;
 }
 
 .note {
@@ -183,10 +238,12 @@ textarea {
   color: var(--text);
   font-family: inherit;
   font-size: 13px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
 input[type="checkbox"] {
   width: auto;
+  accent-color: var(--accent);
 }
 
 textarea {
@@ -195,9 +252,9 @@ textarea {
 }
 
 :is(input, select, textarea):focus-visible {
-  outline: 2px solid var(--accent-ring);
-  outline-offset: 1px;
+  outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 button {
@@ -210,14 +267,24 @@ button {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: background-color 120ms ease, transform 90ms ease;
 }
 
 button:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
+button:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: default;
 }
 
@@ -237,39 +304,98 @@ button.ghost:hover:not(:disabled) {
 .transcript {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  overscroll-behavior: contain;
+  padding: 14px 12px 18px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
 }
 
 .turn {
-  padding: 9px 11px;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--line);
-  background: var(--card);
+  position: relative;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.turn[data-role="user"] {
-  background: var(--accent-soft);
-  border-color: transparent;
+/* Every turn names its speaker. In one narrow column the alternative is
+   guessing from background tint alone, which fails as soon as two turns of the
+   same role sit next to each other. */
+.turn::before {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: normal;
+  color: var(--faint);
 }
 
-.turn[data-role="error"] {
-  background: var(--danger-soft);
-  border-color: transparent;
-  color: var(--danger);
+.turn[data-role="user"] {
+  padding: 9px 11px;
+  border-radius: var(--radius-card);
+  background: var(--accent-soft);
+  color: var(--text-strong);
+}
+
+.turn[data-role="user"]::before {
+  content: "You";
+  color: var(--accent);
+}
+
+/* The assistant gets the page's ground rather than a card. It is the longest
+   and most-read content here, and boxing every reply turns a scroll into a
+   stack of containers. */
+.turn[data-role="assistant"] {
+  padding-left: 11px;
+  border-left: 2px solid var(--line-strong);
+}
+
+.turn[data-role="assistant"]::before {
+  content: "Claude";
+}
+
+/* A reply is created empty and filled by the stream, so an empty one is
+   always one that has not started arriving. */
+.turn[data-role="assistant"]:empty::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: caret 1.05s steps(1, end) infinite;
 }
 
 .turn[data-role="tool"] {
-  background: transparent;
-  border-style: dashed;
+  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  background: var(--neutral-soft);
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: normal;
+}
+
+.turn[data-role="tool"]::before {
+  content: "Tool";
+  font-family: var(--font-sans);
+}
+
+.turn[data-role="error"] {
+  padding: 9px 11px;
+  border-radius: var(--radius-card);
+  background: var(--danger-soft);
+  border-left: 2px solid var(--danger);
+  color: var(--danger);
+}
+
+.turn[data-role="error"]::before {
+  content: "Error";
+  color: var(--danger);
+  opacity: 0.75;
 }
 
 .turn code {
@@ -278,36 +404,60 @@ button.ghost:hover:not(:disabled) {
 }
 
 /* Approval card. Deliberately the loudest thing in the transcript: it is the
-   only place the user decides whether something runs on their machine. */
+   only place the user decides whether something runs on their machine. It
+   carries a ring and a raised shadow so it cannot be skimmed past, and it must
+   never be mistaken for the assistant text that asked for it. */
 .approval {
-  border-color: var(--warn);
+  padding: 11px 12px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--warn);
+  border-left-width: 3px;
   background: var(--warn-soft);
+  box-shadow: 0 0 0 3px var(--warn-ring), var(--shadow-raised);
   white-space: normal;
 }
 
-.approval[data-outcome="denied"] {
-  border-color: var(--line);
-  background: transparent;
-  opacity: 0.6;
+.approval::before {
+  content: "Approval needed";
+  color: var(--warn);
 }
 
+.approval[data-outcome="denied"],
 .approval[data-outcome="approved"] {
   border-color: var(--line);
+  border-left-width: 1px;
   background: transparent;
+  box-shadow: none;
+}
+
+.approval[data-outcome="denied"] {
+  opacity: 0.55;
+}
+
+.approval[data-outcome="denied"]::before {
+  content: "Denied";
+  color: var(--faint);
+}
+
+.approval[data-outcome="approved"]::before {
+  content: "Approved";
+  color: var(--ok);
 }
 
 .approval-label {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--text-strong);
 }
 
 .approval-command {
   display: block;
-  padding: 7px 9px;
+  padding: 8px 10px;
   border-radius: var(--radius-control);
+  border: 1px solid var(--line);
   background: var(--input);
+  color: var(--text-strong);
   font-family: var(--font-mono);
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -317,7 +467,7 @@ button.ghost:hover:not(:disabled) {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .shell-state {
@@ -327,10 +477,22 @@ button.ghost:hover:not(:disabled) {
 
 .empty {
   margin: auto;
-  max-width: 260px;
+  max-width: 250px;
   text-align: center;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.6;
+}
+
+.empty::before {
+  content: "";
+  display: block;
+  width: 30px;
+  height: 30px;
+  margin: 0 auto 11px;
+  border-radius: 9px;
+  background: linear-gradient(140deg, var(--accent), var(--accent-hover));
+  opacity: 0.16;
 }
 
 /* ---------- Composer ---------- */
@@ -339,9 +501,13 @@ button.ghost:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
+  padding: 11px 12px 12px;
   background: var(--panel);
   border-top: 1px solid var(--line);
+}
+
+.composer textarea {
+  border-radius: var(--radius-card);
 }
 
 .composer-actions {
@@ -360,5 +526,18 @@ button.ghost:hover:not(:disabled) {
       opacity: 0;
       transform: translateY(4px);
     }
+  }
+
+  @keyframes caret {
+    50% {
+      opacity: 0;
+    }
+  }
+}
+
+/* Without this the caret is a block that never stops flashing. */
+@media (prefers-reduced-motion: reduce) {
+  .turn[data-role="assistant"]:empty::after {
+    opacity: 0.5;
   }
 }

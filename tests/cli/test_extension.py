@@ -1,6 +1,7 @@
 """`fcc-extension`: what it reports, and that the bundled assets stay coherent."""
 
 import json
+import re
 import shutil
 import subprocess
 import tomllib
@@ -225,3 +226,58 @@ def test_help_exits_zero_without_reading_config(
 
     assert extension.run(["--help"]) == 0
     assert "--show-token" in capsys.readouterr().out
+
+
+def _sidepanel_css() -> str:
+    return (extension.extension_dir() / "sidepanel.css").read_text(encoding="utf-8")
+
+
+def _css_custom_property_blocks(css: str) -> list[str]:
+    """Return the body of each ``:root`` block, light first then dark."""
+    blocks: list[str] = []
+    for match in re.finditer(r":root\s*\{", css):
+        depth, index = 1, match.end()
+        while depth and index < len(css):
+            depth += (css[index] == "{") - (css[index] == "}")
+            index += 1
+        blocks.append(css[match.end() : index - 1])
+    return blocks
+
+
+def test_every_css_variable_the_panel_uses_is_defined() -> None:
+    # An undefined custom property fails silently: the declaration is dropped
+    # and the element keeps whatever it inherited. That is how --warn-soft went
+    # unnoticed while the approval card - the one place a shell command gets
+    # authorised - rendered with no background and read as ordinary text.
+    # Checked against the base :root alone, not every block pooled together: a
+    # token defined only under the dark media query is still undefined in light
+    # mode, so pooling them would report a half-broken palette as healthy.
+    css = _sidepanel_css()
+    used = set(re.findall(r"var\((--[a-z-]+)\)", css))
+    base = set(re.findall(r"(--[a-z-]+)\s*:", _css_custom_property_blocks(css)[0]))
+
+    assert not used - base, f"used but never defined: {sorted(used - base)}"
+
+
+def test_the_dark_palette_only_overrides_tokens_light_already_defines() -> None:
+    # A token defined only under the dark media query is undefined in light
+    # mode, which is the same silent-drop failure in one theme only.
+    light, dark = _css_custom_property_blocks(_sidepanel_css())[:2]
+    light_names = set(re.findall(r"(--[a-z-]+)\s*:", light))
+    dark_names = set(re.findall(r"(--[a-z-]+)\s*:", dark))
+
+    assert not dark_names - light_names, (
+        f"dark-only tokens are undefined in light mode: {sorted(dark_names - light_names)}"
+    )
+
+
+def test_the_approval_card_is_visually_distinct_from_an_ordinary_turn() -> None:
+    # The security property is visual: approving a shell command must never
+    # look like reading a reply.
+    css = _sidepanel_css()
+    approval = re.search(r"\n\.approval\s*\{(.*?)\}", css, re.S)
+
+    assert approval is not None, ".approval must be styled"
+    body = approval.group(1)
+    assert "var(--warn" in body, "the approval card must carry the warning colour"
+    assert "box-shadow" in body, "the approval card must be raised off the transcript"
