@@ -86,21 +86,9 @@ def test_a_configured_pool_reports_its_parsed_size() -> None:
 
     findings = list(doctor.check_key_pools(settings))
 
-    (finding,) = findings
-    assert (finding.level, finding.check) == (Level.OK, "NVIDIA_NIM_API_KEYS")
-    assert finding.detail.startswith("3 keys pooled")
-
-
-def test_a_pool_is_never_reported_as_added_capacity() -> None:
-    # The pool's size is the one number a user will read as throughput, and it
-    # is not. Both pooled providers meter per account, so saying only "3 keys
-    # pooled" is what led to expecting 3x the capacity and finding none.
-    settings = _settings(NVIDIA_NIM_API_KEYS='["a", "b", "c"]')
-
-    (finding,) = list(doctor.check_key_pools(settings))
-
-    assert "per account" in finding.detail
-    assert "no throughput" in finding.detail
+    assert [(f.level, f.check, f.detail) for f in findings] == [
+        (Level.OK, "NVIDIA_NIM_API_KEYS", "3 keys pooled")
+    ]
 
 
 def test_a_single_key_warns_that_no_pool_is_built() -> None:

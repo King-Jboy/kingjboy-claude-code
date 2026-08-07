@@ -85,11 +85,59 @@ OpenAIAsyncCredentialProvider = Callable[[], Awaitable[str]]
 # recovery. A gap this short stays well inside any client's stream-idle budget.
 KEEPALIVE_INTERVAL_SECONDS = 1.5
 
+# How long the upstream may say nothing before the client is sent a keepalive.
+# Claude Code gives a pending stream 20s of silence before it shows "Waiting for
+# API response" and starts aborting, so this leaves a wide margin while staying
+# long enough that an ordinary response never commits the reply early.
+UPSTREAM_QUIET_KEEPALIVE_SECONDS = 5.0
+
 
 async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
     """Return whether ``task`` finished within ``timeout`` seconds."""
     done, _ = await asyncio.wait((task,), timeout=timeout)
     return bool(done)
+
+
+# Yielded in place of a chunk when the upstream has gone quiet long enough that
+# the client needs to hear something.
+_KEEPALIVE = object()
+
+
+async def _chunks_with_keepalive(
+    stream: Any,
+    *,
+    quiet_after: float,
+    interval: float,
+) -> AsyncIterator[Any]:
+    """Yield upstream chunks, marking stretches where the upstream says nothing.
+
+    Claude Code aborts a response stream that delivers no data for 20 seconds and
+    shows "Waiting for API response". A reasoning model routinely thinks for
+    longer than that before its first token, so silence here is normal upstream
+    behaviour that the client reads as a stalled connection.
+
+    The wait is only reported once it has run past ``quiet_after``, so an
+    ordinary fast response never emits anything and the commit boundary stays
+    free to return a typed non-2xx.
+    """
+    iterator = aiter(stream)
+    quiet = 0.0
+    while True:
+        chunk_task = asyncio.ensure_future(anext(iterator))
+        try:
+            while not await _settled_within(chunk_task, interval):
+                quiet += interval
+                if quiet >= quiet_after:
+                    yield _KEEPALIVE
+        except BaseException:
+            await _discard_pending_task(chunk_task)
+            raise
+        try:
+            chunk = chunk_task.result()
+        except StopAsyncIteration:
+            return
+        quiet = 0.0
+        yield chunk
 
 
 async def _discard_pending_task(task: asyncio.Task[Any]) -> None:
@@ -512,13 +560,43 @@ class _OpenAIChatStreamRunner:
             attempt: ProviderAttempt | None = None
             stream_opened = False
             try:
-                stream, body, attempt = await self._provider._create_stream(
-                    body,
-                    retry_session,
+                # Opening the stream is the other place this request can go
+                # quiet, and the longer of the two: it covers admission, the
+                # pooled-key wait, the connect, and however long the model takes
+                # to return response headers. Measured at 209s on a loaded NIM
+                # model, against a client that gives up at 20.
+                create_task = asyncio.ensure_future(
+                    self._provider._create_stream(body, retry_session)
                 )
+                try:
+                    quiet = 0.0
+                    while not await _settled_within(
+                        create_task, KEEPALIVE_INTERVAL_SECONDS
+                    ):
+                        quiet += KEEPALIVE_INTERVAL_SECONDS
+                        if quiet >= UPSTREAM_QUIET_KEEPALIVE_SECONDS:
+                            for event in recovery.flush():
+                                yield event
+                            yield anthropic_ping_frame()
+                except BaseException:
+                    await _discard_pending_task(create_task)
+                    raise
+                stream, body, attempt = create_task.result()
                 stream_opened = True
                 tool_argument_aliases = self._provider._tool_argument_aliases(body)
-                async for chunk in stream:
+                async for chunk in _chunks_with_keepalive(
+                    stream,
+                    quiet_after=UPSTREAM_QUIET_KEEPALIVE_SECONDS,
+                    interval=KEEPALIVE_INTERVAL_SECONDS,
+                ):
+                    if chunk is _KEEPALIVE:
+                        # message_start is still sitting in the holdback buffer,
+                        # and a ping ahead of it would be an illegal event order.
+                        # Releasing it here is what commits the response.
+                        for event in recovery.flush():
+                            yield event
+                        yield anthropic_ping_frame()
+                        continue
                     if not attempt.accepted:
                         await attempt.succeeded()
                     chunk_usage = getattr(chunk, "usage", None)

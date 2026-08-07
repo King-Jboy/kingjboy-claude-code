@@ -179,13 +179,7 @@ def check_context_window(settings: Settings) -> Iterator[Finding]:
 
 
 def check_key_pools(settings: Settings) -> Iterator[Finding]:
-    """Report the parsed size of every configured credential pool.
-
-    Never presents a pool as capacity. Both providers that accept key lists
-    meter per account, so N keys serve at the rate of one; reporting "14 keys
-    pooled" as a bare OK invited exactly the wrong conclusion when throughput
-    did not improve.
-    """
+    """Report the parsed size of every configured credential pool."""
     env_names = {field.settings_attr: field.key for field in FIELDS}
     for descriptor in PROVIDER_CATALOG.values():
         attr = descriptor.credential_pool_attr
@@ -208,12 +202,7 @@ def check_key_pools(settings: Settings) -> Iterator[Finding]:
                 "Pools need two or more keys; the single key is used directly.",
             )
         else:
-            yield Finding(
-                Level.OK,
-                env_name,
-                f"{len(keys)} keys pooled; survives a revoked key, but rate "
-                f"limits are per account so this adds no throughput",
-            )
+            yield Finding(Level.OK, env_name, f"{len(keys)} keys pooled")
 
 
 def check_models_still_exist(settings: Settings) -> Iterator[Finding]:
