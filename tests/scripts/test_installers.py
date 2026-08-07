@@ -686,27 +686,6 @@ def _create_windows_shortcut(
     )
 
 
-def _windows_shortcut_icon(powershell: str, shortcut_path: Path) -> str:
-    env = os.environ | {"FCC_TEST_SHORTCUT": str(shortcut_path)}
-    completed = subprocess.run(
-        [
-            powershell,
-            "-NoProfile",
-            "-Command",
-            (
-                "$shell = New-Object -ComObject WScript.Shell; "
-                "$shortcut = $shell.CreateShortcut($env:FCC_TEST_SHORTCUT); "
-                "[Console]::Out.Write($shortcut.IconLocation)"
-            ),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    return completed.stdout
-
-
 def _batch_client(name: str) -> str:
     return f"""@echo off
 echo {name}:%*>>"%CALL_LOG%"
@@ -779,6 +758,34 @@ class PowerShellHarness:
             text=True,
             env=env,
         )
+
+    def shortcut_icon(self, shortcut_path: Path) -> str:
+        """Read a shortcut's icon back under the environment that wrote it.
+
+        Windows stores an icon path that sits under the creating process's
+        %USERPROFILE% as an expandable string, so reading the shortcut under the
+        real profile resolves this harness's fake home to the developer's own
+        and reports an icon the installer never wrote. It stays hidden until the
+        temp directory happens to sit under the profile, which is where pytest
+        puts it by default on Windows.
+        """
+        completed = subprocess.run(
+            [
+                self.powershell,
+                "-NoProfile",
+                "-Command",
+                (
+                    "$shell = New-Object -ComObject WScript.Shell; "
+                    "$shortcut = $shell.CreateShortcut($env:FCC_TEST_SHORTCUT); "
+                    "[Console]::Out.Write($shortcut.IconLocation)"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=self.env | {"FCC_TEST_SHORTCUT": str(shortcut_path)},
+        )
+        return completed.stdout
 
     def calls(self) -> list[str]:
         if not self.log.exists():
@@ -955,13 +962,7 @@ def test_install_ps1_fresh_install_is_verified(
     assert calls[-1] == f'fcc-desktop:--export-icon "{icon}"'
     desktop_shortcut = home / "Desktop" / "Free Claude Code.lnk"
     assert desktop_shortcut.is_file()
-    assert (
-        _windows_shortcut_icon(
-            powershell_harness.powershell,
-            desktop_shortcut,
-        )
-        == f"{icon},0"
-    )
+    assert powershell_harness.shortcut_icon(desktop_shortcut) == f"{icon},0"
     assert (
         app_data
         / "Microsoft"
