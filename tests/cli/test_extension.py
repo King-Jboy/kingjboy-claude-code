@@ -281,3 +281,26 @@ def test_the_approval_card_is_visually_distinct_from_an_ordinary_turn() -> None:
     body = approval.group(1)
     assert "var(--warn" in body, "the approval card must carry the warning colour"
     assert "box-shadow" in body, "the approval card must be raised off the transcript"
+
+
+def test_a_hidden_settings_sheet_stays_hidden() -> None:
+    # .sheet declares display:flex, which outranks the user agent's [hidden]
+    # rule. Without an explicit override the sheet covers the transcript and the
+    # composer for the whole session, and the panel looks like it lost the
+    # conversation rather than like a stylesheet lost a line.
+    assert re.search(r"\.sheet\[hidden\]\s*\{[^}]*display:\s*none", _sidepanel_css()), (
+        "a hidden .sheet must be display:none"
+    )
+
+
+def test_every_element_the_panel_script_looks_up_exists_in_the_markup() -> None:
+    # getElementById returns null rather than raising, so an id that drifts out
+    # of the markup surfaces as a control that silently does nothing.
+    root = extension.extension_dir()
+    html = (root / "sidepanel.html").read_text(encoding="utf-8")
+    script = (root / "sidepanel.js").read_text(encoding="utf-8")
+
+    looked_up = set(re.findall(r'getElementById\("([\w-]+)"\)', script))
+    missing = sorted(name for name in looked_up if f'id="{name}"' not in html)
+
+    assert not missing, f"looked up by the script but never rendered: {missing}"

@@ -107,6 +107,12 @@ function setNote(text, state = "") {
   ui.settingsNote.dataset.state = state;
 }
 
+/** Single owner of sheet visibility, so the toggle never lies to assistive tech. */
+function setSettingsOpen(open) {
+  ui.settings.hidden = !open;
+  ui.settingsToggle.setAttribute("aria-expanded", String(open));
+}
+
 // ---------- model catalog ----------
 
 /**
@@ -155,7 +161,10 @@ function renderCatalog(groups, selected) {
 }
 
 async function connect(settings) {
-  setNote("Connecting…");
+  // The chip said "not connected" for the whole round trip, which is a
+  // different claim from "trying". Every exit below overwrites it.
+  setStatus("connecting", "busy");
+  setNote("Reaching the proxy…");
   let response;
   try {
     response = await fetch(`${settings.baseUrl}/v1/models`, { headers: authHeaders(settings) });
@@ -207,13 +216,53 @@ function addTurn(role, text) {
   return node;
 }
 
+/**
+ * Openers that each exercise a tool the panel actually has.
+ *
+ * A first-run user cannot tell from a text box that the model can look at the
+ * tab, and the one thing worth teaching here is that they do not have to paste.
+ * They fill the composer rather than sending, so the wording stays editable.
+ */
+const OPENERS = [
+  "What is this page for?",
+  "Any errors in the console?",
+  "Summarize the main content",
+];
+
 function showEmptyState() {
   history = [];
   ui.transcript.replaceChildren();
-  const node = document.createElement("p");
+
+  const node = document.createElement("div");
   node.className = "empty";
-  node.textContent =
-    "Ask about the page you are on. The model can read its content and console output.";
+
+  // States the capability rather than repeating the composer's placeholder:
+  // that the model can look at the tab is the one thing a first-run user has
+  // no way to guess, and the box below already says what to do with it.
+  const title = document.createElement("p");
+  title.className = "empty-title";
+  title.textContent = "Claude can see this tab";
+
+  const body = document.createElement("p");
+  body.className = "empty-body";
+  body.textContent = "Ask about anything on the page, including its console output.";
+
+  const openers = document.createElement("div");
+  openers.className = "empty-suggestions";
+  for (const opener of OPENERS) {
+    const button = document.createElement("button");
+    button.className = "suggestion";
+    button.type = "button";
+    button.textContent = opener;
+    button.addEventListener("click", () => {
+      ui.prompt.value = opener;
+      resizePrompt();
+      ui.prompt.focus();
+    });
+    openers.append(button);
+  }
+
+  node.append(title, body, openers);
   ui.transcript.append(node);
 }
 
@@ -338,10 +387,6 @@ function requestApproval({ command, cwd }) {
     const card = document.createElement("div");
     card.className = "turn approval";
 
-    const label = document.createElement("p");
-    label.className = "approval-label";
-    label.textContent = cwd ? `Run in ${cwd}` : "Run this command";
-
     const line = document.createElement("code");
     line.className = "approval-command";
     line.textContent = command;
@@ -356,17 +401,25 @@ function requestApproval({ command, cwd }) {
     allow.type = "button";
     allow.textContent = "Run";
 
+    // The card's heading reports the outcome, so nothing else has to change:
+    // rewriting the body left the card saying "Denied" twice.
     const settle = (approved) => {
       actions.remove();
       card.dataset.outcome = approved ? "approved" : "denied";
-      label.textContent = approved ? label.textContent : "Denied";
       resolve(approved);
     };
     deny.addEventListener("click", () => settle(false));
     allow.addEventListener("click", () => settle(true));
 
     actions.append(deny, allow);
-    card.append(label, line, actions);
+    // The directory only appears when there is one to name.
+    if (cwd) {
+      const where = document.createElement("p");
+      where.className = "approval-label";
+      where.textContent = cwd;
+      card.append(where);
+    }
+    card.append(line, actions);
     ui.transcript.append(card);
     ui.transcript.scrollTop = ui.transcript.scrollHeight;
     allow.focus();
@@ -419,13 +472,14 @@ async function send() {
   const settings = currentSettings();
   if (!settings.model) {
     setNote("Connect to the proxy first.", "error");
-    ui.settings.hidden = false;
+    setSettingsOpen(true);
     return;
   }
 
   busy = true;
   ui.send.disabled = true;
   ui.prompt.value = "";
+  resizePrompt();
   addTurn("user", text);
   history.push({ role: "user", content: [{ type: "text", text }] });
 
@@ -442,13 +496,19 @@ async function send() {
 
 // ---------- wiring ----------
 
+/** Grow the composer with its content, up to the max-height the stylesheet sets. */
+function resizePrompt() {
+  ui.prompt.style.height = "auto";
+  ui.prompt.style.height = `${ui.prompt.scrollHeight}px`;
+}
+
 ui.settingsToggle.addEventListener("click", () => {
-  ui.settings.hidden = !ui.settings.hidden;
+  setSettingsOpen(ui.settings.hidden);
 });
 
 ui.settings.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (await connect(currentSettings())) ui.settings.hidden = true;
+  if (await connect(currentSettings())) setSettingsOpen(false);
 });
 
 ui.model.addEventListener("change", async () => {
@@ -463,6 +523,8 @@ ui.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   void send();
 });
+
+ui.prompt.addEventListener("input", resizePrompt);
 
 ui.prompt.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -498,10 +560,11 @@ async function probeBridge() {
   ui.authToken.value = settings.authToken;
   ui.pageTools.checked = settings.pageTools;
   showEmptyState();
+  resizePrompt();
   await probeBridge();
 
   // Auto-connect: the common case is a proxy already running at the saved URL,
   // and making the user press Connect every time the panel reopens is friction
   // for nothing. Failure just opens the settings pane with the reason.
-  if (!(await connect(settings))) ui.settings.hidden = false;
+  if (!(await connect(settings))) setSettingsOpen(true);
 })();

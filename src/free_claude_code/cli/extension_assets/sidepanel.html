@@ -9,48 +9,88 @@
     <header class="bar">
       <span class="brand">Free Claude Code</span>
       <span id="status" class="status" data-state="unknown">not connected</span>
-      <button id="settings-toggle" class="ghost" type="button" title="Connection settings">
-        Settings
+      <!-- The glyphs are drawn inline rather than pulled from an icon package:
+           the extension ships as static files with no build step, and the MV3
+           CSP blocks any remote sprite. Two stroked shapes are the whole set. -->
+      <button
+        id="settings-toggle"
+        class="icon-button"
+        type="button"
+        aria-expanded="false"
+        aria-controls="settings"
+      >
+        <svg class="glyph-settings" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2 4.5h12M2 8h12M2 11.5h12" />
+          <circle cx="5.5" cy="4.5" r="1.6" />
+          <circle cx="10.5" cy="8" r="1.6" />
+          <circle cx="6.5" cy="11.5" r="1.6" />
+        </svg>
+        <svg class="glyph-close" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4 4l8 8M12 4l-8 8" />
+        </svg>
+        <span class="sr-only">Connection settings</span>
       </button>
     </header>
 
-    <form id="settings" class="settings" hidden>
-      <label>
-        Proxy URL
-        <input id="base-url" type="url" placeholder="http://127.0.0.1:8081" required />
-      </label>
-      <label>
-        Auth token
-        <input id="auth-token" type="password" placeholder="blank if ANTHROPIC_AUTH_TOKEN is unset" />
-      </label>
-      <label>
-        Model
-        <select id="model"></select>
-      </label>
-      <label class="checkbox">
-        <input id="page-tools" type="checkbox" checked />
-        Let the model read the active tab
-      </label>
-      <div class="settings-actions">
-        <button id="connect" type="submit">Connect</button>
-        <span id="settings-note" class="note"></span>
-      </div>
-      <p id="shell-state" class="note shell-state"></p>
-    </form>
+    <div class="body">
+      <main id="transcript" class="transcript" aria-live="polite"></main>
 
-    <main id="transcript" class="transcript" aria-live="polite"></main>
+      <form id="composer" class="composer">
+        <div class="composer-field">
+          <textarea id="prompt" rows="1" placeholder="Ask about this page…"></textarea>
+          <div class="composer-actions">
+            <span class="composer-hint">Enter sends, Shift+Enter adds a line</span>
+            <button id="clear" class="ghost" type="button">Clear</button>
+            <button id="send" type="submit">Send</button>
+          </div>
+        </div>
+      </form>
 
-    <form id="composer" class="composer">
-      <textarea
-        id="prompt"
-        rows="3"
-        placeholder="Ask about this page… (Enter to send, Shift+Enter for a newline)"
-      ></textarea>
-      <div class="composer-actions">
-        <button id="clear" class="ghost" type="button">Clear</button>
-        <button id="send" type="submit">Send</button>
-      </div>
-    </form>
+      <!-- Settings cover the conversation instead of pushing it: the panel is
+           one narrow column, and pushing left the transcript too short to read
+           at the exact moment the user is being told something went wrong. -->
+      <form id="settings" class="sheet" hidden aria-label="Connection settings">
+        <div class="sheet-scroll">
+          <h2 class="sheet-title">Connection</h2>
+
+          <div class="field">
+            <label for="base-url">Proxy URL</label>
+            <input id="base-url" type="url" placeholder="http://127.0.0.1:8081" required />
+          </div>
+
+          <div class="field">
+            <label for="auth-token">Auth token</label>
+            <input
+              id="auth-token"
+              type="password"
+              placeholder="Leave blank if ANTHROPIC_AUTH_TOKEN is unset"
+            />
+          </div>
+
+          <div class="field">
+            <label for="model">Model</label>
+            <select id="model">
+              <option value="">Connect to load models</option>
+            </select>
+          </div>
+
+          <label class="switch">
+            <input id="page-tools" type="checkbox" checked />
+            <span>Let the model read the active tab</span>
+          </label>
+
+          <section class="shell">
+            <h3 class="shell-title">Shell commands</h3>
+            <p id="shell-state" class="shell-state"></p>
+          </section>
+        </div>
+
+        <div class="sheet-footer">
+          <p id="settings-note" class="note"></p>
+          <button id="connect" type="submit">Connect</button>
+        </div>
+      </form>
+    </div>
 
     <script src="sidepanel.js" type="module"></script>
   </body>
