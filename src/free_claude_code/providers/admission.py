@@ -234,6 +234,16 @@ class ProviderAdmissionController:
             max_attempts,
         )
 
+    def set_rate_limit(self, rate_limit: int) -> None:
+        """Retune the provider-wide window, in requests per window.
+
+        A pooled provider's total is the sum of the quotas its usable keys
+        carry, so it has to follow the pool: a gate fixed at the configured key
+        count keeps admitting at full rate into a pool that has lost keys, and
+        the surplus then queues inside the pool instead of being held here.
+        """
+        self._proactive_limiter.set_rate_limit(rate_limit)
+
     def new_retry_session(
         self,
         *,

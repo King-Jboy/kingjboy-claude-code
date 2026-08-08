@@ -21,6 +21,8 @@ from free_claude_code.providers.runtime.config import (
     build_provider_config,
     has_provider_configuration,
     provider_credential_pool,
+    rate_with_margin,
+    resolve_rate_policy,
 )
 from free_claude_code.providers.runtime.factory import (
     MAX_POOLED_CONCURRENCY,
@@ -228,6 +230,43 @@ def _admission_for_pool(size: int) -> Any:
     return controller.call_args.kwargs
 
 
+def test_each_provider_is_paced_at_its_own_published_quota() -> None:
+    # One shared rate limit cannot serve two providers with different ceilings.
+    # Pacing every provider at the highest one guarantees refusals from the
+    # lowest, which is what a single global setting used to do.
+    settings = _settings(NVIDIA_NIM_API_KEY="nim-key", OPENROUTER_API_KEY="or-key")
+
+    nim, _ = resolve_rate_policy(PROVIDER_CATALOG["nvidia_nim"], settings)
+    openrouter, _ = resolve_rate_policy(PROVIDER_CATALOG["open_router"], settings)
+
+    assert (nim, openrouter) == (38, 19)
+
+
+def test_an_explicitly_configured_quota_overrides_the_published_one() -> None:
+    # The provider's own figure is a better default than a shared one, but it
+    # must not overrule an operator who knows their account's real limit.
+    settings = _settings(NVIDIA_NIM_API_KEY="nim-key", PROVIDER_RATE_LIMIT="100")
+
+    limit, _ = resolve_rate_policy(PROVIDER_CATALOG["nvidia_nim"], settings)
+
+    assert limit == 95
+
+
+def test_the_safety_margin_can_be_turned_off() -> None:
+    settings = _settings(NVIDIA_NIM_API_KEY="nim-key", PROVIDER_RATE_MARGIN="0")
+
+    limit, _ = resolve_rate_policy(PROVIDER_CATALOG["nvidia_nim"], settings)
+
+    assert limit == 40
+
+
+def test_the_margin_holds_back_at_least_one_whole_request() -> None:
+    # A percentage of a small quota rounds to nothing, and a cushion of zero
+    # requests is not a cushion.
+    assert rate_with_margin(4, 0.05) == 3
+    assert rate_with_margin(1, 0.05) == 1
+
+
 def test_pooled_quota_scales_with_every_key() -> None:
     # Each key carries its own upstream quota, so the provider-wide window has
     # to admit the pooled total or the gate would cap the pool at one key.
@@ -237,10 +276,13 @@ def test_pooled_quota_scales_with_every_key() -> None:
 
 
 def test_pooled_concurrency_stops_scaling_at_the_ceiling() -> None:
-    # Concurrency is bounded by local sockets rather than by quota, and one
-    # client only drives a handful of parallel requests.
+    # Concurrency is bounded by local sockets rather than by quota, so it scales
+    # with the pool only up to a ceiling. The ceiling has to sit well above one
+    # client's handful of parallel requests: a streaming response holds its slot
+    # for tens of seconds, so too low a ceiling - not the rate limit - becomes
+    # the real throughput bound and strands most of a large pool's quota.
     assert _admission_for_pool(2)["max_concurrency"] == 10
-    assert _admission_for_pool(4)["max_concurrency"] == MAX_POOLED_CONCURRENCY
+    assert _admission_for_pool(4)["max_concurrency"] == 20
     assert _admission_for_pool(40)["max_concurrency"] == MAX_POOLED_CONCURRENCY
 
 

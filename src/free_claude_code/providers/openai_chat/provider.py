@@ -221,7 +221,19 @@ class OpenAIChatProvider(BaseProvider):
             rate_limit=config.rate_limit or 40,
             rate_window=float(config.rate_window or 60.0),
             client_factory=self._build_client,
+            on_capacity_change=self._retune_admission_rate,
         )
+
+    def _retune_admission_rate(self, usable_keys: int) -> None:
+        """Hold the provider-wide gate to what the pool can currently serve.
+
+        The gate is sized as one key's quota times the pool, so it has to follow
+        the pool as keys leave and return. Left fixed at the configured count it
+        keeps admitting at full rate into a pool that has lost keys, and the
+        surplus queues inside the pool instead of being held at the door.
+        """
+        per_key = self._config.rate_limit or 40
+        self._admission.set_rate_limit(per_key * max(1, usable_keys))
 
     def key_pool_status(self) -> KeyPoolStatus | None:
         """Return pooled-credential health when this provider pools keys."""

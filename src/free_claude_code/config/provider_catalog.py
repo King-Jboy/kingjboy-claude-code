@@ -77,6 +77,13 @@ class ProviderDescriptor:
     base_url_attr: str | None = None
     proxy_attr: str | None = None
     required_settings_attrs: tuple[str, ...] = ()
+    # Published per-key request quota, when this provider states one. Rate limits
+    # are a property of the provider, not of the installation, so one global
+    # setting cannot serve two providers with different ceilings: pacing every
+    # provider at the highest one guarantees refusals from the lowest. An
+    # explicitly configured PROVIDER_RATE_LIMIT still overrides this.
+    rate_limit: int | None = None
+    rate_window: float | None = None
 
     def configuration_attrs(self) -> tuple[str, ...]:
         """Return settings fields whose non-empty values configure this provider."""
@@ -99,6 +106,8 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
         credential_pool_attr="nvidia_nim_api_keys",
         default_base_url=NVIDIA_NIM_DEFAULT_BASE,
         proxy_attr="nvidia_nim_proxy",
+        rate_limit=40,
+        rate_window=60.0,
     ),
     "openai": ProviderDescriptor(
         provider_id="openai",
@@ -129,6 +138,8 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
         credential_pool_attr="open_router_api_keys",
         default_base_url=OPENROUTER_DEFAULT_BASE,
         proxy_attr="open_router_proxy",
+        rate_limit=20,
+        rate_window=60.0,
     ),
     "gemini": ProviderDescriptor(
         provider_id="gemini",

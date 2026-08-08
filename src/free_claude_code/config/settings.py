@@ -235,6 +235,21 @@ class Settings(BaseSettings):
     provider_max_concurrency: int = Field(
         default=5, validation_alias="PROVIDER_MAX_CONCURRENCY"
     )
+    # Fraction of a provider's published quota held back as headroom. We count a
+    # request when we send it; the provider counts it on arrival, so latency and
+    # clock skew can push our last request of a window into the provider's next
+    # one. The cushion also covers the same key being used outside this proxy.
+    provider_rate_margin: float = Field(
+        default=0.05, validation_alias="PROVIDER_RATE_MARGIN"
+    )
+    # Ceiling on simultaneous upstream requests for a pooled provider. Quota is
+    # per key and multiplies with the pool, but concurrency is bounded by local
+    # sockets and event-loop work. Streaming responses stay open for tens of
+    # seconds, so too low a ceiling - not the rate limit - becomes the real
+    # throughput bound and queues callers until they time out.
+    provider_max_pooled_concurrency: int = Field(
+        default=64, validation_alias="PROVIDER_MAX_POOLED_CONCURRENCY"
+    )
     reasoning_policy: ReasoningPreference = Field(
         default=ReasoningPreference.CLIENT,
         validation_alias="REASONING_POLICY",

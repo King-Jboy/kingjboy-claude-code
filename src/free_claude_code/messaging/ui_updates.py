@@ -47,7 +47,10 @@ class ThrottledTranscriptEditor:
 
     async def update(self, status: str | None = None, *, force: bool = False) -> None:
         """Render transcript + optional status line and edit the platform message."""
-        now = time.time()
+        # Monotonic, not wall clock: an NTP step backwards would otherwise make
+        # this elapsed check negative and stall every live edit until real time
+        # caught up again.
+        now = time.monotonic()
         if not force and now - self._last_ui_update < 1.0:
             return
 

@@ -15,17 +15,24 @@ from free_claude_code.providers.openai_chat import (
     create_openai_chat_provider,
 )
 
-from .config import build_provider_config
+from .config import build_provider_config, numeric_setting
 
 ProviderFactory = Callable[
     [ProviderConfig, Settings, ProviderAdmissionController], BaseProvider
 ]
 
 # Pooled keys multiply provider quota, but concurrency is bounded by local
-# sockets and event-loop work rather than by quota, and one client drives only
-# a handful of parallel requests. Cap the bulkhead so a large pool cannot open
-# an unbounded number of simultaneous upstream streams.
-MAX_POOLED_CONCURRENCY = 20
+# sockets and event-loop work rather than by quota. Cap the bulkhead so a large
+# pool cannot open an unbounded number of simultaneous upstream streams.
+#
+# This ceiling, not the rate limit, is what bounds throughput for streaming
+# work: a response holds its slot open for tens of seconds, so a pool serves
+# roughly ``ceiling / response_seconds`` requests per second no matter how much
+# quota its keys add up to. Set too low it silently strands most of a large
+# pool's capacity and queues callers until they time out, which reads as a
+# network error rather than as the throttle it is. Operators can retune it with
+# PROVIDER_MAX_POOLED_CONCURRENCY.
+MAX_POOLED_CONCURRENCY = 64
 
 
 def _create_nvidia_nim(
@@ -186,13 +193,18 @@ def create_provider(
     # Each pooled key enforces its own window, so the provider-wide gate must
     # admit the pooled total; otherwise it would cap the pool at one key's rate.
     pool_scale = max(1, len(config.api_keys))
+    pooled_ceiling = int(
+        numeric_setting(
+            settings, "provider_max_pooled_concurrency", MAX_POOLED_CONCURRENCY
+        )
+    )
     admission = ProviderAdmissionController(
         provider_name=provider_id,
         rate_limit=(config.rate_limit or 40) * pool_scale,
         rate_window=config.rate_window or 60.0,
         max_concurrency=min(
             config.max_concurrency * pool_scale,
-            max(config.max_concurrency, MAX_POOLED_CONCURRENCY),
+            max(config.max_concurrency, pooled_ceiling),
         ),
     )
     factory = (injected_factories or {}).get(provider_id)

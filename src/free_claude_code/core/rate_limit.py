@@ -43,6 +43,19 @@ class StrictSlidingWindowLimiter:
     # ``headroom`` and ``next_available_in`` are synchronous reads used to rank
     # limiters against each other. They never await, so their eviction pass
     # cannot interleave with a locked acquisition on the same event loop.
+    def set_rate_limit(self, rate_limit: int) -> None:
+        """Retune the window's capacity in place.
+
+        Capacity is not always known once and for all: a limiter standing in
+        front of a pool of credentials admits the pool's total, and that total
+        falls as keys are held out and rises as they return. Already-recorded
+        acquisitions are kept, so lowering capacity throttles from now on rather
+        than pretending past requests did not happen.
+        """
+        if rate_limit <= 0:
+            raise ValueError("rate_limit must be > 0")
+        self._rate_limit = int(rate_limit)
+
     def headroom(self) -> int:
         """Return how many acquisitions the current window still admits."""
         self._evict_expired(time.monotonic())

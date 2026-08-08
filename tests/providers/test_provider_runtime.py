@@ -520,7 +520,9 @@ def test_create_provider_instantiates_each_builtin():
             assert provider._admission is sentinel_admission
             admission_factory.assert_called_once_with(
                 provider_name=provider_id,
-                rate_limit=7,
+                # An explicitly configured quota overrides the provider's own,
+                # then the safety margin holds back one whole request from it.
+                rate_limit=6,
                 rate_window=11,
                 max_concurrency=3,
             )

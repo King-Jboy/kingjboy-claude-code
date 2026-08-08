@@ -1,5 +1,7 @@
 """Provider configuration construction from neutral catalog metadata."""
 
+from math import ceil
+
 from free_claude_code.application.errors import ApplicationUnavailableError
 from free_claude_code.config.api_keys import parse_api_key_list
 from free_claude_code.config.provider_catalog import ProviderDescriptor
@@ -24,6 +26,74 @@ def provider_credential_pool(
     raw = string_setting(settings, descriptor.credential_pool_attr)
     env_name = descriptor.credential_pool_attr.upper()
     return parse_api_key_list(raw, env_name=env_name)
+
+
+def numeric_setting(settings: Settings, attr_name: str, default: float) -> float:
+    """Return a numeric settings attribute, ignoring non-numeric mocks."""
+    value = getattr(settings, attr_name, default)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return default
+    return float(value)
+
+
+def operator_configured(settings: Settings, attr_name: str) -> bool:
+    """Return whether the operator set this field rather than inheriting a default.
+
+    Two signals are needed. Pydantic records explicitly supplied fields in
+    ``model_fields_set``, which is exact but absent on the plain objects that
+    stand in for settings elsewhere; comparing against the declared default
+    works for any object, and a value equal to the default is indistinguishable
+    from an unset one anyway.
+    """
+    fields_set = getattr(settings, "model_fields_set", None)
+    if isinstance(fields_set, set | frozenset) and attr_name in fields_set:
+        return True
+    field = Settings.model_fields.get(attr_name)
+    if field is None:
+        return False
+    value = getattr(settings, attr_name, field.default)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return value != field.default
+
+
+def rate_with_margin(limit: int, margin: float) -> int:
+    """Hold back a fraction of a quota, never less than one whole request.
+
+    The cushion covers the gap between counting a request when we send it and
+    the provider counting it on arrival. One request is the smallest cushion
+    that means anything, so a small quota still gets a real one.
+    """
+    if margin <= 0.0 or limit <= 1:
+        return max(1, limit)
+    return max(1, limit - max(1, ceil(limit * margin)))
+
+
+def resolve_rate_policy(
+    descriptor: ProviderDescriptor, settings: Settings
+) -> tuple[int, float]:
+    """Return the per-key request quota and window to pace this provider at.
+
+    Precedence is operator, then provider, then global default: an explicitly
+    configured setting always wins, otherwise the provider's own published quota
+    beats a shared default that cannot be right for every provider at once.
+
+    The margin is applied here, to the per-key figure, because the provider-wide
+    gate is built as ``per_key * pool_size``. Shaving once at this level keeps
+    both tiers agreeing on capacity instead of cushioning the total twice.
+    """
+    limit = int(numeric_setting(settings, "provider_rate_limit", 40))
+    window = numeric_setting(settings, "provider_rate_window", 60.0)
+    if descriptor.rate_limit is not None and not operator_configured(
+        settings, "provider_rate_limit"
+    ):
+        limit = descriptor.rate_limit
+    if descriptor.rate_window is not None and not operator_configured(
+        settings, "provider_rate_window"
+    ):
+        window = descriptor.rate_window
+    margin = numeric_setting(settings, "provider_rate_margin", 0.05)
+    return rate_with_margin(limit, margin), window
 
 
 def provider_credential(descriptor: ProviderDescriptor, settings: Settings) -> str:
@@ -101,12 +171,13 @@ def build_provider_config(
     # A single configured key is not a pool: leaving it empty keeps single-key
     # setups on the existing provider-wide admission path unchanged.
     pool = provider_credential_pool(descriptor, settings)
+    rate_limit, rate_window = resolve_rate_policy(descriptor, settings)
     return ProviderConfig(
         api_key=credential,
         base_url=resolved_base_url,
         api_keys=pool if len(pool) > 1 else (),
-        rate_limit=settings.provider_rate_limit,
-        rate_window=settings.provider_rate_window,
+        rate_limit=rate_limit,
+        rate_window=rate_window,
         max_concurrency=settings.provider_max_concurrency,
         http_read_timeout=settings.http_read_timeout,
         http_write_timeout=settings.http_write_timeout,
