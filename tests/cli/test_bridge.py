@@ -230,11 +230,66 @@ def test_a_truncated_payload_reads_as_end_of_stream() -> None:
     assert bridge.read_message(io.BytesIO(struct.pack("<I", 100) + b"{}")) is None
 
 
-def test_an_oversized_frame_is_refused_before_it_is_read() -> None:
-    header = struct.pack("<I", bridge.MAX_REQUEST_BYTES + 1)
+def test_an_oversized_frame_is_refused_and_taken_off_the_pipe() -> None:
+    length = bridge.MAX_REQUEST_BYTES + 1
+    frame = struct.pack("<I", length) + b"x" * length
+    stream = io.BytesIO(frame)
 
     with pytest.raises(bridge.BridgeError, match="exceeds"):
-        bridge.read_message(io.BytesIO(header))
+        bridge.read_message(stream)
+
+    # Refusing the message is only half of it: the bytes have to leave the pipe
+    # too, or the next read starts mid-payload.
+    assert stream.tell() == len(frame)
+
+
+def test_a_refused_frame_does_not_desynchronize_the_ones_after_it() -> None:
+    # The payload of a refused frame used to stay in the pipe, so the next read
+    # took four payload bytes for a length prefix. Every later frame was
+    # garbage and the host answered nonsense until Chrome restarted it.
+    length = bridge.MAX_REQUEST_BYTES + 1
+    oversized = struct.pack("<I", length) + b"x" * length
+    stream = io.BytesIO(oversized + _framed({"type": "ping"}))
+
+    with pytest.raises(bridge.BridgeError, match="exceeds"):
+        bridge.read_message(stream)
+
+    assert bridge.read_message(stream) == {"type": "ping"}
+
+
+def test_an_oversized_frame_cut_short_reads_as_end_of_stream() -> None:
+    # A frame that never arrives in full is a closed pipe, the same as any
+    # other truncated payload -- there is no frame boundary left to refuse to.
+    header = struct.pack("<I", bridge.MAX_REQUEST_BYTES + 1)
+
+    assert bridge.read_message(io.BytesIO(header)) is None
+
+
+def test_the_host_keeps_serving_after_it_refuses_an_oversized_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    length = bridge.MAX_REQUEST_BYTES + 1
+    stdin = io.BytesIO(
+        struct.pack("<I", length) + b"x" * length + _framed({"type": "ping"})
+    )
+    channel = io.BytesIO()
+    monkeypatch.setattr(bridge.sys, "stdin", type("S", (), {"buffer": stdin})())
+    monkeypatch.setattr(
+        bridge.sys, "stdout", type("O", (), {"buffer": channel})(), raising=False
+    )
+
+    assert bridge.run([]) == 0
+
+    channel.seek(0)
+    refusal = bridge.read_message(channel)
+    assert refusal is not None
+    assert refusal["ok"] is False
+    assert "exceeds" in str(refusal["error"])
+
+    answered = bridge.read_message(channel)
+    assert answered is not None
+    assert answered["type"] == "pong"
+    assert bridge.read_message(channel) is None
 
 
 def test_malformed_json_is_answered_rather_than_crashing_the_host(

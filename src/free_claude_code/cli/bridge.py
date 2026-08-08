@@ -40,6 +40,9 @@ HOST_NAME = "com.free_claude_code.bridge"
 
 # Chrome permits 4GB inbound, which is not a size any command line needs.
 MAX_REQUEST_BYTES = 1_048_576
+# A refused frame is still read off the pipe, in pieces, because the length
+# that made it refusable is exactly the length that must not be allocated.
+DISCARD_CHUNK_BYTES = 65_536
 # Chrome caps host-to-extension messages at 1MB, and the output becomes prompt
 # text besides. Truncating here keeps both limits honest.
 MAX_OUTPUT_CHARS = 32_000
@@ -217,6 +220,26 @@ def handle(request: dict[str, object], settings: Settings) -> dict[str, object]:
     }
 
 
+def _discard_frame(stream: BinaryIO, length: int) -> bool:
+    """Consume a refused frame's payload, reporting whether it was all there.
+
+    Refusing a frame without reading it is not a refusal of one message. The
+    payload stays in the pipe, so the next read takes four payload bytes for a
+    length prefix and every frame after it is garbage; Chrome never
+    resynchronizes, and the host answers nonsense -- one refusal per four bytes
+    -- until it is restarted. Reading the frame is what confines the refusal to
+    the message that earned it.
+    """
+
+    remaining = length
+    while remaining > 0:
+        chunk = stream.read(min(remaining, DISCARD_CHUNK_BYTES))
+        if not chunk:
+            return False
+        remaining -= len(chunk)
+    return True
+
+
 def read_message(stream: BinaryIO) -> dict[str, object] | None:
     """Read one length-prefixed message, or None once Chrome closes the pipe."""
 
@@ -226,6 +249,10 @@ def read_message(stream: BinaryIO) -> dict[str, object] | None:
 
     (length,) = _LENGTH_PREFIX.unpack(header)
     if length > MAX_REQUEST_BYTES:
+        if not _discard_frame(stream, length):
+            # The pipe closed part-way through the frame, which is the same end
+            # of input the short-payload case below reports.
+            return None
         raise BridgeError(
             f"Request of {length} bytes exceeds the {MAX_REQUEST_BYTES} limit."
         )
