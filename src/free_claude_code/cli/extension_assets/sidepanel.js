@@ -9,7 +9,9 @@ import { PAGE_TOOLS, runPageTool } from "./page_tools.js";
 import { SHELL_TOOL, bridgeStatus, runShellCommand } from "./shell_tool.js";
 
 const SETTINGS_KEY = "fcc.connection";
-const DEFAULT_BASE_URL = "http://127.0.0.1:8081";
+// Must match the server's default port. Pointing at a port nothing serves made
+// a fresh install fail with "Is fcc-server running?" while it was running.
+const DEFAULT_BASE_URL = "http://127.0.0.1:8082";
 const MAX_TOKENS = 8192;
 // A tool_use turn that never terminates would loop against the provider until
 // the user's quota ran out. Real page-debugging turns settle in two or three.

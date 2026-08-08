@@ -283,6 +283,23 @@ def test_the_approval_card_is_visually_distinct_from_an_ordinary_turn() -> None:
     assert "box-shadow" in body, "the approval card must be raised off the transcript"
 
 
+def test_the_side_panel_defaults_to_the_port_the_server_listens_on() -> None:
+    # These two numbers are declared in different languages in different files,
+    # so nothing but a test keeps them equal. When they drifted, a fresh install
+    # reported "Could not reach http://127.0.0.1:8081. Is fcc-server running?"
+    # while fcc-server was running, and the message sent people to look at the
+    # server rather than at the port the panel had asked for.
+    default_port = Settings.model_fields["port"].default
+    expected = f"http://127.0.0.1:{default_port}"
+    root = extension.extension_dir()
+
+    script = (root / "sidepanel.js").read_text(encoding="utf-8")
+    markup = (root / "sidepanel.html").read_text(encoding="utf-8")
+
+    assert f'const DEFAULT_BASE_URL = "{expected}";' in script
+    assert f'placeholder="{expected}"' in markup
+
+
 def test_a_hidden_settings_sheet_stays_hidden() -> None:
     # .sheet declares display:flex, which outranks the user agent's [hidden]
     # rule. Without an explicit override the sheet covers the transcript and the
