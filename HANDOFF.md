@@ -1,8 +1,8 @@
 # Handoff — free-claude-code key pool & rate-limiting overhaul
 
-**Repo:** `C:\Users\Maduabuna Josiah\documents\claude-code\free-claude-code`
+**Repo:** this repository (paths below are relative to its root)
 **Version:** `6.7.0` → `6.9.1` (bumped incrementally across the work)
-**State:** All work complete. **Uncommitted** working-tree changes across 17 files.
+**State:** All work complete and committed on the `key-pool` branch. Not merged.
 **Last verification:** all 5 CI checks green — `2998 passed, 53 skipped in 187s`.
 
 ---
