@@ -1,22 +1,87 @@
 """Flat application settings schema loaded by Pydantic Settings."""
 
+from collections.abc import Mapping
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+# ``parse_env_vars`` applies this source's own case, empty, and none-string
+# options to whatever the file yielded. Reimplementing it here would drift from
+# the version installed, so it is imported and only the read beneath it is
+# replaced. `test_the_literal_source_still_matches_pydantic_settings` fails
+# loudly if a pydantic-settings upgrade moves this or the hook below it.
+from pydantic_settings.sources.providers.dotenv import parse_env_vars
 
 from .api_keys import parse_api_key_list
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
     env_file_override,
+    read_dotenv_file,
     settings_env_files,
 )
 from .model_refs import ModelCatalogScope, parse_model_ref_list
 from .nim import NimSettings
 from .provider_catalog import BEDROCK_DEFAULT_BASE, SUPPORTED_PROVIDER_IDS
 from .reasoning import ReasoningPreference
+
+
+class LiteralDotEnvSettingsSource(DotEnvSettingsSource):
+    """Load env files as written, without POSIX ``${VAR}`` expansion.
+
+    pydantic-settings reads dotenv files through ``dotenv_values``, which
+    expands ``${NAME}`` in every value and has no escape for a literal one. An
+    FCC env file is data the Admin UI rewrites wholesale, so a saved value
+    containing ``${`` reached the runtime expanded -- or emptied, when the name
+    was undefined -- and the proxy ran on a credential nobody entered. The
+    Admin UI's own reads go through
+    :func:`free_claude_code.config.env_files.read_dotenv_file`; this is the
+    same read for the settings load, so both agree with the file.
+    """
+
+    @classmethod
+    def replacing(cls, source: DotEnvSettingsSource) -> LiteralDotEnvSettingsSource:
+        """Return a literal-reading twin of an already-resolved dotenv source.
+
+        The source pydantic builds carries what the caller passed to
+        ``Settings(...)`` -- ``_env_file`` above all -- so a replacement built
+        from ``settings_cls`` alone would quietly read a different file.
+        Options are forwarded rather than copied afterwards because the base
+        class reads the files during ``__init__``.
+        ``test_the_literal_source_forwards_every_dotenv_option`` fails if
+        pydantic-settings grows one this misses.
+        """
+
+        return cls(
+            source.settings_cls,
+            env_file=source.env_file,
+            env_file_encoding=source.env_file_encoding,
+            dotenv_filtering=source.dotenv_filtering,
+            case_sensitive=source.case_sensitive,
+            env_prefix=source.env_prefix,
+            env_prefix_target=source.env_prefix_target,
+            env_nested_delimiter=source.env_nested_delimiter,
+            env_nested_max_split=source.env_nested_max_split,
+            env_ignore_empty=source.env_ignore_empty,
+            env_parse_none_str=source.env_parse_none_str,
+            env_parse_enums=source.env_parse_enums,
+        )
+
+    def _read_env_file(self, file_path: Path) -> Mapping[str, str | None]:
+        return parse_env_vars(
+            read_dotenv_file(file_path, encoding=self.env_file_encoding or "utf-8"),
+            self.case_sensitive,
+            self.env_ignore_empty,
+            self.env_parse_none_str,
+        )
 
 
 class Settings(BaseSettings):
@@ -539,6 +604,26 @@ class Settings(BaseSettings):
         if dotenv_value is not None:
             self.anthropic_auth_token = dotenv_value
         return self
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Read dotenv files literally, keeping the default source precedence."""
+
+        if not isinstance(dotenv_settings, DotEnvSettingsSource):
+            return (init_settings, env_settings, dotenv_settings, file_secret_settings)
+        return (
+            init_settings,
+            env_settings,
+            LiteralDotEnvSettingsSource.replacing(dotenv_settings),
+            file_secret_settings,
+        )
 
     model_config = SettingsConfigDict(
         env_file=settings_env_files(),

@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Mapping
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,27 @@ from dotenv import dotenv_values
 from .paths import managed_env_path
 
 ANTHROPIC_AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
+
+
+def read_dotenv_file(path: Path, *, encoding: str = "utf-8") -> dict[str, str | None]:
+    """Return a dotenv file's values exactly as written.
+
+    An FCC env file is a data file the Admin UI rewrites wholesale, not a shell
+    fragment. python-dotenv expands ``${NAME}`` in every value it reads and
+    offers no syntax for a literal one -- not bare, not double-quoted, not
+    single-quoted -- so a saved value containing ``${`` came back expanded, or
+    silently truncated when the name was undefined, with nothing reported.
+    Every read of an FCC env file goes through here or
+    :func:`read_dotenv_text`, so a saved value round-trips.
+    """
+
+    return dict(dotenv_values(path, interpolate=False, encoding=encoding))
+
+
+def read_dotenv_text(text: str) -> dict[str, str | None]:
+    """Return in-memory dotenv text's values exactly as written."""
+
+    return dict(dotenv_values(stream=StringIO(text), interpolate=False))
 
 
 def repo_env_path() -> Path:
@@ -57,7 +79,7 @@ def env_file_value(path: Path, key: str) -> str | None:
         return None
 
     try:
-        values = dotenv_values(path)
+        values = read_dotenv_file(path)
     except OSError:
         return None
 

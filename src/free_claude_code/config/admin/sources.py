@@ -1,20 +1,19 @@
 """Admin config source loading and source precedence."""
 
 import os
-from io import StringIO
 from pathlib import Path
 from typing import Literal
-
-from dotenv import dotenv_values
 
 from free_claude_code.config.env_files import (
     explicit_env_path as configured_explicit_env_path,
 )
 from free_claude_code.config.env_files import (
-    repo_env_path as configured_repo_env_path,
+    read_dotenv_file,
+    read_dotenv_text,
+    settings_env_files,
 )
 from free_claude_code.config.env_files import (
-    settings_env_files,
+    repo_env_path as configured_repo_env_path,
 )
 from free_claude_code.config.env_template import load_env_template_or_empty
 
@@ -56,7 +55,7 @@ def configured_env_files() -> tuple[tuple[SourceType, Path], ...]:
 def dotenv_values_from_text(text: str) -> dict[str, str]:
     """Parse dotenv text into string values."""
 
-    values = dotenv_values(stream=StringIO(text))
+    values = read_dotenv_text(text)
     return {key: "" if value is None else value for key, value in values.items()}
 
 
@@ -74,7 +73,7 @@ def dotenv_values_from_file(path: Path) -> dict[str, str]:
 
     if not path.is_file():
         return {}
-    values = dotenv_values(path)
+    values = read_dotenv_file(path)
     return {key: "" if value is None else value for key, value in values.items()}
 
 

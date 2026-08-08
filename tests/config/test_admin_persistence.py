@@ -78,6 +78,48 @@ def test_values_needing_quotes_round_trip_unchanged(
     assert dotenv_values_from_file(managed)["CUSTOM_NOTE"] == "a b # c"
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-${HOME}-live",
+        "${UNDEFINED_NAME_FOR_TEST}",
+        "brace{only}-and-$dollar",
+        "tail-${A:-fallback}",
+    ],
+)
+def test_a_saved_value_containing_a_dollar_brace_is_not_expanded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, secret: str
+) -> None:
+    # python-dotenv expands ${NAME} in every value it reads and has no escape
+    # for a literal one, so these came back expanded -- or emptied, when the
+    # name was undefined -- and the operator was never told. An env file FCC
+    # wrote is data, so it is read literally.
+    monkeypatch.setenv("HOME", "expanded-home")
+    monkeypatch.setenv("A", "expanded-a")
+    monkeypatch.delenv("UNDEFINED_NAME_FOR_TEST", raising=False)
+    managed = _managed_env(tmp_path, monkeypatch, "")
+
+    prepared = prepare_admin_update({"GROQ_API_KEY": secret})
+    assert prepared.valid, prepared.errors
+    commit_prepared_admin_update(prepared)
+
+    assert dotenv_values_from_file(managed)["GROQ_API_KEY"] == secret
+
+
+def test_an_unmanaged_dollar_brace_value_survives_a_save_unexpanded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Preserved-as-written has to mean written, not resolved: expanding here
+    # would bake one machine's environment into the file permanently.
+    monkeypatch.setenv("HOME", "expanded-home")
+    managed = _managed_env(tmp_path, monkeypatch, 'CUSTOM_TOKEN="a-${HOME}-b"\n')
+
+    prepared = prepare_admin_update({"GROQ_API_KEY": "groq-key"})
+    commit_prepared_admin_update(prepared)
+
+    assert dotenv_values_from_file(managed)["CUSTOM_TOKEN"] == "a-${HOME}-b"
+
+
 def test_manifest_fields_are_never_treated_as_unmanaged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

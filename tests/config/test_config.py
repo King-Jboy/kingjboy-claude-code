@@ -1178,3 +1178,112 @@ class TestPerModelMapping:
         assert refs[1].model_id == "anthropic/claude-fable-5"
         assert refs[2].provider_id == "open_router"
         assert refs[2].model_id == "anthropic/claude-opus"
+
+
+class TestLiteralDotEnvLoading:
+    """An env file FCC wrote is data, so ``${NAME}`` in it is not a variable."""
+
+    def test_a_dollar_brace_value_reaches_settings_as_written(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # python-dotenv expands ${NAME} in every value it reads, with no escape
+        # for a literal one, so a key like this used to reach the runtime
+        # expanded and the proxy authenticated with something nobody entered.
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.setenv("HOME", "expanded-home")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        env_file = tmp_path / ".env"
+        env_file.write_text('GROQ_API_KEY="sk-${HOME}-live"\n', encoding="utf-8")
+
+        settings = Settings(_env_file=env_file)
+
+        assert settings.groq_api_key == "sk-${HOME}-live"
+
+    def test_an_undefined_name_does_not_empty_the_value(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # The quiet half of the same defect: an unresolvable name expanded to
+        # nothing, so the value was truncated rather than merely altered.
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.delenv("UNDEFINED_NAME_FOR_TEST", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "GROQ_API_KEY=head-${UNDEFINED_NAME_FOR_TEST}-tail\n", encoding="utf-8"
+        )
+
+        settings = Settings(_env_file=env_file)
+
+        assert settings.groq_api_key == "head-${UNDEFINED_NAME_FOR_TEST}-tail"
+
+    def test_ordinary_dotenv_quoting_still_decodes(self, tmp_path):
+        """Turning interpolation off must not turn quote handling off with it."""
+        from free_claude_code.config.settings import Settings
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            'GROQ_API_KEY="a b \\"quoted\\" # c"\nOPENROUTER_API_KEY=plain\n',
+            encoding="utf-8",
+        )
+
+        settings = Settings(_env_file=env_file)
+
+        assert settings.groq_api_key == 'a b "quoted" # c'
+        assert settings.open_router_api_key == "plain"
+
+    def test_the_literal_source_still_matches_pydantic_settings(self, tmp_path):
+        """Pin the seam the literal source overrides.
+
+        ``_read_env_file`` is the hook, and reading a value back through
+        ``__call__`` proves it sits on the path pydantic-settings actually
+        calls. An upgrade that renames or bypasses it would otherwise silently
+        restore expansion.
+        """
+        from pydantic_settings import DotEnvSettingsSource
+
+        from free_claude_code.config.settings import (
+            LiteralDotEnvSettingsSource,
+            Settings,
+        )
+
+        assert hasattr(DotEnvSettingsSource, "_read_env_file")
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("GROQ_API_KEY=from-file\n", encoding="utf-8")
+        source = LiteralDotEnvSettingsSource(Settings, env_file=env_file)
+
+        assert source()["GROQ_API_KEY"] == "from-file"
+
+    def test_the_literal_source_forwards_every_dotenv_option(self):
+        """A new upstream option must be forwarded, not silently defaulted.
+
+        ``replacing`` rebuilds the source pydantic already resolved, so an
+        option it does not pass through reverts to the ``model_config``
+        default and quietly ignores what the caller asked for.
+        """
+        import inspect
+
+        from pydantic_settings import DotEnvSettingsSource
+
+        from free_claude_code.config.settings import LiteralDotEnvSettingsSource
+
+        upstream = set(inspect.signature(DotEnvSettingsSource.__init__).parameters)
+        upstream -= {"self", "settings_cls"}
+        forwarded = set(
+            inspect.signature(LiteralDotEnvSettingsSource.replacing).parameters
+        )
+        source = inspect.getsource(LiteralDotEnvSettingsSource.replacing)
+        forwarded |= {name for name in upstream if f"{name}=source." in source}
+
+        assert upstream <= forwarded, upstream - forwarded
+
+    def test_a_runtime_env_file_override_is_honoured(self, tmp_path):
+        """The replacement must read the file the caller named, not the default."""
+        from free_claude_code.config.settings import Settings
+
+        env_file = tmp_path / "custom.env"
+        env_file.write_text("GROQ_API_KEY=from-the-named-file\n", encoding="utf-8")
+
+        assert Settings(_env_file=env_file).groq_api_key == "from-the-named-file"
