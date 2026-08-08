@@ -853,6 +853,11 @@ Add-Content -LiteralPath $env:CALL_LOG -Value "uv-install"
         encoding="utf-8",
     )
 
+    # A real MZ header, because the installer rejects a download that is not a
+    # Windows executable. A fixture of plain text would pass a test that the
+    # real bootstrapper would fail.
+    (fixtures / "webview2-bootstrapper.exe").write_bytes(b"MZ" + b"\x00" * 64)
+
     wrapper = tmp_path / "run-installer.ps1"
     wrapper.write_text(
         """Set-StrictMode -Version Latest
@@ -868,16 +873,68 @@ function Invoke-RestMethod {
     ) {
         throw "simulated download failure"
     }
+    if ($env:FAIL_STEP -eq "webview2-download" -and $Uri.Contains("LinkId=2124703")) {
+        throw "simulated download failure"
+    }
     if ($Uri.Contains("claude.ai")) {
         $source = Join-Path $env:FAKE_FIXTURES "claude-installer.ps1"
     }
     elseif ($Uri.Contains("astral.sh")) {
         $source = Join-Path $env:FAKE_FIXTURES "uv-installer.ps1"
     }
+    elseif ($Uri.Contains("LinkId=2124703")) {
+        $source = Join-Path $env:FAKE_FIXTURES "webview2-bootstrapper.exe"
+    }
     else {
         throw "unexpected installer URL: $Uri"
     }
     Copy-Item -LiteralPath $source -Destination $OutFile -Force
+}
+function Get-ItemProperty {
+    [CmdletBinding()]
+    param([string] $Path, [string] $Name)
+
+    if (-not $Path.Contains("EdgeUpdate")) {
+        throw "unexpected registry read: $Path"
+    }
+    # Only the first path the installer tries answers, so its fallback order is
+    # exercised rather than short-circuited by a stub that replies to anything.
+    if (-not $Path.StartsWith("HKLM:\\SOFTWARE\\WOW6432Node")) {
+        return
+    }
+    $version = $env:FAKE_WEBVIEW2_VERSION
+    if (
+        (-not [string]::IsNullOrWhiteSpace($env:FCC_WEBVIEW2_MARKER)) -and
+        (Test-Path -LiteralPath $env:FCC_WEBVIEW2_MARKER)
+    ) {
+        $version = "141.0.2960.0"
+    }
+    if ([string]::IsNullOrWhiteSpace($version)) {
+        return
+    }
+    [pscustomobject] @{ pv = $version }
+}
+function Start-Process {
+    [CmdletBinding()]
+    param(
+        [string] $FilePath,
+        [object[]] $ArgumentList = @(),
+        [string] $WindowStyle,
+        [switch] $Wait,
+        [switch] $PassThru
+    )
+
+    if ($FilePath -notlike "*fcc-webview2-*") {
+        return Microsoft.PowerShell.Management\\Start-Process @PSBoundParameters
+    }
+
+    Add-Content -LiteralPath $env:CALL_LOG -Value "webview2:$($ArgumentList -join ' ')"
+    if ($env:FAIL_STEP -ne "webview2-install") {
+        New-Item -ItemType File -Path $env:FCC_WEBVIEW2_MARKER -Force | Out-Null
+    }
+    $exitCode = if ($env:FAIL_STEP -eq "webview2-install") { 1 } else { 0 }
+    [pscustomobject] @{ ExitCode = $exitCode } |
+        Add-Member -MemberType ScriptMethod -Name Dispose -Value {} -PassThru
 }
 function Get-Process {
     [CmdletBinding()]
@@ -922,6 +979,11 @@ $installer = [scriptblock]::Create([IO.File]::ReadAllText($env:FCC_INSTALLER))
             "FCC_PROCESS_MARKER": str(tmp_path / "fcc-process-ready"),
             "FCC_RUNNING_COMMAND": "",
             "FCC_RUNNING_PHASE": "early",
+            # Absent by default so the default install exercises the path that
+            # has to fetch the runtime. Tests set it to stand for a machine that
+            # already has one.
+            "FAKE_WEBVIEW2_VERSION": "",
+            "FCC_WEBVIEW2_MARKER": str(tmp_path / "webview2-installed"),
             "FAIL_STEP": "",
         }
     )
@@ -1017,7 +1079,14 @@ def test_install_ps1_preserves_valid_existing_tools(
     result = powershell_harness.run()
 
     assert result.returncode == 0, result.stderr
-    assert not any(call.startswith("download:") for call in powershell_harness.calls())
+    # Scoped to the tool installers this test is about. A blanket "no downloads"
+    # was equivalent while those were the only two, but the WebView2 runtime is
+    # fetched on its own terms and has its own tests.
+    tool_installers = ("claude.ai", "astral.sh")
+    assert not any(
+        call.startswith("download:") and any(host in call for host in tool_installers)
+        for call in powershell_harness.calls()
+    )
     assert "leaving it unchanged" in result.stdout
 
 
@@ -1352,3 +1421,82 @@ if ($resolved -ne {str(fallback)!r}) {{
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_install_ps1_fetches_the_webview2_runtime_when_it_is_missing(
+    powershell_harness: PowerShellHarness,
+) -> None:
+    # Without the runtime the desktop shortcut this installer creates opens a
+    # window that cannot draw, so a machine without it has to be given one.
+    result = powershell_harness.run()
+
+    assert result.returncode == 0, result.stderr
+    calls = powershell_harness.calls()
+    assert "download:https://go.microsoft.com/fwlink/p/?LinkId=2124703" in calls
+    assert "webview2:/silent /install" in calls
+    assert "WebView2 runtime 141.0.2960.0 installed." in result.stdout
+
+
+def test_install_ps1_leaves_an_existing_webview2_runtime_alone(
+    powershell_harness: PowerShellHarness,
+) -> None:
+    powershell_harness.env["FAKE_WEBVIEW2_VERSION"] = "140.0.3485.54"
+
+    result = powershell_harness.run()
+
+    assert result.returncode == 0, result.stderr
+    calls = powershell_harness.calls()
+    assert not any("LinkId=2124703" in call for call in calls)
+    assert not any(call.startswith("webview2:") for call in calls)
+    assert "WebView2 runtime 140.0.3485.54 is already present." in result.stdout
+
+
+def test_install_ps1_still_installs_when_the_webview2_download_fails(
+    powershell_harness: PowerShellHarness,
+) -> None:
+    # fcc-server and fcc-claude never open a window. A terminal install must not
+    # fail because a GUI runtime could not be fetched, but it must say so.
+    result = powershell_harness.run(fail_step="webview2-download")
+
+    assert result.returncode == 0, result.stderr
+    assert "Free Claude Code is installed and verified." in result.stdout
+    # Write-Warning lands on stdout with a WARNING: prefix once redirected, not
+    # on stderr as the stream name suggests.
+    assert "Could not install the WebView2 runtime" in result.stdout
+    assert "fcc-server and fcc-claude work without it" in result.stdout
+
+
+def test_install_ps1_reports_a_failed_webview2_install_without_stopping(
+    powershell_harness: PowerShellHarness,
+) -> None:
+    result = powershell_harness.run(fail_step="webview2-install")
+
+    assert result.returncode == 0, result.stderr
+    assert "Free Claude Code is installed and verified." in result.stdout
+    assert "exited with code 1" in result.stdout
+
+
+def test_install_ps1_rejects_a_webview2_download_that_is_not_an_executable(
+    powershell_harness: PowerShellHarness,
+) -> None:
+    # A proxy or captive portal answering with an HTML page is the failure the
+    # PowerShell installers catch by parsing; an executable is checked by header.
+    (powershell_harness.fixtures / "webview2-bootstrapper.exe").write_bytes(
+        b"<!doctype html><html><body>Sign in to continue</body></html>"
+    )
+
+    result = powershell_harness.run()
+
+    assert result.returncode == 0, result.stderr
+    assert "Free Claude Code is installed and verified." in result.stdout
+    assert "is not a Windows executable" in result.stdout
+
+
+def test_install_ps1_dry_run_never_touches_the_webview2_runtime(
+    powershell_harness: PowerShellHarness,
+) -> None:
+    result = powershell_harness.run("-DryRun")
+
+    assert result.returncode == 0, result.stderr
+    assert "only when missing" in result.stdout
+    assert powershell_harness.calls() == []

@@ -85,6 +85,8 @@ Re-run the same command whenever you want to update. You can review the installe
 
 The installer sets up Claude Code alongside FCC. Other coding agents are left unchanged; install them yourself if you want to use `fcc-codex` or `fcc-pi`.
 
+On Windows the installer also checks for the WebView2 runtime, which the desktop app uses to draw its window, and installs it if it is missing. Windows 11 already ships it. If that step cannot reach Microsoft it warns and carries on, since `fcc-server` and `fcc-claude` do not need a window.
+
 ### 2. Start FCC
 
 #### Windows

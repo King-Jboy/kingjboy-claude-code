@@ -19,6 +19,13 @@ $PythonRequest = "cpython-3.14.0-windows-x86_64-none"
 $MinUvVersion = "0.11.16"
 $ClaudeInstallUrl = "https://claude.ai/install.ps1"
 $UvInstallUrl = "https://astral.sh/uv/install.ps1"
+# The desktop app renders its window with WebView2. Windows 11 ships the runtime;
+# Windows 10 frequently does not, and without it the shortcut this installer
+# creates opens a window that cannot draw. The Evergreen Bootstrapper is the
+# redistributable Microsoft publishes for exactly this.
+$WebView2InstallUrl = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+$WebView2DownloadPage = "https://developer.microsoft.com/microsoft-edge/webview2/"
+$WebView2ClientKey = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 $FccCommands = @(
     # Include retired and unused entry points so updates reject older FCC
     # processes before replacement, even ones this installer no longer sets up.
@@ -237,6 +244,121 @@ function Invoke-DownloadedPowerShellInstaller {
     finally {
         Remove-Item -LiteralPath $temporaryScript -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Assert-WindowsExecutable {
+    param(
+        [string] $Path,
+        [string] $Url,
+        [string] $Name
+    )
+
+    if ((-not (Test-Path -LiteralPath $Path)) -or ((Get-Item -LiteralPath $Path).Length -eq 0)) {
+        throw "The downloaded $Name installer was empty."
+    }
+
+    # The same failure the PowerShell installers catch by parsing: a proxy or
+    # captive portal answering with an HTML page instead of the file. Every
+    # Windows executable opens with 'MZ'.
+    $header = [byte[]]::new(2)
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $read = $stream.Read($header, 0, 2)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    if (($read -lt 2) -or ($header[0] -ne 0x4D) -or ($header[1] -ne 0x5A)) {
+        throw "The downloaded $Name installer from '$Url' is not a Windows executable. A network proxy or filter may have replaced it with an HTML response."
+    }
+}
+
+function Get-WebView2RuntimeVersion {
+    # EdgeUpdate's client key is what Microsoft documents as the presence check.
+    # A file probe would be guesswork: the runtime lives in a versioned directory
+    # whose location has moved between releases. Per-machine installs register
+    # under HKLM, and on 64-bit Windows under WOW6432Node; per-user under HKCU.
+    $registryPaths = @(
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2ClientKey",
+        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2ClientKey",
+        "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2ClientKey"
+    )
+
+    foreach ($registryPath in $registryPaths) {
+        $entry = Get-ItemProperty -Path $registryPath -Name "pv" -ErrorAction SilentlyContinue
+        if (-not $entry) {
+            continue
+        }
+        if ($entry.PSObject.Properties.Match("pv").Count -eq 0) {
+            continue
+        }
+        $version = [string] $entry.pv
+        # Removing the runtime leaves the key behind holding a 0.0.0.0 stub.
+        if ((-not [string]::IsNullOrWhiteSpace($version)) -and ($version -ne "0.0.0.0")) {
+            return $version
+        }
+    }
+
+    return $null
+}
+
+function Install-WebView2Runtime {
+    $bootstrapper = Join-Path ([IO.Path]::GetTempPath()) ("fcc-webview2-" + [guid]::NewGuid().ToString("N") + ".exe")
+    try {
+        Write-Host "+ irm $WebView2InstallUrl -OutFile $(Format-Argument $bootstrapper)"
+        Invoke-RestMethod -Uri $WebView2InstallUrl -OutFile $bootstrapper -ErrorAction Stop
+        Assert-WindowsExecutable -Path $bootstrapper -Url $WebView2InstallUrl -Name "WebView2 runtime"
+
+        $arguments = @("/silent", "/install")
+        Write-Host "+ $(Format-Command -FilePath $bootstrapper -Arguments $arguments)"
+        $process = Start-Process -FilePath $bootstrapper -ArgumentList $arguments -Wait -PassThru
+        try {
+            $exitCode = $process.ExitCode
+        }
+        finally {
+            $process.Dispose()
+        }
+        if ($exitCode -ne 0) {
+            throw "The WebView2 runtime installer exited with code ${exitCode}."
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $bootstrapper -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-WebView2Runtime {
+    if ($DryRun) {
+        Write-Host "+ read the WebView2 runtime version from EdgeUpdate"
+        Write-Host "+ irm $WebView2InstallUrl -OutFile <temporary-installer>   (only when missing)"
+        Write-Host "+ <temporary-installer> /silent /install                   (only when missing)"
+        return
+    }
+
+    $version = Get-WebView2RuntimeVersion
+    if ($version) {
+        Write-Host "WebView2 runtime $version is already present."
+        return
+    }
+
+    # Never fatal. fcc-server and fcc-claude do not open a window, so a terminal
+    # install must not fail because a GUI runtime could not be fetched. The
+    # warning has to name the consequence, since nothing else here will.
+    try {
+        Install-WebView2Runtime
+    }
+    catch {
+        Write-Warning "Could not install the WebView2 runtime: $($_.Exception.Message)"
+        Write-Warning "The desktop shortcut needs it. Install it from $WebView2DownloadPage and reopen the shortcut. fcc-server and fcc-claude work without it."
+        return
+    }
+
+    $version = Get-WebView2RuntimeVersion
+    if ($version) {
+        Write-Host "WebView2 runtime $version installed."
+        return
+    }
+    Write-Warning "The WebView2 installer finished but EdgeUpdate reports no runtime. The desktop shortcut may not open; fcc-server and fcc-claude are unaffected."
 }
 
 function Confirm-Application {
@@ -596,6 +718,9 @@ Ensure-Uv
 
 Write-Step "Installing or updating Free Claude Code"
 Install-FreeClaudeCode
+
+Write-Step "Ensuring the desktop app can render its window"
+Ensure-WebView2Runtime
 
 Write-Step "Configuring PATH and verifying Free Claude Code"
 Configure-AndConfirmFreeClaudeCode
