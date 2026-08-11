@@ -18,7 +18,7 @@ dependencies = [
     "tiktoken>=0.13.0",
     "python-telegram-bot>=22.8",
     "discord.py>=2.7.1",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings>=2.15.0",
     "openai>=2.52.0",
     "loguru>=0.7.0",
     "aiohttp>=3.14.3",
@@ -78,14 +78,14 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ty>=0.0.65",
-    "ruff>=0.16.1",
+    "ty>=0.0.69",
+    "ruff>=0.16.2",
     "pytest-xdist>=3.8.0",
     # Replay recorded upstream responses so provider behaviour is asserted from
     # what providers actually sent, not from what a hand-written mock assumes.
     "respx>=0.22.0",
     # Property tests for parsers whose inputs are far wider than any example set.
-    "hypothesis>=6.140.2",
+    "hypothesis>=6.165.2",
 ]
 
 [tool.ruff]
