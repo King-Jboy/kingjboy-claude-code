@@ -747,6 +747,21 @@ original identity before Anthropic tool state or schema validation. Valid names
 remain unchanged, while deterministic aliases keep retries, replay, and
 append-only prompt prefixes stable. This is target-protocol conversion, never a
 provider or model capability switch.
+When an Anthropic request declares tools but omits `tool_choice`, the conversion
+boundary resolves Anthropic's implicit `auto` intent once. Both upstream OpenAI
+Chat and OpenAI Responses encoders materialize that value explicitly, while
+preserving every client-supplied choice. OpenAI-origin `/v1/responses` ingress
+retains its own omission semantics; providers and models never choose this
+default.
+Some OpenAI-compatible upstreams expose their documented function-tag protocol
+through ordinary content instead of structured tool deltas. The shared
+Anthropic tool boundary recognizes that protocol only when tools were declared
+and the client did not explicitly choose `none`, and only when the response ends
+with one or more exact, schema-valid control blocks with no suffix. Any preceding
+content remains visible; all malformed or non-terminal lookalikes remain text.
+Native structured tool calls disable textual recovery and remain authoritative.
+This normalization is driven by the response grammar rather than provider or
+model identity; harness permissions remain the final authority for execution.
 Specialized provider packages remain only for true upstream quirks such as
 Gemini thought signatures, NIM tool-schema aliases, retry downgrades, and NVCF
 deployment-failure classification, or DeepSeek attachment/tool/thinking
