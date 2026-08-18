@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.14.0"
 dependencies = [
     "fastapi[standard]>=0.141.1",
-    "uvicorn>=0.52.1",
+    "uvicorn>=0.52.3",
     "httpx[socks]>=0.28.1",
     "markdown-it-py>=4.2.0",
     "pydantic>=2.13.4",
@@ -18,7 +18,7 @@ dependencies = [
     "tiktoken>=0.13.0",
     "python-telegram-bot>=22.8",
     "discord.py>=2.7.1",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings>=2.15.0",
     "openai>=2.52.0",
     "loguru>=0.7.0",
     "aiohttp>=3.14.3",
@@ -47,11 +47,11 @@ fcc-desktop = "free_claude_code.cli.desktop_entrypoint:launch"
 voice = [
     "grpcio>=1.83.0",
     "grpcio-tools>=1.81.1",
-    "nvidia-riva-client>=2.26.0",
+    "nvidia-riva-client>=2.27.0",
 ]
 voice_local = [
     "torch>=2.13.0",
-    "transformers>=5.14.1",
+    "transformers>=5.15.0",
     "accelerate>=1.14.0",
     "librosa>=0.10.0",
 ]
@@ -78,14 +78,14 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ty>=0.0.65",
-    "ruff>=0.16.1",
+    "ty>=0.0.72",
+    "ruff>=0.16.3",
     "pytest-xdist>=3.8.0",
     # Replay recorded upstream responses so provider behaviour is asserted from
     # what providers actually sent, not from what a hand-written mock assumes.
     "respx>=0.22.0",
     # Property tests for parsers whose inputs are far wider than any example set.
-    "hypothesis>=6.140.2",
+    "hypothesis>=6.165.9",
 ]
 
 [tool.ruff]
