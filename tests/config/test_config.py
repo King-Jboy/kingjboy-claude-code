@@ -1131,3 +1131,14 @@ class TestLiteralDotEnvLoading:
         env_file.write_text("GROQ_API_KEY=from-the-named-file\n", encoding="utf-8")
 
         assert Settings(_env_file=env_file).groq_api_key == "from-the-named-file"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "inf", "-inf", "nan"])
+def test_provider_progress_timeout_must_be_finite_and_positive(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
