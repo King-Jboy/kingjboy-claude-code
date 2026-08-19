@@ -153,6 +153,191 @@ def test_claude_cli_adaptive_thinking_e2e(
 
 
 @pytest.mark.smoke_target("cli")
+def test_claude_cli_web_search_e2e(smoke_config: SmokeConfig, tmp_path: Path) -> None:
+    if os.environ.get("FCC_SMOKE_RUN_WEB_TOOLS") != "1":
+        pytest.skip("missing_env: set FCC_SMOKE_RUN_WEB_TOOLS=1")
+    claude_bin = shutil.which(smoke_config.claude_bin)
+    if not claude_bin:
+        pytest.skip(f"missing_env: Claude CLI not found: {smoke_config.claude_bin}")
+    provider_model = ProviderMatrixDriver(smoke_config).first_model()
+
+    with SmokeServerDriver(
+        smoke_config,
+        name="product-claude-cli-web-search",
+        env_overrides={
+            "MODEL": provider_model.full_model,
+            "MESSAGING_PLATFORM": "none",
+            "ENABLE_WEB_SERVER_TOOLS": "true",
+            "LOG_LEVEL": "DEBUG",
+        },
+    ).run() as server:
+        automatic_turn = ConversationDriver(server, smoke_config).stream(
+            {
+                "model": provider_model.full_model,
+                "max_tokens": 512,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "You must use the available web search tool to find the "
+                            "Free Claude Code GitHub repository."
+                        ),
+                    }
+                ],
+                "tools": [
+                    {
+                        "name": "web_search",
+                        "type": "web_search_20250305",
+                    }
+                ],
+                "tool_choice": {"type": "auto"},
+            }
+        )
+        run = run_claude_cli(
+            claude_bin=claude_bin,
+            server=server,
+            config=smoke_config,
+            cwd=tmp_path,
+            bare=False,
+            prompt=(
+                "Use WebSearch exactly once to find the Free Claude Code GitHub "
+                "repository. Then reply with FCC_SMOKE_WEB_SEARCH and one source URL."
+            ),
+            tools="WebSearch",
+        )
+        server_log = server.log_path.read_text(encoding="utf-8", errors="replace")
+
+    assert run.timed_out is False, run.combined_output
+    assert run.returncode == 0, run.combined_output
+    assert "FCC_SMOKE_WEB_SEARCH" in run.combined_output
+    assert "http" in run.combined_output
+    automatic_payload = json.dumps(
+        [event.data for event in automatic_turn.events], sort_keys=True
+    )
+    assert '"type": "server_tool_use"' in automatic_payload
+    assert '"type": "web_search_tool_result"' in automatic_payload
+    assert "github.com" in automatic_payload
+    log_rows = _json_object_lines(server_log)
+    assert (
+        sum(
+            row.get("event") == "free_claude_code.api.web_search.automatic_recognized"
+            for row in log_rows
+        )
+        == 1
+    ), server_log
+    assert any(
+        row.get("event") == "free_claude_code.api.optimization.web_server_tool"
+        for row in log_rows
+    ), server_log
+    assert (
+        sum(
+            row.get("event") == "free_claude_code.api.web_search.automatic_selected"
+            for row in log_rows
+        )
+        == 1
+    ), server_log
+    assert (
+        sum(
+            row.get("event") == "free_claude_code.api.web_search.automatic_completed"
+            for row in log_rows
+        )
+        == 1
+    ), server_log
+
+
+@pytest.mark.smoke_target("cli")
+def test_claude_auto_mode_openai_connected_e2e(
+    smoke_config: SmokeConfig, tmp_path: Path
+) -> None:
+    claude_bin = shutil.which(smoke_config.claude_bin)
+    if not claude_bin:
+        pytest.skip(f"missing_env: Claude CLI not found: {smoke_config.claude_bin}")
+
+    provider_models = ProviderMatrixDriver(smoke_config).provider_smoke_models()
+    provider_model = next(
+        (model for model in provider_models if model.provider == "openai"),
+        None,
+    )
+    if provider_model is None:
+        pytest.skip(
+            "missing_env: set FCC_SMOKE_MODEL_OPENAI to run the connected-account "
+            "Auto-mode smoke"
+        )
+
+    marker = f"FCC_SMOKE_AUTO_MODE_{uuid.uuid4().hex}"
+    marker_path = tmp_path / "auto-mode-marker.txt"
+    marker_path.write_text(marker, encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    routed_model = provider_model.full_model
+
+    with SmokeServerDriver(
+        smoke_config,
+        name="product-claude-auto-mode-openai",
+        env_overrides={
+            "MODEL": routed_model,
+            "MODEL_FABLE": routed_model,
+            "MODEL_OPUS": routed_model,
+            "MODEL_SONNET": routed_model,
+            "MODEL_HAIKU": routed_model,
+            "MESSAGING_PLATFORM": "none",
+            "LOG_LEVEL": "DEBUG",
+            "LOG_RAW_API_PAYLOADS": "false",
+            "LOG_RAW_SSE_EVENTS": "false",
+        },
+    ).run() as server:
+        run = run_claude_cli(
+            claude_bin=claude_bin,
+            server=server,
+            config=smoke_config,
+            cwd=workspace,
+            prompt=(
+                "Use Bash exactly once to run `cat "
+                f'"{marker_path.as_posix()}"`. After the tool succeeds, reply '
+                "with exactly the file contents."
+            ),
+            tools="Bash",
+            auto_mode=True,
+        )
+        server_log = server.log_path.read_text(encoding="utf-8", errors="replace")
+
+    assert run.timed_out is False, run.combined_output
+    assert run.returncode == 0, run.combined_output
+    cli_events = _json_object_lines(run.stdout)
+    assert cli_events, run.stdout
+    encoded_events = json.dumps(cli_events, sort_keys=True)
+    assert '"type": "tool_use"' in encoded_events
+    assert '"name": "Bash"' in encoded_events
+    assert '"type": "tool_result"' in encoded_events
+    assert marker in encoded_events
+
+    combined_lower = run.combined_output.lower()
+    for unexpected in (
+        "temporarily unavailable",
+        "cannot determine the safety",
+        "automode-unavailable",
+        "openai responses cannot represent",
+    ):
+        assert unexpected not in combined_lower
+
+    log_rows = _json_object_lines(server_log)
+    policy_rows = [
+        row
+        for row in log_rows
+        if row.get("event") == "free_claude_code.api.route.safety_classifier_policy"
+    ]
+    assert any(
+        row.get("classifier_stop_sequence") == "</severity>"
+        and row.get("stop_sequence_removed") is True
+        for row in policy_rows
+    ), server_log
+    message_requests = [
+        line for line in server_log.splitlines() if "POST /v1/messages" in line
+    ]
+    assert len(message_requests) >= 2, server_log
+    assert all(" 400 " not in message for message in message_requests), server_log
+
+
+@pytest.mark.smoke_target("cli")
 def test_claude_cli_provider_error_e2e(
     smoke_config: SmokeConfig, tmp_path: Path
 ) -> None:

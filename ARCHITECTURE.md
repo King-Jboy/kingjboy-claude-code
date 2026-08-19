@@ -1094,16 +1094,31 @@ narrow classifier prompt shape and forces reasoning off before provider executio
 so Claude Code receives a parser-readable `<block>yes</block>` or
 `<block>no</block>` verdict.
 
-Local `web_search` and `web_fetch` handling lives under
-[api/web_tools/](src/free_claude_code/api/web_tools/). When `ENABLE_WEB_SERVER_TOOLS` is true, the
-Messages handler can stream local Anthropic server-tool responses without sending the
-request upstream. [api/web_tools/egress.py](src/free_claude_code/api/web_tools/egress.py) enforces URL
-scheme and private-network restrictions for `web_fetch`.
+Local `web_search` and `web_fetch` compatibility lives under
+[api/web_tools/](src/free_claude_code/api/web_tools/). It is enabled by default
+and can be disabled with `ENABLE_WEB_SERVER_TOOLS=false`. Forced
+`web_search_20250305` and `web_fetch_20250910` requests bypass the provider and
+retain the existing local result lifecycle. [api/web_tools/egress.py](src/free_claude_code/api/web_tools/egress.py)
+continues to own URL-scheme and private-network restrictions for forced
+`web_fetch`.
 
-Anthropic server-tool definitions are never passed to upstream OpenAI Chat
-providers because that conversion would be lossy. Forced `web_search` or
-`web_fetch` requests are handled locally when `ENABLE_WEB_SERVER_TOOLS` is true;
-otherwise the Messages handler rejects them before provider execution.
+Current Claude Code uses a separate subordinate Messages request when its outer
+`WebSearch` tool is available. For the exact request containing only
+`web_search_20250305` with omitted or automatic tool choice, the Messages
+boundary translates that server tool into one private ordinary search function.
+`ProviderExecutor` runs and buffers one normal provider decision, preserving its
+retry, fallback, timeout, and failure behavior. If the model declines the tool,
+FCC replays the buffered stream unchanged. If the model selects one valid query,
+FCC discards the private function frames, searches the fixed DuckDuckGo backend,
+and emits the existing Anthropic `server_tool_use` and
+`web_search_tool_result` lifecycle. Claude Code owns the outer continuation; FCC
+does not run a second provider round or persist hidden transcript state.
+
+Other Anthropic server-tool shapes remain fail-closed before provider execution:
+automatic WebFetch, mixed tool lists, newer unverified versions, prior hosted
+server-tool history, and extra choice semantics are not generalized. This keeps
+the compatibility exception at the Messages/API boundary rather than leaking
+server-tool semantics into providers or the executor.
 
 ## CLI Launchers And Managed Claude
 
