@@ -12,6 +12,7 @@ FCC_COMMANDS = (
     "fcc-claude",
     "fcc-codex",
     "fcc-pi",
+
     "fcc-init",
     "free-claude-code",
 )
@@ -132,6 +133,7 @@ def posix_uninstall_harness(tmp_path: Path) -> PosixUninstallHarness:
     _write_executable(bin_dir / "claude", "#!/bin/sh\nexit 0\n")
     _write_executable(bin_dir / "codex", "#!/bin/sh\nexit 0\n")
     _write_executable(bin_dir / "pi", "#!/bin/sh\nexit 0\n")
+
     _write_executable(
         bin_dir / "uv",
         """#!/bin/sh
@@ -221,6 +223,7 @@ def test_uninstall_sh_removes_and_verifies_only_fcc(
     assert (posix_uninstall_harness.bin_dir / "claude").exists()
     assert (posix_uninstall_harness.bin_dir / "codex").exists()
     assert (posix_uninstall_harness.bin_dir / "pi").exists()
+
     assert posix_uninstall_harness.calls() == [
         "uv:tool dir --bin",
         "uv:tool uninstall free-claude-code",
@@ -559,6 +562,7 @@ def test_uninstall_ps1_removes_and_verifies_only_fcc(
     assert (powershell_uninstall_harness.bin_dir / "claude.cmd").exists()
     assert (powershell_uninstall_harness.bin_dir / "codex.cmd").exists()
     assert (powershell_uninstall_harness.bin_dir / "pi.cmd").exists()
+
     assert powershell_uninstall_harness.calls() == [
         "uv:tool dir --bin",
         "uv:tool uninstall free-claude-code",

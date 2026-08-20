@@ -56,7 +56,7 @@ Default targets do not send real bot messages or load voice backends:
 | `api` | messages, count_tokens full payload, errors, `/stop`, optimizations | configured provider only for streaming messages |
 | `auth` | canonical bearer auth, conflicting legacy headers, invalid/missing auth | none; test sets an isolated token |
 | `cli` | server entrypoint, Claude CLI adaptive thinking, automatic WebSearch, session cleanup | Claude CLI binary and provider only for real CLI; `FCC_SMOKE_RUN_WEB_TOOLS=1` for WebSearch |
-| `clients` | VS Code and JetBrains protocol payloads | configured provider |
+| `clients` | VS Code and JetBrains protocol payloads; DeepSeek Harness CLI prompts | configured provider; DSH scenarios use a local fake upstream |
 | `config` | env precedence, removed-env migration, proxy/timeouts | none |
 | `extensibility` | provider runtime and platform factory construction | none |
 | `messaging` | fake Discord/Telegram full flow, literal clear scopes, trees, persistence, voice cancel | none |

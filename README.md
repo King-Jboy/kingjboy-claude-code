@@ -386,6 +386,12 @@ It exits non-zero if anything failed, so you can gate a script on it. Doctor nev
 
 ## Connect Your Client
 
+> **DeepSeek Harness:** this fork also ships `fcc-dsh`, a launcher for the
+> [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Hash) coding agent
+> (`npm install -g @deepseek-ai/dsh@0.1.0-rc.8`). Run `fcc-dsh` and it points
+> DSH's Responses provider at your proxy. The bundled installer does not
+> install DSH itself.
+
 For terminal use, start `fcc-server`, then run `fcc-claude`, `fcc-codex`, or `fcc-pi`. Use the guides below for editor integrations.
 
 <details>

@@ -16,6 +16,7 @@ dry_run=0
 voice_nim=0
 voice_local=0
 voice_all=0
+
 torch_backend=""
 temporary_script=""
 tool_bin=""
@@ -40,6 +41,7 @@ fail() {
     printf 'error: %s\n' "$*" >&2
     exit 1
 }
+
 
 
 step() {
@@ -226,6 +228,7 @@ ensure_claude() {
 
     verify_command claude "Claude Code"
 }
+
 
 current_uv_version() {
     if output=$(uv --version); then

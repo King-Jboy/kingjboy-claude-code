@@ -34,6 +34,7 @@ $FccCommands = @(
     "fcc-claude",
     "fcc-codex",
     "fcc-pi",
+
     "fcc-init",
     "free-claude-code"
 )
@@ -60,6 +61,7 @@ function Write-Step {
     Write-Host ""
     Write-Host "==> $Message"
 }
+
 
 function Format-Argument {
     param([string] $Value)
@@ -437,6 +439,7 @@ function Test-SupportedUvVersion {
 
     return ([version] $normalizedVersion) -ge ([version] $normalizedMinimum)
 }
+
 
 function Confirm-Uv {
     if ($DryRun) {

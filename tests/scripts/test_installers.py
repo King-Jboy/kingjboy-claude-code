@@ -13,6 +13,7 @@ FCC_COMMANDS = (
     "fcc-claude",
     "fcc-codex",
     "fcc-pi",
+
     "fcc-init",
     "free-claude-code",
 )
@@ -43,6 +44,7 @@ def _braced_body(text: str, declaration: str) -> str:
 
 
 def _posix_command(name: str) -> str:
+
     return f"""#!/bin/sh
 echo "{name}:$*" >> "$CALL_LOG"
 if [ "$FAIL_STEP" = "{name}-verify" ]; then
@@ -51,6 +53,7 @@ fi
 if [ "${{1:-}}" = "--version" ]; then
     echo "{name} 1.0.0"
 fi
+
 """
 
 
@@ -74,6 +77,7 @@ if [ "${{1:-}}" = "tool" ] && [ "${{2:-}}" = "install" ]; then
     mkdir -p "$FAKE_TOOL_BIN"
     cp "$FAKE_FIXTURES/fcc-command.sh" "$FAKE_TOOL_BIN/fcc-server"
     cp "$FAKE_FIXTURES/fcc-command.sh" "$FAKE_TOOL_BIN/fcc-desktop"
+
     if [ "$FAIL_STEP" != "fcc-missing" ]; then
         cp "$FAKE_FIXTURES/fcc-command.sh" "$FAKE_TOOL_BIN/fcc-claude"
     fi
@@ -219,6 +223,7 @@ chmod +x "$HOME/.local/bin/uv"
 """,
     )
     _write_executable(fixtures / "claude-command.sh", _posix_command("claude"))
+
     _write_executable(fixtures / "uv-command.sh", _posix_uv_command("0.11.28"))
     _write_executable(
         fixtures / "fcc-command.sh",
@@ -271,6 +276,7 @@ def test_install_sh_fresh_install_is_verified(posix_harness: PosixHarness) -> No
     assert "Free Claude Code is installed and verified." in result.stdout
     calls = posix_harness.calls()
     assert calls.index("claude-install") < calls.index("claude:--version")
+
     assert calls.index("uv-install") < calls.index("uv:--version")
     assert any(
         call.startswith(
@@ -692,6 +698,11 @@ echo {name}:%*>>"%CALL_LOG%"
 if "%FAIL_STEP%"=="{name}-verify" exit /b 51
 if "%1"=="--version" echo {name} 1.0.0
 exit /b 0
+:install_dsh
+if "%FAIL_STEP%"=="dsh-install" exit /b 73
+if not exist "%FAKE_NPM_PREFIX%" mkdir "%FAKE_NPM_PREFIX%"
+copy /y "%FAKE_FIXTURES%\dsh-command.cmd" "%FAKE_NPM_PREFIX%\dsh.cmd" >nul
+exit /b 0
 """
 
 
@@ -818,6 +829,7 @@ def powershell_harness(
     (fixtures / "claude-command.cmd").write_text(
         _batch_client("claude"), encoding="utf-8"
     )
+
     (fixtures / "uv-command.cmd").write_text(_batch_uv("0.11.28"), encoding="utf-8")
     (fixtures / "fcc-command.cmd").write_text(
         """@echo off
@@ -1001,6 +1013,7 @@ def test_install_ps1_fresh_install_is_verified(
     assert "Free Claude Code is installed and verified." in result.stdout
     calls = powershell_harness.calls()
     assert calls.index("claude-install") < calls.index("claude:--version")
+
     assert calls.index("uv-install") < calls.index("uv:--version")
     assert any(
         call.startswith(
@@ -1033,6 +1046,7 @@ def test_install_ps1_fresh_install_is_verified(
         / "Programs"
         / "Free Claude Code.lnk"
     ).is_file()
+
 
 
 def test_install_ps1_stops_if_windows_icon_export_fails(
