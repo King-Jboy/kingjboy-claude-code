@@ -70,11 +70,16 @@ def test_the_manifest_version_tracks_the_package_version() -> None:
 
 
 def test_the_manifest_reaches_the_proxy_on_any_local_port() -> None:
-    # Match patterns carry no port, so these two cover every PORT setting.
-    # Narrowing them to a literal port would break every non-default install.
+    # Match patterns carry no port, so the localhost pair covers every PORT
+    # setting; narrowing them to a literal port would break every non-default
+    # install. `<all_urls>` is separate and deliberate: scripting and
+    # captureVisibleTab need host access to the target page, which the proxy
+    # patterns do not give. It adds no install warning the content_scripts
+    # declaration does not already trigger.
     assert set(_manifest()["host_permissions"]) == {
         "http://127.0.0.1/*",
         "http://localhost/*",
+        "<all_urls>",
     }
 
 

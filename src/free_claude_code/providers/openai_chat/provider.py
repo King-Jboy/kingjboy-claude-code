@@ -8,9 +8,9 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
+import httpx2
 from loguru import logger
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
 from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.core.anthropic import (
@@ -201,17 +201,19 @@ class OpenAIChatProvider(BaseProvider):
         """Build one client bound to a single credential.
 
         Each client owns its proxy transport, so closing one pooled client never
-        strands the others.
+        strands the others. The SDK's 3.x line speaks httpx2, so the timeout and
+        any proxy transport must be httpx2 objects; a plain httpx client is
+        silently ignored here.
         """
         config = self._config
-        timeout = httpx.Timeout(
+        timeout = httpx2.Timeout(
             config.http_read_timeout,
             connect=config.http_connect_timeout,
             read=config.http_read_timeout,
             write=config.http_write_timeout,
         )
         http_client = (
-            httpx.AsyncClient(proxy=config.proxy, timeout=timeout)
+            DefaultAsyncHttpx2Client(proxy=config.proxy, timeout=timeout)
             if config.proxy
             else None
         )

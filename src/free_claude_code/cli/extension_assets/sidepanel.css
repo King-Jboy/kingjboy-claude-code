@@ -250,6 +250,61 @@ body {
   display: block;
 }
 
+/* ---------- Watched tab ---------- */
+
+/* A strip, not a chip in the header: the header is full at the panel's
+   narrowest, and the title it carries needs the whole width to stay legible
+   after ellipsis. It sits on the panel ground so it reads as standing above
+   the conversation, not as part of it. */
+.pin-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  padding: 5px 8px 5px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.pin-bar[hidden] {
+  display: none;
+}
+
+.pin-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+.pin-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.pin-swap {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.pin-swap:hover:not(:disabled) {
+  background: var(--neutral-soft);
+  color: var(--text);
+}
+
 /* ---------- Body ---------- */
 
 .body {

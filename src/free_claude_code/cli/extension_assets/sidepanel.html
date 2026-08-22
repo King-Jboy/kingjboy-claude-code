@@ -32,6 +32,15 @@
       </button>
     </header>
 
+    <!-- States which tab the conversation's tools target. It appears with the
+         first message and follows nothing else: a conversation pinned at send
+         time, not a live view of whatever is active. -->
+    <div id="pin-bar" class="pin-bar" hidden>
+      <span class="pin-dot" aria-hidden="true"></span>
+      <span id="pin-title" class="pin-title"></span>
+      <button id="re-pin" class="pin-swap" type="button">Change tab</button>
+    </div>
+
     <div class="body">
       <main id="transcript" class="transcript" aria-live="polite"></main>
 
@@ -76,7 +85,7 @@
 
           <label class="switch">
             <input id="page-tools" type="checkbox" checked />
-            <span>Let the model read the active tab</span>
+            <span>Let the model read and act on the watched tab</span>
           </label>
 
           <section class="shell">

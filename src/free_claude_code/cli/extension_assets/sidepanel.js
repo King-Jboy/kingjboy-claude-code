@@ -5,7 +5,7 @@
 // no preflight is sent and the proxy needs no CORS middleware. Routing this
 // through the service worker instead would only add a message hop.
 
-import { PAGE_TOOLS, runPageTool } from "./page_tools.js";
+import { PAGE_APPROVALS, PAGE_TOOLS, runPageTool } from "./page_tools.js";
 import { SHELL_TOOL, bridgeStatus, runShellCommand } from "./shell_tool.js";
 
 const SETTINGS_KEY = "fcc.connection";
@@ -21,9 +21,11 @@ const BASE_PROMPT =
   "You are Free Claude Code running in a Chrome side panel, helping the user with the web " +
   "page they are looking at. When they refer to 'this page', 'the console', or 'the error', " +
   "use your tools to look rather than asking them to paste. Read the smallest region that " +
-  "answers the question -- prefer a CSS selector over the whole document. You cannot click, " +
-  "type, or navigate; say so plainly if asked, and tell the user what to do instead. " +
-  "Be concise: this panel is narrow.";
+  "answers the question -- prefer a CSS selector over the whole document. You can click and " +
+  "type on the page with the click and type_text tools; the user approves each action " +
+  "before it runs, so say what you are about to do and why, one action at a time. You " +
+  "cannot navigate to another URL or reload the page; say so plainly if asked, and tell " +
+  "the user what to do instead. Be concise: this panel is narrow.";
 
 const SHELL_PROMPT =
   " You can also run shell commands on the user's machine with run_command. Each one is " +
@@ -45,6 +47,9 @@ const ui = {
   pageTools: document.getElementById("page-tools"),
   shellState: document.getElementById("shell-state"),
   transcript: document.getElementById("transcript"),
+  pinBar: document.getElementById("pin-bar"),
+  pinTitle: document.getElementById("pin-title"),
+  rePin: document.getElementById("re-pin"),
   composer: document.getElementById("composer"),
   prompt: document.getElementById("prompt"),
   send: document.getElementById("send"),
@@ -54,6 +59,30 @@ const ui = {
 /** Conversation history in Messages API shape, replayed on every request. */
 let history = [];
 let busy = false;
+
+/**
+ * The tab this conversation's page tools target, pinned from the first message.
+ *
+ * Without a pin, tools resolve "the active tab" per call, so switching tabs
+ * mid-chat silently retargeted the model's view of "this page". The pin is
+ * per-conversation: Clear drops it, Change tab re-pins to whatever is now
+ * active, and if the tab closes the pin is dropped and the bar says so --
+ * tools fall back to the active tab only from that point, never silently
+ * beside a stale claim.
+ */
+let pinnedTab = null;
+
+function renderPinBar() {
+  ui.pinBar.hidden = !pinnedTab;
+  if (pinnedTab) ui.pinTitle.textContent = `Watching ${pinnedTab.title || "a tab"}`;
+}
+
+async function pinActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  pinnedTab = { id: tab.id, title: tab.title ?? tab.url ?? "" };
+  renderPinBar();
+}
 
 /**
  * Command bridge state, probed once at startup.
@@ -233,6 +262,8 @@ const OPENERS = [
 
 function showEmptyState() {
   history = [];
+  pinnedTab = null;
+  renderPinBar();
   ui.transcript.replaceChildren();
 
   const node = document.createElement("div");
@@ -376,22 +407,30 @@ function describeToolCall(name, input) {
 }
 
 /**
- * Show a command and wait for the user to allow or refuse it.
+ * Show an action and wait for the user to allow or refuse it.
  *
- * This is the control the shell bridge rests on. Everything else -- the
- * allowed_origins pin, BROWSER_SHELL_ENABLED, the directory confinement --
- * limits the blast radius; this is what decides whether a command runs at all.
- * So it renders the exact string that will be executed, and defaults to nothing
- * happening if the user simply closes the panel.
+ * This is the control both the shell bridge and the page actions rest on.
+ * Everything else -- the allowed_origins pin, BROWSER_SHELL_ENABLED, the
+ * directory confinement -- limits the blast radius; this is what decides
+ * whether an action runs at all. So it renders the exact thing that will
+ * happen, and defaults to nothing happening if the user simply closes the
+ * panel.
  */
-function requestApproval({ command, cwd }) {
+function requestApproval({ detail, label = "", allow = "Run" }) {
   return new Promise((resolve) => {
     const card = document.createElement("div");
     card.className = "turn approval";
 
+    if (label) {
+      const where = document.createElement("p");
+      where.className = "approval-label";
+      where.textContent = label;
+      card.append(where);
+    }
+
     const line = document.createElement("code");
     line.className = "approval-command";
-    line.textContent = command;
+    line.textContent = detail;
 
     const actions = document.createElement("div");
     actions.className = "approval-actions";
@@ -399,9 +438,9 @@ function requestApproval({ command, cwd }) {
     deny.className = "ghost";
     deny.type = "button";
     deny.textContent = "Deny";
-    const allow = document.createElement("button");
-    allow.type = "button";
-    allow.textContent = "Run";
+    const allowButton = document.createElement("button");
+    allowButton.type = "button";
+    allowButton.textContent = allow;
 
     // The card's heading reports the outcome, so nothing else has to change:
     // rewriting the body left the card saying "Denied" twice.
@@ -411,29 +450,38 @@ function requestApproval({ command, cwd }) {
       resolve(approved);
     };
     deny.addEventListener("click", () => settle(false));
-    allow.addEventListener("click", () => settle(true));
+    allowButton.addEventListener("click", () => settle(true));
 
-    actions.append(deny, allow);
-    // The directory only appears when there is one to name.
-    if (cwd) {
-      const where = document.createElement("p");
-      where.className = "approval-label";
-      where.textContent = cwd;
-      card.append(where);
-    }
+    actions.append(deny, allowButton);
     card.append(line, actions);
     ui.transcript.append(card);
     ui.transcript.scrollTop = ui.transcript.scrollHeight;
-    allow.focus();
+    allowButton.focus();
   });
 }
 
 async function runTool(call) {
   if (call.name === SHELL_TOOL.name) {
-    return runShellCommand(call.input, { requestApproval });
+    return runShellCommand(call.input, {
+      requestApproval: ({ command, cwd }) => requestApproval({ detail: command, label: cwd }),
+    });
   }
+
+  const approval = PAGE_APPROVALS[call.name]?.(call.input ?? {});
+  if (approval === null) {
+    return { content: `${call.name} needs a selector${call.name === "type_text" ? " and text" : ""}.`, is_error: true };
+  }
+  if (approval) {
+    const allowed = await requestApproval({
+      ...approval,
+      label: pinnedTab ? `on ${pinnedTab.title}` : "",
+      allow: "Allow",
+    });
+    if (!allowed) return { content: "The user declined this action.", is_error: true };
+  }
+
   addTurn("tool", describeToolCall(call.name, call.input));
-  return runPageTool(call.name, call.input);
+  return runPageTool(call.name, call.input, { tabId: pinnedTab?.id });
 }
 
 async function runConversation(settings) {
@@ -457,11 +505,17 @@ async function runConversation(settings) {
     if (stopReason !== "tool_use" || !toolCalls.length) return;
 
     const results = [];
+    const images = [];
     for (const call of toolCalls) {
-      const { content: text, is_error } = await runTool(call);
+      const { content: text, is_error, image } = await runTool(call);
       results.push({ type: "tool_result", tool_use_id: call.id, content: text, is_error });
+      if (image) images.push(image);
     }
-    history.push({ role: "user", content: results });
+    // Every tool_result must satisfy its tool_use before any other block
+    // appears: the proxy emits one provider tool message per result and only
+    // then a user turn for the images, and a user message between a provider's
+    // tool messages is a hard error there.
+    history.push({ role: "user", content: [...results, ...images] });
   }
 
   addTurn("error", `Stopped after ${MAX_TOOL_ROUNDS} tool rounds without a final answer.`);
@@ -484,6 +538,9 @@ async function send() {
   resizePrompt();
   addTurn("user", text);
   history.push({ role: "user", content: [{ type: "text", text }] });
+  // The conversation targets the tab the user was looking at when they started
+  // it; without this, tools would follow their later tab switches instead.
+  if (!pinnedTab) await pinActiveTab();
 
   try {
     await runConversation(settings);
@@ -536,6 +593,18 @@ ui.prompt.addEventListener("keydown", (event) => {
 });
 
 ui.clear.addEventListener("click", showEmptyState);
+
+ui.rePin.addEventListener("click", () => void pinActiveTab());
+
+// Dropping the pin on close has to be explicit: the bar claims a specific tab,
+// and a closed tab would leave that claim pointing at whatever Chrome reuses
+// the id for in queries that only check it is alive.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (pinnedTab?.id === tabId) {
+    pinnedTab = null;
+    renderPinBar();
+  }
+});
 
 async function probeBridge() {
   const status = await bridgeStatus();
