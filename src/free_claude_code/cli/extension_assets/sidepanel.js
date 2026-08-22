@@ -10,6 +10,10 @@ import { PAGE_APPROVALS, PAGE_TOOLS, runPageTool } from "./page_tools.js";
 import { SHELL_TOOL, bridgeStatus, runShellCommand } from "./shell_tool.js";
 
 const SETTINGS_KEY = "fcc.connection";
+const CONVERSATION_KEY = "fcc.conversation";
+// Storage carries the replayable history, screenshots included; past this the
+// oldest exchanges are dropped rather than risking the 10MB quota mid-chat.
+const MAX_STORED_BYTES = 4_000_000;
 // Must match the server's default port. Pointing at a port nothing serves made
 // a fresh install fail with "Is fcc-server running?" while it was running.
 const DEFAULT_BASE_URL = "http://127.0.0.1:8082";
@@ -51,18 +55,27 @@ const ui = {
   pageTools: document.getElementById("page-tools"),
   shellState: document.getElementById("shell-state"),
   transcript: document.getElementById("transcript"),
+  usage: document.getElementById("usage"),
   pinBar: document.getElementById("pin-bar"),
   pinTitle: document.getElementById("pin-title"),
   rePin: document.getElementById("re-pin"),
   composer: document.getElementById("composer"),
   prompt: document.getElementById("prompt"),
   send: document.getElementById("send"),
+  stop: document.getElementById("stop"),
   clear: document.getElementById("clear"),
 };
 
 /** Conversation history in Messages API shape, replayed on every request. */
 let history = [];
 let busy = false;
+/**
+ * Aborts the in-flight turn. Null while idle. A stop cannot kill a native
+ * shell command already running -- it takes effect the moment that returns.
+ */
+let stopController = null;
+/** Tokens billed across this conversation's requests, from message_delta. */
+let usageTotals = { input: 0, output: 0 };
 
 /**
  * The tab this conversation's page tools target, pinned from the first message.
@@ -314,63 +327,72 @@ function showEmptyState() {
  * with a final `signature_delta`. `onDelta` fires per fragment with the kind
  * that grew, so the panel can render while the response is still arriving.
  */
-async function streamAssistantTurn(response, onDelta) {
+async function streamAssistantTurn(response, onDelta, signal) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const blocks = [];
   let buffer = "";
   let stopReason = null;
+  let usage = { input: 0, output: 0 };
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
 
-    for (const frame of frames) {
-      const line = frame.split("\n").find((candidate) => candidate.startsWith("data:"));
-      if (!line) continue;
+      for (const frame of frames) {
+        const line = frame.split("\n").find((candidate) => candidate.startsWith("data:"));
+        if (!line) continue;
 
-      let event;
-      try {
-        event = JSON.parse(line.slice("data:".length).trim());
-      } catch {
-        continue;
-      }
-
-      if (event.type === "content_block_start") {
-        const block = event.content_block;
-        if (block.type === "tool_use") {
-          blocks[event.index] = { type: "tool_use", id: block.id, name: block.name, json: "" };
-        } else if (block.type === "thinking") {
-          blocks[event.index] = { type: "thinking", text: "", signature: "" };
-        } else if (block.type === "redacted_thinking") {
-          blocks[event.index] = { type: "redacted_thinking", data: block.data ?? "" };
-        } else {
-          blocks[event.index] = { type: "text", text: "" };
+        let event;
+        try {
+          event = JSON.parse(line.slice("data:".length).trim());
+        } catch {
+          continue;
         }
-      } else if (event.type === "content_block_delta") {
-        const block = blocks[event.index];
-        if (!block) continue;
-        if (event.delta.type === "text_delta") {
-          block.text += event.delta.text;
-          onDelta({ text: event.delta.text });
-        } else if (event.delta.type === "input_json_delta") {
-          block.json += event.delta.partial_json;
-        } else if (event.delta.type === "thinking_delta") {
-          block.text += event.delta.thinking;
-          onDelta({ thinking: event.delta.thinking });
-        } else if (event.delta.type === "signature_delta") {
-          block.signature += event.delta.signature;
+
+        if (event.type === "content_block_start") {
+          const block = event.content_block;
+          if (block.type === "tool_use") {
+            blocks[event.index] = { type: "tool_use", id: block.id, name: block.name, json: "" };
+          } else if (block.type === "thinking") {
+            blocks[event.index] = { type: "thinking", text: "", signature: "" };
+          } else if (block.type === "redacted_thinking") {
+            blocks[event.index] = { type: "redacted_thinking", data: block.data ?? "" };
+          } else {
+            blocks[event.index] = { type: "text", text: "" };
+          }
+        } else if (event.type === "content_block_delta") {
+          const block = blocks[event.index];
+          if (!block) continue;
+          if (event.delta.type === "text_delta") {
+            block.text += event.delta.text;
+            onDelta({ text: event.delta.text });
+          } else if (event.delta.type === "input_json_delta") {
+            block.json += event.delta.partial_json;
+          } else if (event.delta.type === "thinking_delta") {
+            block.text += event.delta.thinking;
+            onDelta({ thinking: event.delta.thinking });
+          } else if (event.delta.type === "signature_delta") {
+            block.signature += event.delta.signature;
+          }
+        } else if (event.type === "message_delta") {
+          stopReason = event.delta?.stop_reason ?? stopReason;
+          if (Number.isFinite(event.usage?.input_tokens)) usage.input = event.usage.input_tokens;
+          if (Number.isFinite(event.usage?.output_tokens)) usage.output = event.usage.output_tokens;
+        } else if (event.type === "error") {
+          throw new Error(event.error?.message ?? "The proxy reported a stream error.");
         }
-      } else if (event.type === "message_delta") {
-        stopReason = event.delta?.stop_reason ?? stopReason;
-      } else if (event.type === "error") {
-        throw new Error(event.error?.message ?? "The proxy reported a stream error.");
       }
     }
+  } catch (error) {
+    // An aborted stream still finalizes what arrived: the partial reply is
+    // context the conversation should keep. Anything else is a real failure.
+    if (!signal?.aborted) throw error;
   }
 
   const content = blocks
@@ -402,10 +424,10 @@ async function streamAssistantTurn(response, onDelta) {
     // history, which every later request replayed for nothing.
     .filter((block) => block.type !== "text" || block.text !== "");
 
-  return { content, stopReason };
+  return { content, stopReason, usage };
 }
 
-async function requestTurn(settings) {
+async function requestTurn(settings, signal) {
   const body = {
     model: settings.model,
     max_tokens: MAX_TOKENS,
@@ -420,6 +442,7 @@ async function requestTurn(settings) {
     method: "POST",
     headers: authHeaders(settings),
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok || !response.body) {
@@ -533,6 +556,131 @@ function showToolOutput(node, outcome) {
   ui.transcript.scrollTop = ui.transcript.scrollHeight;
 }
 
+// ---------- usage ----------
+
+function formatTokens(count) {
+  return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count);
+}
+
+/**
+ * What this conversation has spent, from each request's final usage frame.
+ *
+ * Input is summed across requests rather than read from the last one, because
+ * every round replays the whole history: the sum is what actually billed
+ * against the key pool, which is the number the user watches.
+ */
+function renderUsage() {
+  if (!usageTotals.input && !usageTotals.output) {
+    ui.usage.hidden = true;
+    return;
+  }
+  ui.usage.hidden = false;
+  ui.usage.textContent =
+    `${formatTokens(usageTotals.input)} in · ${formatTokens(usageTotals.output)} out this conversation`;
+}
+
+// ---------- persistence ----------
+
+let saveTimer = 0;
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => void saveConversation(), 500);
+}
+
+/**
+ * Drop leading messages until the first survivor is a plain user turn.
+ *
+ * Replay has two invariants: the first message must be from the user, and a
+ * tool_result may only follow the assistant tool_use it answers. Cutting at a
+ * text-bearing user message satisfies both at once.
+ */
+function trimLeading(messages) {
+  for (let cut = 1; cut < messages.length; cut += 1) {
+    const candidate = messages[cut];
+    if (candidate?.role === "user" && candidate.content?.[0]?.type === "text") {
+      return messages.slice(cut);
+    }
+  }
+  return [];
+}
+
+async function saveConversation() {
+  if (!history.length) return;
+  let stored = history;
+  while (JSON.stringify(stored).length > MAX_STORED_BYTES && stored.length > 2) {
+    stored = trimLeading(stored);
+    if (!stored.length) return;
+  }
+  await chrome.storage.local.set({
+    [CONVERSATION_KEY]: {
+      history: stored,
+      pinnedTabId: pinnedTab?.id ?? null,
+      pinnedTabTitle: pinnedTab?.title ?? "",
+      usage: usageTotals,
+    },
+  });
+}
+
+/** Rebuild the transcript from replayable history after a panel reopen. */
+function renderHistoryToTranscript() {
+  ui.transcript.replaceChildren();
+  for (const message of history) {
+    const blocks = Array.isArray(message.content) ? message.content : [];
+    if (message.role === "user") {
+      for (const block of blocks) {
+        if (block.type === "text") {
+          addTurn("user", block.text);
+        } else if (block.type === "tool_result") {
+          const node = addTurn("tool", "result");
+          showToolOutput(node, { content: block.content, is_error: block.is_error });
+        } else if (block.type === "image") {
+          const node = addTurn("tool", "screenshot");
+          showToolOutput(node, { content: "", image: block });
+        }
+      }
+      continue;
+    }
+    // One assistant turn holds its thinking and prose; its tool calls become
+    // chips, exactly as they appeared live. Settled approval cards are not
+    // rebuilt -- the chips already say what ran.
+    const thinking = blocks.filter((b) => b.type === "thinking").map((b) => b.thinking).join("\n");
+    const text = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n\n");
+    if (thinking || text) {
+      const turn = openAssistantTurn();
+      turn.thinking = thinking;
+      turn.text = text;
+      renderAssistant(turn);
+    }
+    for (const block of blocks) {
+      if (block.type === "tool_use") addTurn("tool", describeToolCall(block.name, block.input));
+    }
+  }
+  ui.transcript.scrollTop = ui.transcript.scrollHeight;
+}
+
+async function restoreConversation() {
+  const stored = (await chrome.storage.local.get(CONVERSATION_KEY))[CONVERSATION_KEY];
+  if (!Array.isArray(stored?.history) || !stored.history.length) return;
+
+  history = stored.history;
+  usageTotals = stored.usage ?? { input: 0, output: 0 };
+  renderUsage();
+
+  if (Number.isInteger(stored.pinnedTabId)) {
+    pinnedTab = { id: stored.pinnedTabId, title: stored.pinnedTabTitle ?? "" };
+    renderPinBar();
+    // The tab can have closed while the panel was away; a pin claiming a dead
+    // id is worse than no pin.
+    chrome.tabs.get(stored.pinnedTabId).catch(() => {
+      pinnedTab = null;
+      renderPinBar();
+    });
+  }
+
+  renderHistoryToTranscript();
+}
+
 // ---------- turn loop ----------
 
 function describeToolCall(name, input) {
@@ -630,17 +778,34 @@ async function runTool(call) {
   return outcome;
 }
 
-async function runConversation(settings) {
+async function runConversation(settings, signal) {
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-    const response = await requestTurn(settings);
+    if (signal?.aborted) return;
+    const response = await requestTurn(settings, signal);
 
     const turn = openAssistantTurn();
-    const { content, stopReason } = await streamAssistantTurn(response, (chunk) => {
-      if (chunk.text !== undefined) turn.text += chunk.text;
-      if (chunk.thinking !== undefined) turn.thinking += chunk.thinking;
-      scheduleAssistantRender(turn);
-    });
+    const { content, stopReason, usage } = await streamAssistantTurn(
+      response,
+      (chunk) => {
+        if (chunk.text !== undefined) turn.text += chunk.text;
+        if (chunk.thinking !== undefined) turn.thinking += chunk.thinking;
+        scheduleAssistantRender(turn);
+      },
+      signal,
+    );
     renderAssistant(turn);
+    if (usage.input) usageTotals.input += usage.input;
+    if (usage.output) usageTotals.output += usage.output;
+    renderUsage();
+
+    if (signal?.aborted) {
+      // Keep whatever arrived, minus tool calls: their inputs are half
+      // streamed and a dangling tool_use with no result breaks replay.
+      const partial = content.filter((block) => block.type !== "tool_use");
+      if (partial.length) history.push({ role: "assistant", content: partial });
+      addTurn("note", "Stopped. The reply so far was kept.");
+      return;
+    }
 
     if (!content.length) {
       addTurn("error", "The model returned an empty response.");
@@ -654,15 +819,21 @@ async function runConversation(settings) {
     const results = [];
     const images = [];
     for (const call of toolCalls) {
+      if (signal?.aborted) break;
       const { content: text, is_error, image } = await runTool(call);
       results.push({ type: "tool_result", tool_use_id: call.id, content: text, is_error });
       if (image) images.push(image);
     }
+    if (!results.length) return;
     // Every tool_result must satisfy its tool_use before any other block
     // appears: the proxy emits one provider tool message per result and only
-    // then a user turn for the images, and a user message between a provider's
-    // tool messages is a hard error there.
+    // then a user turn for the images, which is the one ordering both APIs
+    // accept.
     history.push({ role: "user", content: [...results, ...images] });
+    if (signal?.aborted) {
+      addTurn("note", "Stopped. No further steps will run.");
+      return;
+    }
   }
 
   addTurn("error", `Stopped after ${MAX_TOOL_ROUNDS} tool rounds without a final answer.`);
@@ -680,7 +851,9 @@ async function send() {
   }
 
   busy = true;
+  stopController = new AbortController();
   ui.send.disabled = true;
+  ui.stop.hidden = false;
   ui.prompt.value = "";
   resizePrompt();
   addTurn("user", text);
@@ -690,13 +863,20 @@ async function send() {
   if (!pinnedTab) await pinActiveTab();
 
   try {
-    await runConversation(settings);
+    await runConversation(settings, stopController.signal);
   } catch (error) {
-    addTurn("error", error instanceof Error ? error.message : String(error));
+    if (stopController.signal.aborted) {
+      addTurn("note", "Stopped before a reply arrived.");
+    } else {
+      addTurn("error", error instanceof Error ? error.message : String(error));
+    }
   } finally {
     busy = false;
+    stopController = null;
     ui.send.disabled = false;
+    ui.stop.hidden = true;
     ui.prompt.focus();
+    scheduleSave();
   }
 }
 
@@ -739,7 +919,15 @@ ui.prompt.addEventListener("keydown", (event) => {
   }
 });
 
-ui.clear.addEventListener("click", showEmptyState);
+ui.clear.addEventListener("click", () => {
+  showEmptyState();
+  usageTotals = { input: 0, output: 0 };
+  renderUsage();
+  clearTimeout(saveTimer);
+  void chrome.storage.local.remove(CONVERSATION_KEY);
+});
+
+ui.stop.addEventListener("click", () => stopController?.abort());
 
 ui.rePin.addEventListener("click", () => void pinActiveTab());
 
@@ -779,6 +967,7 @@ async function probeBridge() {
   ui.pageTools.checked = settings.pageTools;
   showEmptyState();
   resizePrompt();
+  await restoreConversation();
   await probeBridge();
 
   // Auto-connect: the common case is a proxy already running at the saved URL,

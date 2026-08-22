@@ -44,11 +44,16 @@
     <div class="body">
       <main id="transcript" class="transcript" aria-live="polite"></main>
 
+      <!-- Spend for the whole conversation, not the last request: every round
+           replays the history, so the running sum is what billed. -->
+      <div id="usage" class="usage" hidden></div>
+
       <form id="composer" class="composer">
         <div class="composer-field">
           <textarea id="prompt" rows="1" placeholder="Ask about this page…"></textarea>
           <div class="composer-actions">
             <span class="composer-hint">Enter sends, Shift+Enter adds a line</span>
+            <button id="stop" class="stop" type="button" hidden>Stop</button>
             <button id="clear" class="ghost" type="button">Clear</button>
             <button id="send" type="submit">Send</button>
           </div>

@@ -562,6 +562,20 @@ body {
   opacity: 0.75;
 }
 
+/* Neutral counterpart to the error card: a stopped turn is the user's own
+   decision, reported without alarm. */
+.turn[data-role="note"] {
+  padding: 7px 11px;
+  border-radius: var(--radius-card);
+  background: var(--neutral-soft);
+  color: var(--muted);
+}
+
+.turn[data-role="note"]::before {
+  content: "Notice";
+  color: var(--faint);
+}
+
 .turn code {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -688,6 +702,23 @@ body {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* ---------- Usage ---------- */
+
+/* One quiet line above the composer. It is reference information the user
+   glances at, not a status they act on, so it earns no chrome of its own. */
+.usage {
+  flex: none;
+  padding: 5px 13px 0;
+  background: var(--panel);
+  font-size: 10.5px;
+  color: var(--faint);
+  text-align: right;
+}
+
+.usage[hidden] {
+  display: none;
 }
 
 /* ---------- Composer ---------- */
@@ -950,6 +981,24 @@ button.ghost {
 button.ghost:hover:not(:disabled) {
   background: var(--neutral-soft);
   color: var(--text);
+}
+
+/* Stop is the one composer action that must not read as ordinary: it ends a
+   running turn, so it carries the danger colour on a quiet ground rather
+   than a filled button, which would out-shout Send. */
+button.stop {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--danger);
+}
+
+button.stop:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+button.stop[hidden] {
+  display: none;
 }
 
 .sheet-footer button {
