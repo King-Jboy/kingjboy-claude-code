@@ -3,7 +3,6 @@
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
-from typing import Any
 
 from free_claude_code.core.anthropic import MessagesRequest
 from free_claude_code.core.anthropic.server_tool_sse import (
@@ -14,6 +13,7 @@ from free_claude_code.core.anthropic.server_tool_sse import (
     WEB_SEARCH_TOOL_RESULT_ERROR,
 )
 from free_claude_code.core.anthropic.streaming import format_sse_event
+from free_claude_code.core.json_types import JsonValue
 
 from . import outbound
 from .constants import _MAX_FETCH_CHARS

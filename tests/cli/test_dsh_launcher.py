@@ -16,13 +16,16 @@ from free_claude_code.core.json_types import JsonObject
 
 
 def _settings(*, token: str = "proxy-token") -> Settings:
-    return Settings(
-        host="0.0.0.0",
-        port=9191,
-        proxy_auth_enabled=False,
-        proxy_auth_token=token,
-        model="nvidia_nim/test-model",
-        provider_progress_timeout=600,
+    # Settings fields here are env-alias bound, so init kwargs are ignored;
+    # project the launcher-scoped values through model_copy instead.
+    return Settings(_env_file=None).model_copy(
+        update={
+            "host": "0.0.0.0",
+            "port": 9191,
+            "anthropic_auth_token": token,
+            "model": "nvidia_nim/test-model",
+            "provider_progress_timeout": 600.0,
+        }
     )
 
 
@@ -30,11 +33,13 @@ def _models_payload() -> JsonObject:
     return {
         "data": [
             {
-                "id": "anthropic/nvidia_nim/vendor/model",
+                "id": "nvidia_nim/vendor/model",
+                "provider_model_ref": "nvidia_nim/vendor/model",
                 "display_name": "Nested model",
             },
             {
                 "id": "claude-3-freecc-no-thinking/open_router/plain-model",
+                "provider_model_ref": "open_router/plain-model",
                 "display_name": "No-thinking model",
             },
         ]
@@ -290,7 +295,7 @@ def test_dsh_empty_proxy_token_fails_before_health_check() -> None:
         patch.object(
             dsh,
             "get_settings",
-            return_value=SimpleNamespace(proxy_auth_token="   "),
+            return_value=SimpleNamespace(anthropic_auth_token="   "),
         ),
         patch.object(dsh, "preflight_proxy") as preflight,
         pytest.raises(SystemExit) as exc_info,
@@ -367,6 +372,8 @@ def test_dsh_private_config_lives_for_child_and_is_removed_after_exit(
         env = kwargs["env"]
         assert isinstance(command, list)
         assert isinstance(env, dict)
+        command = [str(part) for part in command]
+        env = {str(key): str(value) for key, value in env.items()}
         patch_index = command.index("--patch") + 1
         patch_path = Path(command[patch_index])
         observed_directory = patch_path.parent

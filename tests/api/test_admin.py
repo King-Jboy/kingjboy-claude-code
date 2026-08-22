@@ -718,7 +718,9 @@ def test_admin_rejects_invalid_provider_progress_timeout_without_writing(
     managed_env = tmp_path / ".fcc" / ".env"
     # A rejected apply leaves nothing written at all on a fresh install.
     if managed_env.exists():
-        assert "PROVIDER_PROGRESS_TIMEOUT=" not in managed_env.read_text(encoding="utf-8")
+        assert "PROVIDER_PROGRESS_TIMEOUT=" not in managed_env.read_text(
+            encoding="utf-8"
+        )
 
 
 def test_admin_apply_masks_telegram_proxy_credentials(monkeypatch, tmp_path):

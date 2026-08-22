@@ -13,7 +13,6 @@ FCC_COMMANDS = (
     "fcc-claude",
     "fcc-codex",
     "fcc-pi",
-
     "fcc-init",
     "free-claude-code",
 )
@@ -693,7 +692,7 @@ def _create_windows_shortcut(
 
 
 def _batch_client(name: str) -> str:
-    return f"""@echo off
+    return rf"""@echo off
 echo {name}:%*>>"%CALL_LOG%"
 if "%FAIL_STEP%"=="{name}-verify" exit /b 51
 if "%1"=="--version" echo {name} 1.0.0
@@ -1046,7 +1045,6 @@ def test_install_ps1_fresh_install_is_verified(
         / "Programs"
         / "Free Claude Code.lnk"
     ).is_file()
-
 
 
 def test_install_ps1_stops_if_windows_icon_export_fails(

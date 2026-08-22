@@ -72,7 +72,7 @@ def launch(argv: Sequence[str] | None = None) -> None:
 
     require_compatible_dsh(binary_path)
     settings = get_settings()
-    auth_token = settings.proxy_auth_token.strip()
+    auth_token = settings.anthropic_auth_token.strip()
     if not auth_token:
         print("Free Claude Code proxy authentication token is empty.", file=sys.stderr)
         raise SystemExit(1)

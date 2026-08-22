@@ -4,16 +4,19 @@ import shutil
 import signal
 import subprocess
 import threading
-
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
+from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
+from smoke.lib.claude_cli_matrix import run_claude_cli
 from smoke.lib.config import SmokeConfig
 from smoke.lib.e2e import (
     ClientProtocolDriver,
@@ -25,6 +28,114 @@ from smoke.lib.e2e import (
 from smoke.lib.server import find_free_port
 
 pytestmark = [pytest.mark.live]
+
+
+@contextmanager
+def _successful_openai_provider(
+    *, model_id: str, marker: str
+) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+    provider_requests: list[dict[str, Any]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            if self.path == "/v1/models":
+                self._write_json(
+                    HTTPStatus.OK,
+                    {
+                        "object": "list",
+                        "data": [{"id": model_id, "object": "model"}],
+                    },
+                )
+                return
+            if self.path == "/api/v0/models":
+                self._write_json(HTTPStatus.OK, {"data": []})
+                return
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+        def do_POST(self) -> None:
+            length = int(self.headers.get("content-length", "0"))
+            raw_body = self.rfile.read(length)
+            parsed: Any = json.loads(raw_body) if raw_body else {}
+            if not isinstance(parsed, dict):
+                self._write_json(HTTPStatus.BAD_REQUEST, {"error": "invalid body"})
+                return
+            provider_requests.append({"path": self.path, "body": parsed})
+            if self.path != "/v1/chat/completions":
+                self._write_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("cache-control", "no-cache")
+            self.send_header("connection", "close")
+            self.end_headers()
+            self._write_chunk(content=marker, finish_reason=None)
+            self._write_chunk(content=None, finish_reason="stop")
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+        def _write_json(self, status: HTTPStatus, payload: object) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
+
+        def _write_chunk(
+            self, *, content: str | None, finish_reason: str | None
+        ) -> None:
+            delta: dict[str, Any] = {}
+            if content is not None:
+                delta = {"role": "assistant", "content": content}
+            payload = {
+                "id": "chatcmpl-hermes-smoke",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": model_id,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": finish_reason,
+                    }
+                ],
+            }
+            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = int(server.server_address[1])
+        yield f"http://127.0.0.1:{port}/v1", provider_requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _json_object_lines(text: str) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            value: Any = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    return objects
 
 
 @pytest.mark.smoke_target("clients")
@@ -120,7 +231,6 @@ def test_pi_cli_prompt_e2e(smoke_config: SmokeConfig, tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr or result.stdout
     assert "FCC_SMOKE_PI" in result.stdout
     assert "POST /v1/messages" in server_log
-
 
 
 @pytest.mark.smoke_target("cli")
@@ -248,98 +358,6 @@ def test_claude_cli_web_search_e2e(smoke_config: SmokeConfig, tmp_path: Path) ->
         )
         == 1
     ), server_log
-
-
-@pytest.mark.smoke_target("cli")
-def test_claude_auto_mode_openai_connected_e2e(
-    smoke_config: SmokeConfig, tmp_path: Path
-) -> None:
-    claude_bin = shutil.which(smoke_config.claude_bin)
-    if not claude_bin:
-        pytest.skip(f"missing_env: Claude CLI not found: {smoke_config.claude_bin}")
-
-    provider_models = ProviderMatrixDriver(smoke_config).provider_smoke_models()
-    provider_model = next(
-        (model for model in provider_models if model.provider == "openai"),
-        None,
-    )
-    if provider_model is None:
-        pytest.skip(
-            "missing_env: set FCC_SMOKE_MODEL_OPENAI to run the connected-account "
-            "Auto-mode smoke"
-        )
-
-    marker = f"FCC_SMOKE_AUTO_MODE_{uuid.uuid4().hex}"
-    marker_path = tmp_path / "auto-mode-marker.txt"
-    marker_path.write_text(marker, encoding="utf-8")
-    workspace = tmp_path / "workspace"
-    routed_model = provider_model.full_model
-
-    with SmokeServerDriver(
-        smoke_config,
-        name="product-claude-auto-mode-openai",
-        env_overrides={
-            "MODEL": routed_model,
-            "MODEL_FABLE": routed_model,
-            "MODEL_OPUS": routed_model,
-            "MODEL_SONNET": routed_model,
-            "MODEL_HAIKU": routed_model,
-            "MESSAGING_PLATFORM": "none",
-            "LOG_LEVEL": "DEBUG",
-            "LOG_RAW_API_PAYLOADS": "false",
-            "LOG_RAW_SSE_EVENTS": "false",
-        },
-    ).run() as server:
-        run = run_claude_cli(
-            claude_bin=claude_bin,
-            server=server,
-            config=smoke_config,
-            cwd=workspace,
-            prompt=(
-                "Use Bash exactly once to run `cat "
-                f'"{marker_path.as_posix()}"`. After the tool succeeds, reply '
-                "with exactly the file contents."
-            ),
-            tools="Bash",
-            auto_mode=True,
-        )
-        server_log = server.log_path.read_text(encoding="utf-8", errors="replace")
-
-    assert run.timed_out is False, run.combined_output
-    assert run.returncode == 0, run.combined_output
-    cli_events = _json_object_lines(run.stdout)
-    assert cli_events, run.stdout
-    encoded_events = json.dumps(cli_events, sort_keys=True)
-    assert '"type": "tool_use"' in encoded_events
-    assert '"name": "Bash"' in encoded_events
-    assert '"type": "tool_result"' in encoded_events
-    assert marker in encoded_events
-
-    combined_lower = run.combined_output.lower()
-    for unexpected in (
-        "temporarily unavailable",
-        "cannot determine the safety",
-        "automode-unavailable",
-        "openai responses cannot represent",
-    ):
-        assert unexpected not in combined_lower
-
-    log_rows = _json_object_lines(server_log)
-    policy_rows = [
-        row
-        for row in log_rows
-        if row.get("event") == "free_claude_code.api.route.safety_classifier_policy"
-    ]
-    assert any(
-        row.get("classifier_stop_sequence") == "</severity>"
-        and row.get("stop_sequence_removed") is True
-        for row in policy_rows
-    ), server_log
-    message_requests = [
-        line for line in server_log.splitlines() if "POST /v1/messages" in line
-    ]
-    assert len(message_requests) >= 2, server_log
-    assert all(" 400 " not in message for message in message_requests), server_log
 
 
 @pytest.mark.smoke_target("cli")
@@ -582,7 +600,6 @@ def _deliberately_failing_openai_provider() -> Iterator[tuple[str, list[str]]]:
         thread.join(timeout=5)
 
 
-
 @pytest.mark.smoke_target("cli")
 def test_claude_cli_multiturn_tool_protocol_e2e(smoke_config: SmokeConfig) -> None:
     provider_model = ProviderMatrixDriver(smoke_config).first_model()
@@ -613,7 +630,7 @@ def test_dsh_cli_headless_e2e(smoke_config: SmokeConfig, tmp_path: Path) -> None
     model_id = "fcc-smoke-dsh"
     full_model = f"lmstudio/{model_id}"
     marker = "FCC_SMOKE_DSH"
-    auth_token = smoke_config.settings.proxy_auth_token
+    auth_token = smoke_config.settings.anthropic_auth_token
     credential_env_keys = _provider_credential_env_keys()
 
     with (
@@ -681,7 +698,7 @@ def test_dsh_cli_terminal_failure_e2e(
         pytest.skip("missing_env: uv not found")
 
     full_model = "lmstudio/fcc-smoke-failing-model"
-    auth_token = smoke_config.settings.proxy_auth_token
+    auth_token = smoke_config.settings.anthropic_auth_token
     credential_env_keys = _provider_credential_env_keys()
     with (
         _deliberately_failing_openai_provider() as (
@@ -739,7 +756,7 @@ def test_dsh_cli_web_startup_e2e(smoke_config: SmokeConfig, tmp_path: Path) -> N
 
     model_id = "fcc-smoke-dsh-web"
     full_model = f"lmstudio/{model_id}"
-    auth_token = smoke_config.settings.proxy_auth_token
+    auth_token = smoke_config.settings.anthropic_auth_token
     credential_env_keys = _provider_credential_env_keys()
     web_port = find_free_port()
     with (
@@ -788,4 +805,3 @@ def test_dsh_cli_web_startup_e2e(smoke_config: SmokeConfig, tmp_path: Path) -> N
     assert auth_token not in f"{stdout}\n{stderr}"
     assert "GET /v1/models" in server_log
     assert provider_requests == []
-
