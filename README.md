@@ -355,6 +355,14 @@ One key alone behaves exactly as before, so there is nothing to change if you on
 
 > **OpenRouter note:** OpenRouter applies free-tier limits per *account*. Keys minted from separate accounts therefore multiply your throughput; several keys on one account give you redundancy rather than more headroom.
 
+### Web Search
+
+Claude Code's WebSearch tool works through FCC on every provider: the proxy
+answers the tool call itself with local web tools, so no provider-side search
+support is needed. It is on by default; set `ENABLE_WEB_SERVER_TOOLS=false`
+in `~/.fcc/.env` to opt out, and `WEB_FETCH_ALLOWED_SCHEMES` controls the URL
+schemes `web_fetch` may retrieve.
+
 ### Checking Your Setup
 
 Run `fcc-doctor` when something is off, or before you rely on a long session:
@@ -731,6 +739,8 @@ Verified live against both providers: 20 concurrent requests spread across all 1
 **A model list you curate.** `MODEL_CATALOG_SCOPE=configured` narrows the client and Admin model lists to what you route to, and `PINNED_MODELS` is a shortlist you add to and remove from freely. See [Your Own Model List](#your-own-model-list).
 
 **A context-window table you can regenerate.** `fcc-context` measures your routable models and records them in `~/.fcc/context.md`, reading published metadata where a provider offers it. See [Finding A Model's Context Window](#finding-a-models-context-window).
+
+**A configurable progress deadline.** `PROVIDER_PROGRESS_TIMEOUT` (default 600s, editable in the Admin UI) bounds how long a request may go without a protocol event before failing as a 504 — and when a client disconnects, provider work is cancelled instead of running out the clock on your keys.
 
 **`count_tokens` off the event loop.** The token-count endpoint ran tiktoken inline in the async handler, stalling every in-flight stream for the duration (~90ms on a 100k-token request). It now runs in a worker thread.
 
