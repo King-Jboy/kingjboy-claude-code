@@ -501,7 +501,9 @@ async def test_a_cooldown_that_elapses_returns_the_key_to_rotation(
 
 
 @pytest.mark.asyncio
-async def test_a_refusal_that_never_cools_cannot_retry_forever() -> None:
+async def test_a_refusal_that_never_cools_cannot_retry_forever(
+    clock: _Clock,
+) -> None:
     # How long a key cools is a number the provider chooses, so a reset it keeps
     # stating as near-zero must not be able to re-offer the same key without
     # end. Left unbounded this served no request and hammered the upstream.
@@ -511,6 +513,12 @@ async def test_a_refusal_that_never_cools_cannot_retry_forever() -> None:
     async def operation(client: AsyncOpenAI) -> str:
         nonlocal attempts
         attempts += 1
+        # Each attempt outlasts the previous near-zero cooldowns, so both keys
+        # keep returning to rotation; only the attempt budget can stop this.
+        # Advancing a stub clock keeps that true on any runner speed - real
+        # wall-clock time between awaits is microseconds on some CI machines
+        # and milliseconds on others.
+        clock.advance(0.01)
         raise _status_error(429, **{"retry-after": "0.001"})
 
     with pytest.raises(httpx.HTTPStatusError):
