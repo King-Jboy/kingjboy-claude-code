@@ -5,6 +5,7 @@
 // no preflight is sent and the proxy needs no CORS middleware. Routing this
 // through the service worker instead would only add a message hop.
 
+import { markdownNodes } from "./markdown.js";
 import { PAGE_APPROVALS, PAGE_TOOLS, runPageTool } from "./page_tools.js";
 import { SHELL_TOOL, bridgeStatus, runShellCommand } from "./shell_tool.js";
 
@@ -16,6 +17,9 @@ const MAX_TOKENS = 8192;
 // A tool_use turn that never terminates would loop against the provider until
 // the user's quota ran out. Real page-debugging turns settle in two or three.
 const MAX_TOOL_ROUNDS = 12;
+// What a tool result shows before it is expanded. Results can be a whole page;
+// the transcript would otherwise become a wall of output nobody scrolled past.
+const OUTPUT_PREVIEW_CHARS = 400;
 
 const BASE_PROMPT =
   "You are Free Claude Code running in a Chrome side panel, helping the user with the web " +
@@ -306,10 +310,11 @@ function showEmptyState() {
  *
  * Blocks arrive as a start event, a run of deltas, and a stop -- text as
  * `text_delta` fragments, tool calls as `input_json_delta` fragments that only
- * become valid JSON once concatenated. `onText` fires per fragment so the
- * panel can render while the response is still arriving.
+ * become valid JSON once concatenated, thinking as `thinking_delta` fragments
+ * with a final `signature_delta`. `onDelta` fires per fragment with the kind
+ * that grew, so the panel can render while the response is still arriving.
  */
-async function streamAssistantTurn(response, onText) {
+async function streamAssistantTurn(response, onDelta) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const blocks = [];
@@ -337,18 +342,28 @@ async function streamAssistantTurn(response, onText) {
 
       if (event.type === "content_block_start") {
         const block = event.content_block;
-        blocks[event.index] =
-          block.type === "tool_use"
-            ? { type: "tool_use", id: block.id, name: block.name, json: "" }
-            : { type: "text", text: "" };
+        if (block.type === "tool_use") {
+          blocks[event.index] = { type: "tool_use", id: block.id, name: block.name, json: "" };
+        } else if (block.type === "thinking") {
+          blocks[event.index] = { type: "thinking", text: "", signature: "" };
+        } else if (block.type === "redacted_thinking") {
+          blocks[event.index] = { type: "redacted_thinking", data: block.data ?? "" };
+        } else {
+          blocks[event.index] = { type: "text", text: "" };
+        }
       } else if (event.type === "content_block_delta") {
         const block = blocks[event.index];
         if (!block) continue;
         if (event.delta.type === "text_delta") {
           block.text += event.delta.text;
-          onText(event.delta.text);
+          onDelta({ text: event.delta.text });
         } else if (event.delta.type === "input_json_delta") {
           block.json += event.delta.partial_json;
+        } else if (event.delta.type === "thinking_delta") {
+          block.text += event.delta.thinking;
+          onDelta({ thinking: event.delta.thinking });
+        } else if (event.delta.type === "signature_delta") {
+          block.signature += event.delta.signature;
         }
       } else if (event.type === "message_delta") {
         stopReason = event.delta?.stop_reason ?? stopReason;
@@ -358,17 +373,34 @@ async function streamAssistantTurn(response, onText) {
     }
   }
 
-  const content = blocks.filter(Boolean).map((block) => {
-    if (block.type !== "tool_use") return { type: "text", text: block.text };
-    let input = {};
-    try {
-      // An empty-object tool call streams as "" rather than "{}".
-      input = block.json ? JSON.parse(block.json) : {};
-    } catch {
-      input = {};
-    }
-    return { type: "tool_use", id: block.id, name: block.name, input };
-  });
+  const content = blocks
+    .filter(Boolean)
+    .map((block) => {
+      if (block.type === "tool_use") {
+        let input = {};
+        try {
+          // An empty-object tool call streams as "" rather than "{}".
+          input = block.json ? JSON.parse(block.json) : {};
+        } catch {
+          input = {};
+        }
+        return { type: "tool_use", id: block.id, name: block.name, input };
+      }
+      if (block.type === "thinking") {
+        // The signature is replayed with the thinking block so reasoning-based
+        // providers can verify the turn chain; omit it when none arrived.
+        const thinking = { type: "thinking", thinking: block.text };
+        if (block.signature) thinking.signature = block.signature;
+        return thinking;
+      }
+      if (block.type === "redacted_thinking") {
+        return { type: "redacted_thinking", data: block.data };
+      }
+      return { type: "text", text: block.text };
+    })
+    // A thinking-only or text-only stream used to leave empty text blocks in
+    // history, which every later request replayed for nothing.
+    .filter((block) => block.type !== "text" || block.text !== "");
 
   return { content, stopReason };
 }
@@ -395,6 +427,110 @@ async function requestTurn(settings) {
     throw new Error(`Proxy returned HTTP ${response.status}. ${detail.slice(0, 400)}`);
   }
   return response;
+}
+
+// ---------- assistant rendering ----------
+
+/**
+ * One in-flight assistant turn: the transcript node plus the raw text buffers
+ * it renders from. Deltas accumulate into the buffers; rendering is scheduled
+ * per animation frame, so a burst of fragments costs one repaint.
+ */
+function openAssistantTurn() {
+  const node = addTurn("assistant", "");
+  const body = document.createElement("div");
+  body.className = "markdown";
+  node.append(body);
+  return { node, text: "", thinking: "", frame: 0 };
+}
+
+function renderAssistant(turn) {
+  turn.node.replaceChildren();
+  if (turn.thinking) turn.node.append(thinkingSection(turn.thinking));
+  const body = document.createElement("div");
+  body.className = "markdown";
+  body.append(markdownNodes(turn.text));
+  turn.node.append(body);
+  ui.transcript.scrollTop = ui.transcript.scrollHeight;
+}
+
+function scheduleAssistantRender(turn) {
+  if (turn.frame) return;
+  turn.frame = requestAnimationFrame(() => {
+    turn.frame = 0;
+    renderAssistant(turn);
+  });
+}
+
+/**
+ * Thinking arrives ahead of the reply on reasoning models. It is real content
+ * -- kept in history, replayed with its signature -- but it is not what the
+ * user asked for, so it sits collapsed unless opened.
+ */
+function thinkingSection(text) {
+  const details = document.createElement("details");
+  details.className = "thinking";
+  const summary = document.createElement("summary");
+  summary.textContent = "Thinking";
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+  body.textContent = text;
+  details.append(summary, body);
+  return details;
+}
+
+/**
+ * Show what a tool actually returned under its call line.
+ *
+ * Hiding outputs made every tool a black box: the model reacted to material
+ * the user could not see, which is exactly where distrust in the panel came
+ * from. Shown clipped by default because results are often whole pages; the
+ * full text is one click away and the model always received all of it.
+ */
+function showToolOutput(node, outcome) {
+  const box = document.createElement("div");
+  box.className = "tool-output";
+  if (outcome.is_error) box.dataset.error = "";
+
+  if (outcome.image) {
+    const shot = document.createElement("img");
+    shot.className = "tool-shot";
+    shot.alt = "Screenshot captured for the model";
+    shot.src = `data:${outcome.image.source.media_type};base64,${outcome.image.source.data}`;
+    box.append(shot);
+  }
+
+  const text = String(outcome.content ?? "");
+  if (text.trim()) {
+    const clipped = text.length > OUTPUT_PREVIEW_CHARS;
+    const body = document.createElement("div");
+    body.className = "tool-output-text";
+    body.textContent = clipped ? `${text.slice(0, OUTPUT_PREVIEW_CHARS)}…` : text;
+    box.append(body);
+
+    if (clipped) {
+      const toggle = document.createElement("button");
+      toggle.className = "tool-output-toggle";
+      toggle.type = "button";
+      toggle.textContent = "Show all";
+      toggle.addEventListener("click", () => {
+        const open = box.dataset.open !== undefined;
+        if (open) {
+          delete box.dataset.open;
+          body.textContent = `${text.slice(0, OUTPUT_PREVIEW_CHARS)}…`;
+          toggle.textContent = "Show all";
+        } else {
+          box.dataset.open = "";
+          body.textContent = text;
+          toggle.textContent = "Show less";
+        }
+      });
+      box.append(toggle);
+    }
+  }
+
+  node.append(box);
+  ui.transcript.scrollTop = ui.transcript.scrollHeight;
 }
 
 // ---------- turn loop ----------
@@ -461,39 +597,50 @@ function requestApproval({ detail, label = "", allow = "Run" }) {
 }
 
 async function runTool(call) {
+  const node = addTurn("tool", describeToolCall(call.name, call.input));
+
+  let outcome;
   if (call.name === SHELL_TOOL.name) {
-    return runShellCommand(call.input, {
+    outcome = await runShellCommand(call.input, {
       requestApproval: ({ command, cwd }) => requestApproval({ detail: command, label: cwd }),
     });
+  } else {
+    const approval = PAGE_APPROVALS[call.name]?.(call.input ?? {});
+    if (approval === null) {
+      outcome = {
+        content: `${call.name} needs a selector${call.name === "type_text" ? " and text" : ""}.`,
+        is_error: true,
+      };
+    } else if (approval) {
+      const allowed = await requestApproval({
+        ...approval,
+        label: pinnedTab ? `on ${pinnedTab.title}` : "",
+        allow: "Allow",
+      });
+      if (!allowed) {
+        outcome = { content: "The user declined this action.", is_error: true };
+      }
+    }
+    if (!outcome) {
+      outcome = await runPageTool(call.name, call.input, { tabId: pinnedTab?.id });
+    }
   }
 
-  const approval = PAGE_APPROVALS[call.name]?.(call.input ?? {});
-  if (approval === null) {
-    return { content: `${call.name} needs a selector${call.name === "type_text" ? " and text" : ""}.`, is_error: true };
-  }
-  if (approval) {
-    const allowed = await requestApproval({
-      ...approval,
-      label: pinnedTab ? `on ${pinnedTab.title}` : "",
-      allow: "Allow",
-    });
-    if (!allowed) return { content: "The user declined this action.", is_error: true };
-  }
-
-  addTurn("tool", describeToolCall(call.name, call.input));
-  return runPageTool(call.name, call.input, { tabId: pinnedTab?.id });
+  showToolOutput(node, outcome);
+  return outcome;
 }
 
 async function runConversation(settings) {
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     const response = await requestTurn(settings);
 
-    let node = null;
-    const { content, stopReason } = await streamAssistantTurn(response, (text) => {
-      if (!node) node = addTurn("assistant", "");
-      node.textContent += text;
-      ui.transcript.scrollTop = ui.transcript.scrollHeight;
+    const turn = openAssistantTurn();
+    const { content, stopReason } = await streamAssistantTurn(response, (chunk) => {
+      if (chunk.text !== undefined) turn.text += chunk.text;
+      if (chunk.thinking !== undefined) turn.thinking += chunk.thinking;
+      scheduleAssistantRender(turn);
     });
+    renderAssistant(turn);
 
     if (!content.length) {
       addTurn("error", "The model returned an empty response.");

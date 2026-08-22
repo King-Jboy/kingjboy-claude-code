@@ -23,6 +23,7 @@ MANIFEST_FILENAME = "manifest.json"
 REQUIRED_ASSETS = (
     MANIFEST_FILENAME,
     "console_probe.js",
+    "markdown.js",
     "page_tools.js",
     "service_worker.js",
     "shell_tool.js",

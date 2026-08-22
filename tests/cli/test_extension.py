@@ -113,6 +113,55 @@ def test_the_bundled_javascript_parses(tmp_path: Path) -> None:
         assert checked.returncode == 0, f"{source.name}: {checked.stderr}"
 
 
+def test_markdown_rendering_is_safe_and_covers_the_reply_subset(
+    tmp_path: Path,
+) -> None:
+    # The renderer is the one place untrusted model text becomes markup, and
+    # no other test executes it: escape-first is a property, not an accident
+    # of any one input, so it is asserted directly alongside the subset.
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    source = extension.extension_dir() / "markdown.js"
+    module = tmp_path / "markdown.mjs"
+    module.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    checks = tmp_path / "check.mjs"
+    checks.write_text(
+        "import { markdownToHtml } from './markdown.mjs';\n"
+        "const assert = (cond, what) => { if (!cond) throw new Error(what); };\n"
+        "const out = markdownToHtml('**bold** and *italic*');\n"
+        "assert(out.includes('<strong>bold</strong>') && out.includes('<em>italic</em>'), 'emphasis');\n"
+        "const evil = markdownToHtml('<script>alert(1)</script> `x`');\n"
+        "assert(!evil.includes('<script'), 'markup is escaped');\n"
+        "const link = markdownToHtml('[docs](https://example.com/a?b=1)');\n"
+        "assert(link.includes('href=\"https://example.com/a?b=1\"'), 'links keep their url');\n"
+        "assert(link.includes('rel=\"noreferrer noopener\"'), 'links open safely');\n"
+        "const scheme = markdownToHtml('[x](javascript:alert(1))');\n"
+        "assert(!scheme.includes('href='), 'non-http link stays text');\n"
+        "const fence = markdownToHtml('before\\n```\\n<b>raw</b>\\n```\\nafter');\n"
+        "assert(fence.includes('<pre><code>&lt;b&gt;raw&lt;/b&gt;</code></pre>'), 'fences escape content');\n"
+        "const lists = markdownToHtml('- a\\n- b\\n\\n1. one\\n2. two');\n"
+        "assert(lists.includes('<ul><li>a</li><li>b</li></ul>'), 'bullets');\n"
+        "assert(lists.includes('<ol><li>one</li><li>two</li></ol>'), 'numbers');\n"
+        "const heading = markdownToHtml('## Title');\n"
+        "assert(heading.includes('<h2>Title</h2>'), 'headings');\n"
+        "const span = markdownToHtml('use `map` here');\n"
+        "assert(span.includes('<code>map</code>'), 'code spans');\n"
+        "console.log('markdown ok');\n",
+        encoding="utf-8",
+    )
+
+    checked = subprocess.run(
+        [node, str(checks)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert checked.returncode == 0, f"markdown.js checks failed: {checked.stderr}"
+
+
 def test_missing_assets_are_reported_by_name(tmp_path: Path) -> None:
     (tmp_path / extension.MANIFEST_FILENAME).write_text("{}", encoding="utf-8")
 
