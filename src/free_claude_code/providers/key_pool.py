@@ -1,38 +1,36 @@
 """In-memory credential pool for providers that accept many equivalent keys.
 
-A pool turns N interchangeable API keys into one virtual key. Each key owns an
-independent rate window and health record, so a revoked or rate-limited key is
-skipped while the remaining keys keep serving at full speed.
+A pool turns N interchangeable API keys into one virtual key. Selection is
+least-recently-used: every request takes the key that has been idle the
+longest, so load spreads across the pool by itself and the first round of
+requests walks the keys in configured order.
 
-Ownership is deliberately split. Key-local outcomes are settled here: ``401``
-retires a key, ``429`` cools it until the reset the provider itself reported,
-and either way the caller hops to another key without spending a provider retry
-attempt. Everything that is not key-specific - ``5xx``, timeouts, connection
-errors - escalates to the provider-wide recovery episode owned by
-:mod:`free_claude_code.providers.admission`, so a genuinely failing backend is
-not hammered once per key.
+The pool never throttles on its own and never parks a caller. The provider is
+the only judge of a key: a request is attempted on a key, and the outcome
+moves that key's health. ``429`` cools the key for the reset the provider
+itself stated - or sixty seconds when it stated nothing - and the caller hops
+to the next key immediately. An authentication refusal cools the key for five
+minutes, then twenty minutes once refusals repeat, but never retires it
+outright: a provider-side auth outage or a freshly issued key still
+propagating looks exactly like a revoked credential, and a tombstone would
+turn that moment into capacity lost until the next restart. Any success
+clears a key's failure streak, so transient hiccups never accumulate.
 
-``403`` sits between those two. NVIDIA NIM answers ``403`` for an invalid key,
-while other providers use it to refuse a request outright, and the response
-rarely says which. Retiring on it would let one refused prompt walk the pool and
-kill every key, then report the result as "check the configured keys". So a
-``403`` cools its key and moves on. Only when *every* key has refused the same
-request is the refusal proven not to be key-local: the cooldowns that proved
-wrong are undone and the provider's own error is raised to the caller.
+``403`` is treated as ambiguous, because providers disagree about it: NVIDIA
+NIM answers ``403`` for an invalid key, while other providers use it to
+refuse a request outright. A ``403`` cools its key and the caller hops, but
+only while other keys have not refused the same request; once every key has
+refused alike, the refusal is proven not key-local, the cooldowns are undone,
+and the provider's own error reaches the caller.
 
-Cooldowns are only guessed when the provider states no usable timing. A
-published ``Retry-After`` or ``X-RateLimit-Reset`` is obeyed verbatim, because
-idling a key past its own reset wastes capacity - but a stated reset of zero, or
-one whose deadline has already passed, is timing-free in the same way an absent
-header is, and is answered by the guess rather than by a cooldown that has
-already elapsed. A guess instead escalates on each
-consecutive refusal from the same key, so a credential that is never coming
-back drops out of rotation within a couple of strikes rather than costing a
-wasted round-trip every window forever. Any success clears the escalation.
+Keys can carry a usage budget with an optional rolling window (OpenRouter's
+daily cap is the motivating case): each served request counts against its
+key, a key that reaches its budget sits out until the window rolls over, and
+the window resets on its schedule rather than on server activity.
 
 All state is in memory and resets on restart. That is self-correcting: a key
-still cooling upstream costs at most one wasted attempt before its fresh ``429``
-re-establishes the cooldown.
+still cooling upstream costs at most one wasted attempt before its fresh
+``429`` re-establishes the cooldown.
 """
 
 import asyncio
@@ -48,7 +46,6 @@ from loguru import logger
 from openai import AsyncOpenAI
 
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
-from free_claude_code.core.rate_limit import StrictSlidingWindowLimiter
 from free_claude_code.core.trace import trace_event
 from free_claude_code.providers.failure_policy import retry_after_seconds
 
@@ -56,43 +53,30 @@ T = TypeVar("T")
 
 KeyClientFactory = Callable[[str], AsyncOpenAI]
 
-# A cooldown at or under this bound is an ordinary per-minute window: waiting is
-# cheaper than failing. Anything longer is a real wall (for example a daily cap)
-# and is reported immediately rather than parking the client connection.
-MAX_POOL_WAIT_SECONDS = 60.0
+# How many consecutive authentication refusals escalate a key from the ordinary
+# cooldown to the hard one. The streak is cleared by any success, so only a
+# credential that genuinely never works walks up this ladder.
+_MAX_CONSECUTIVE_FAILURES = 3
 
-# Re-evaluate the pool at least this often while waiting, so a key that frees up
-# early is picked up promptly instead of after the full projected wait.
-_WAIT_SLICE_SECONDS = 1.0
+# Cooldown after an authentication refusal, before the streak escalates.
+_AUTH_COOLDOWN_S = 300.0
 
-# Only narrate waits long enough to matter; sub-second contention is normal.
-_WAIT_LOG_THRESHOLD_SECONDS = 0.5
+# Cooldown once an authentication refusal has repeated _MAX_CONSECUTIVE_FAILURES
+# times in a row. Still a cooldown, never a tombstone: the key is probed again.
+_AUTH_HARD_COOLDOWN_S = 1200.0
 
-# How much each consecutive guessed cooldown multiplies the last. With a 60s
-# window that walks 60s, 10min, capped - a dead key stops costing a wasted
-# round-trip per window within two strikes, while a key that recovers is still
-# retried and reset by its first success.
-_COOLDOWN_ESCALATION_FACTOR = 10.0
+# Cooldown for a rate-limited key when the provider stated no usable timing.
+_RATE_LIMIT_COOLDOWN_S = 60.0
 
-# Ceiling on a guessed cooldown. Past this the key is effectively out of
-# rotation, but never permanently: it is a wait, not the tombstone a 401 sets.
-MAX_COOLDOWN_SECONDS = 600.0
-
-# How long an authentication refusal holds a key out of rotation before it is
-# probed again. A 401 usually means a revoked credential, but providers also
-# answer 401 during their own auth outages and while a freshly issued key is
-# still propagating. Retiring permanently turned a moment like that into
-# capacity lost until the next restart, so a retirement expires instead. Each
-# further refusal from the same key backs the next probe off, so a credential
-# that really is revoked costs at most one request per interval.
-RETIREMENT_PROBE_SECONDS = 300.0
-MAX_RETIREMENT_SECONDS = 3600.0
+# Cooldown for an ambiguous permission refusal while other keys are still
+# untried. Short on purpose: if the refusal was about the request, every key
+# refuses alike and the pool escalates within one pass.
+_PERMISSION_COOLDOWN_S = 60.0
 
 # Attempts one logical operation may spend, per key in the pool. One pass maps
 # which keys refuse it; the second lets a key whose cooldown genuinely elapsed
-# serve after all. Past that the pool is not making progress, and the length of
-# a cooldown is a number the provider chooses - so this, not the cooldown
-# arithmetic, is what makes `run_key_local` terminate.
+# serve after all. Past that the pool is not making progress, and this - not
+# cooldown arithmetic - is what makes `run_key_local` terminate.
 _MAX_ATTEMPTS_PER_KEY = 2
 
 # ``X-RateLimit-Reset`` is sent as epoch milliseconds by some providers, epoch
@@ -145,14 +129,6 @@ class PooledKeyLease:
 
 
 @dataclass(frozen=True, slots=True)
-class _Waiter:
-    """One caller queued for a key, in arrival order."""
-
-    ticket: int
-    skip: frozenset[int]
-
-
-@dataclass(frozen=True, slots=True)
 class _HealthRollback:
     """One key's health before a refusal, beside what that refusal applied.
 
@@ -160,46 +136,55 @@ class _HealthRollback:
     on the loop. Undoing a refusal unconditionally would also discard a cooldown
     some other request established in the meantime - a cooldown the provider
     actually asked for - so a field is rolled back only while it still holds the
-    value this refusal wrote.
+    value this refusal wrote. When the refusal extended nothing (a longer
+    concurrent cooldown already stood), both halves are equal and the rollback
+    is inert: it still counts the refusal, but restores nothing.
     """
 
     previous_cooling_until: float
-    previous_strikes: int
+    previous_cooling_reason: str
     applied_cooling_until: float
-    applied_strikes: int
+    applied_cooling_reason: str
 
 
 @dataclass(slots=True)
 class _PooledKey:
     index: int
     client: AsyncOpenAI
-    limiter: StrictSlidingWindowLimiter
-    retired_until: float = 0.0
-    retirements: int = 0
+    usage_limit: int
+    usage_window_seconds: float | None
+    usage_count: int = 0
+    exhausted: bool = False
+    consecutive_failures: int = 0
     cooling_until: float = 0.0
+    cooling_reason: str = ""
+    window_reset_at: float = 0.0
+    # LRU stamp. Initial values are staggered so the first round of requests
+    # walks the keys in configured order (key[0] first, then key[1], ...)
+    # without needing a separate rotation index.
     last_used: float = 0.0
-    consecutive_guessed_failures: int = 0
 
-    def retired(self, now: float) -> bool:
-        """Return whether an authentication refusal still holds this key out."""
-        return self.retired_until > now
+    def cooling(self, now: float) -> bool:
+        """Return whether a refusal still holds this key out."""
+        return self.cooling_until > now
+
+    def auth_cooling(self, now: float) -> bool:
+        return self.cooling(now) and self.cooling_reason == "authentication"
 
     def ready(self, now: float) -> bool:
         """Return whether this key may be considered for selection."""
-        return self.retired_until <= now and self.cooling_until <= now
+        return not self.exhausted and not self.cooling(now)
 
     def available_in(self, now: float) -> float:
-        """Return seconds until this key could serve.
-
-        Never infinite: a retirement expires so the key is probed again rather
-        than being written off for the life of the process.
-        """
-        return max(
-            self.retired_until - now,
-            self.cooling_until - now,
-            self.limiter.next_available_in(),
-            0.0,
-        )
+        """Return seconds until this key could serve; ``math.inf`` when only a
+        window-less usage budget stands in the way."""
+        wait = max(self.cooling_until - now, 0.0)
+        if self.exhausted:
+            if self.usage_window_seconds:
+                wait = max(wait, max(self.window_reset_at - now, 0.0))
+            else:
+                return math.inf
+        return wait
 
 
 class KeyPool:
@@ -210,41 +195,38 @@ class KeyPool:
         keys: Sequence[str],
         *,
         provider_name: str,
-        rate_limit: int,
-        rate_window: float,
         client_factory: KeyClientFactory,
-        on_capacity_change: Callable[[int], None] | None = None,
+        usage_limit: int = 0,
+        usage_window_seconds: float | None = None,
     ) -> None:
         if not keys:
             raise ValueError("A key pool requires at least one API key")
         self._provider_name = provider_name
-        self._rate_window = float(rate_window)
-        # Arrival order for waiting callers, and the futures used to hand
-        # capacity straight to the next one instead of making it wait out a
-        # polling slice. Without an order, every waiter raced on each tick and
-        # the winner was arbitrary, so a request could lose repeatedly while the
-        # pool served everyone around it.
-        self._waiting: list[_Waiter] = []
-        self._next_ticket = 0
-        self._wakeups: list[asyncio.Future[None]] = []
-        # Told how many keys are usable whenever that changes, so a provider-wide
-        # gate can stop admitting at a rate this pool can no longer serve.
-        self._on_capacity_change = on_capacity_change
-        self._published_capacity = len(keys)
+        now = time.monotonic()
         self._keys = tuple(
             _PooledKey(
                 index=index,
                 client=client_factory(key),
-                limiter=StrictSlidingWindowLimiter(rate_limit, rate_window),
+                usage_limit=usage_limit,
+                usage_window_seconds=usage_window_seconds,
+                window_reset_at=(
+                    now + usage_window_seconds if usage_window_seconds else 0.0
+                ),
+                last_used=-float(len(keys) - index),
             )
             for index, key in enumerate(keys)
         )
         logger.info(
-            "Key pool initialized for {} ({} keys, {} req / {}s each)",
+            "Key pool initialized for {} ({} keys{})",
             provider_name,
             len(self._keys),
-            rate_limit,
-            rate_window,
+            (
+                f", {usage_limit} uses per key per {usage_window_seconds:.0f}s window"
+                if usage_limit > 0 and usage_window_seconds
+                else f", {usage_limit} uses per key"
+                if usage_limit > 0
+                else ""
+            ),
         )
 
     @property
@@ -255,169 +237,61 @@ class KeyPool:
     def status(self) -> KeyPoolStatus:
         """Summarize key health so operators can see silent capacity loss.
 
-        Readiness is measured the way :meth:`acquire` measures it, through
-        ``available_in``. Counting only cooldowns would report a pool whose rate
-        windows are all spent as fully ready, and would suppress the "soonest
-        free" hint at exactly the moment an operator needs it.
+        ``retired`` counts keys held out by an authentication refusal; those
+        are the ones an operator can fix by rotating credentials. Everything
+        else not ready - rate limits, ambiguous refusals, spent usage budgets -
+        is ``cooling`` and recovers on its own.
         """
         now = time.monotonic()
-        live = [key for key in self._keys if not key.retired(now)]
-        waits = [key.available_in(now) for key in live]
-        pending = [wait for wait in waits if wait > 0.0]
-        ready = len(waits) - len(pending)
+        ready = 0
+        cooling = 0
+        retired = 0
+        soonest: list[float] = []
+        for key in self._keys:
+            self._roll_usage_window(key, now)
+            if key.ready(now):
+                ready += 1
+                continue
+            if key.auth_cooling(now):
+                retired += 1
+            else:
+                cooling += 1
+            wait = key.available_in(now)
+            if math.isfinite(wait):
+                soonest.append(wait)
         return KeyPoolStatus(
             size=len(self._keys),
             ready=ready,
-            cooling=len(pending),
-            retired=len(self._keys) - len(live),
-            soonest_ready_in=min(pending) if pending and not ready else None,
+            cooling=cooling,
+            retired=retired,
+            soonest_ready_in=min(soonest) if soonest else None,
         )
 
     async def acquire(self, *, exclude: Collection[int] = ()) -> PooledKeyLease:
-        """Admit one attempt on the healthiest key, waiting only when worthwhile.
+        """Lease the available key idle the longest, or fail without waiting.
 
         ``exclude`` holds keys the caller has already tried within one logical
         operation, so a retry walks forward instead of re-testing the same key.
 
-        Raises a terminal :class:`ExecutionFailure` when every key is retired, or
-        when the soonest key would not free up within :data:`MAX_POOL_WAIT_SECONDS`.
+        The pool never parks a caller: when no eligible key can serve right
+        now, the refusal is reported immediately and the caller's own recovery
+        policy owns the backoff.
         """
-        # Retirements expire on a clock rather than an event, so recheck here:
-        # this is the one place every acquisition passes through.
-        self._publish_capacity()
         skip = frozenset(exclude)
-        waiter = _Waiter(ticket=self._next_ticket, skip=skip)
-        self._next_ticket += 1
-        self._waiting.append(waiter)
-        deadline: float | None = None
-        try:
-            while True:
-                now = time.monotonic()
-                my_turn = self._may_attempt(waiter, now)
-                if my_turn:
-                    candidate = self._select(now, skip)
-                    if candidate is not None and candidate.limiter.try_acquire():
-                        candidate.last_used = now
-                        return PooledKeyLease(
-                            index=candidate.index, client=candidate.client
-                        )
-                if deadline is None:
-                    # Bound the whole wait, not each slice of it. Checking only
-                    # the instantaneous projection let a caller wait indefinitely
-                    # while other traffic kept re-cooling whichever key was next.
-                    deadline = now + MAX_POOL_WAIT_SECONDS
-                if my_turn:
-                    await self._wait_for_capacity(skip, deadline)
-                else:
-                    # Someone ahead of us can use a key right now. Nothing we
-                    # could observe about the pool changes until they take it
-                    # and leave - which wakes us - so wait for that instead of
-                    # re-reading a state only they can move. Polling it here
-                    # projected a zero wait (the key is ready, just not ours)
-                    # and spun every queued caller against the whole queue on
-                    # every event-loop tick until the head was scheduled.
-                    await self._sleep_until_capacity(_WAIT_SLICE_SECONDS)
-        finally:
-            self._waiting.remove(waiter)
-            # Whether this caller took a key or gave up, the next in line may now
-            # be able to proceed - and should not sit out a polling slice first.
-            self._wake_waiters()
-
-    def _may_attempt(self, waiter: _Waiter, now: float) -> bool:
-        """Return whether this caller is next in line for a key.
-
-        Strict arrival order, with one exception: an older caller that cannot use
-        any currently ready key must not hold up one that can. Otherwise a retry
-        excluding the only free key would stall the whole pool behind itself.
-        """
-        for queued in self._waiting:
-            if queued.ticket == waiter.ticket:
-                return True
-            if self._select(now, queued.skip) is not None:
-                return False
-        return True
-
-    def _wake_waiters(self) -> None:
-        """Release every queued caller to re-check the pool immediately."""
-        wakeups = self._wakeups
-        self._wakeups = []
-        for wakeup in wakeups:
-            if not wakeup.done():
-                wakeup.set_result(None)
-
-    async def _sleep_until_capacity(self, timeout: float) -> None:
-        """Sleep for ``timeout``, or until another caller frees the pool."""
-        wakeup: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._wakeups.append(wakeup)
-        try:
-            await asyncio.wait_for(wakeup, timeout)
-        except TimeoutError:
-            pass
-        finally:
-            if wakeup in self._wakeups:
-                self._wakeups.remove(wakeup)
-
-    def _select(
-        self, now: float, skip: frozenset[int] = frozenset()
-    ) -> _PooledKey | None:
-        """Return the readiest key: most window headroom, then least recently used."""
-        ready = [key for key in self._keys if key.index not in skip and key.ready(now)]
-        if not ready:
-            return None
-        return max(ready, key=lambda key: (key.limiter.headroom(), -key.last_used))
-
-    async def _wait_for_capacity(self, skip: frozenset[int], deadline: float) -> None:
-        """Sleep until a key could serve, or fail when only a wall is left.
-
-        Two very different states both read as "no key right now", and only one
-        of them is worth failing over:
-
-        * Our own rate window is full. Nothing upstream is wrong and the
-          provider would serve us; the wait is bounded by ``rate_window`` by
-          construction. Failing here would manufacture an error out of ordinary
-          throughput, which is what turned a busy pool into a client-visible
-          outage. So a self-imposed wait ignores the deadline.
-        * Every usable key is in a cooldown the provider itself imposed. That is
-          a real wall, and parking a client connection behind an hours-long
-          reset is worse than reporting it.
-        """
         now = time.monotonic()
-        candidates = [key for key in self._keys if key.index not in skip]
-        if not candidates or all(key.retired(now) for key in candidates):
-            # Every key refused authentication. A retirement does expire, so a
-            # later request probes them again, but waiting out an auth refusal
-            # would only hide a misconfiguration behind a long stall.
-            raise self._all_keys_retired_failure()
-        live = [key for key in candidates if not key.retired(now)]
-        wait = min(key.available_in(now) for key in live)
-        self_imposed = min(
-            (
-                key.limiter.next_available_in()
-                for key in live
-                if key.cooling_until <= now
-            ),
-            default=math.inf,
-        )
-        if math.isfinite(self_imposed):
-            await self._sleep_until_capacity(min(self_imposed, _WAIT_SLICE_SECONDS))
-            return
-        if wait > max(deadline - now, 0.0):
-            raise self._pool_exhausted_failure(wait)
-        if wait >= _WAIT_LOG_THRESHOLD_SECONDS:
-            logger.info(
-                "{} key pool saturated; soonest key frees in {:.1f}s",
-                self._provider_name,
-                wait,
-            )
-            trace_event(
-                stage="provider",
-                event="provider.key_pool.wait",
-                source="provider",
-                provider=self._provider_name,
-                wait_s=round(wait, 3),
-                pool_size=len(self._keys),
-            )
-        await self._sleep_until_capacity(min(wait, _WAIT_SLICE_SECONDS))
+        best: _PooledKey | None = None
+        for key in self._keys:
+            if key.index in skip:
+                continue
+            self._roll_usage_window(key, now)
+            if not key.ready(now):
+                continue
+            if best is None or key.last_used < best.last_used:
+                best = key
+        if best is None:
+            raise self._no_available_key_failure(skip, now)
+        best.last_used = now
+        return PooledKeyLease(index=best.index, client=best.client)
 
     def record_failure(
         self, lease: PooledKeyLease, error: BaseException
@@ -429,154 +303,70 @@ class KeyPool:
         answers ``401``, NVIDIA NIM answers ``403``. Pinned by
         ``smoke/product/test_key_pool_product_live.py``.
         """
+        action, _applied = self._record_failure(lease, error)
+        return action
+
+    def _record_failure(
+        self, lease: PooledKeyLease, error: BaseException
+    ) -> tuple[KeyFailureAction, float | None]:
+        """Settle one failure, returning the action and the cooldown applied.
+
+        The applied cooldown is ``None`` when a longer concurrent cooldown
+        already stood and this refusal extended nothing - the caller needs that
+        to know whether its rollback would undo anything.
+        """
         key = self._keys[lease.index]
         status = _status_code(error)
         if isinstance(error, openai.AuthenticationError) or status == 401:
-            return self._retire(key, reason="authentication")
+            return KeyFailureAction.HOP, self._auth_cooldown(key)
         if isinstance(error, openai.PermissionDeniedError) or status == 403:
             # A 403 is not reliably about the credential: providers also use it
             # to reject the request itself, for content policy or for a model
-            # this account cannot reach. Sideline the key rather than retiring
-            # it, and escalate only once every key has refused alike - which
-            # proves the request, not the keys, was refused.
-            self._cool(key, error, reason="permission")
-            return KeyFailureAction.HOP_AMBIGUOUS
+            # this account cannot reach. Cool the key briefly and escalate only
+            # once every key has refused alike - which proves the request, not
+            # the keys, was refused.
+            return (
+                KeyFailureAction.HOP_AMBIGUOUS,
+                self._cool(key, _PERMISSION_COOLDOWN_S, reason="permission"),
+            )
         if isinstance(error, openai.RateLimitError) or status == 429:
-            self._cool(key, error, reason="rate limit")
-            return KeyFailureAction.HOP
-        return KeyFailureAction.ESCALATE
-
-    def _retire(self, key: _PooledKey, *, reason: str) -> KeyFailureAction:
-        """Hold a key out over an authentication refusal, but not forever."""
-        now = time.monotonic()
-        if not key.retired(now):
-            key.retirements += 1
-            backoff = RETIREMENT_PROBE_SECONDS * _COOLDOWN_ESCALATION_FACTOR ** (
-                key.retirements - 1
+            cooldown = self._stated_reset(error) or _RATE_LIMIT_COOLDOWN_S
+            return (
+                KeyFailureAction.HOP,
+                self._cool(key, cooldown, reason="rate limit"),
             )
-            key.retired_until = now + min(backoff, MAX_RETIREMENT_SECONDS)
-            logger.warning(
-                "{} key pool retiring key #{} ({}) for {:.0f}s (strike {}); "
-                "{} of {} keys still usable",
-                self._provider_name,
-                key.index,
-                reason,
-                key.retired_until - now,
-                key.retirements,
-                self._usable_count(),
-                len(self._keys),
-            )
-            trace_event(
-                stage="provider",
-                event="provider.key_pool.key_retired",
-                source="provider",
-                provider=self._provider_name,
-                key_index=key.index,
-                reason=reason,
-                retired_for_s=round(key.retired_until - now, 3),
-                strike=key.retirements,
-                usable_keys=self._usable_count(),
-                pool_size=len(self._keys),
-            )
-            self._publish_capacity()
-        return KeyFailureAction.HOP
+        return KeyFailureAction.ESCALATE, None
 
-    def _cool(self, key: _PooledKey, error: BaseException, *, reason: str) -> None:
-        cooldown = self._cooldown_seconds(key, error)
-        key.cooling_until = max(key.cooling_until, time.monotonic() + cooldown)
-        logger.info(
-            "{} key pool cooling key #{} for {:.1f}s after upstream {} (strike {})",
-            self._provider_name,
-            key.index,
-            cooldown,
-            reason,
-            key.consecutive_guessed_failures,
-        )
-        trace_event(
-            stage="provider",
-            event="provider.key_pool.key_cooling",
-            source="provider",
-            provider=self._provider_name,
-            key_index=key.index,
-            reason=reason,
-            cooldown_s=round(cooldown, 3),
-            strike=key.consecutive_guessed_failures,
-            usable_keys=self._usable_count(),
-            pool_size=len(self._keys),
-        )
+    def record_success(
+        self, lease: PooledKeyLease, *, proves_credential: bool = True
+    ) -> None:
+        """Settle one served request: meter usage and clear the failure streak.
 
-    def _cooldown_seconds(self, key: _PooledKey, error: BaseException) -> float:
-        """Honour the provider's own reset, and escalate only when guessing.
-
-        A stated reset is fact: obey it exactly, or a healthy key would sit idle
-        past the moment it became usable. Absent one - the shape of a dead
-        credential, which carries no timing at all - each further refusal from
-        the same key multiplies the wait, so a key that is never coming back
-        leaves the rotation instead of costing a round-trip every window.
-
-        A reset of zero - sent literally, or left over from a deadline that has
-        already passed - states no timing either. Obeying it verbatim would set
-        a cooldown that has already elapsed, so ``_cool`` would not cool: the
-        key stays instantly selectable and the refusal repeats at full speed.
-        Those are read as the absent case and answered with the guess.
-        """
-        stated = retry_after_seconds(error)
-        if stated is None:
-            stated = _rate_limit_reset_seconds(error)
-        if stated is not None and stated > 0.0:
-            return stated
-
-        key.consecutive_guessed_failures += 1
-        escalation = _COOLDOWN_ESCALATION_FACTOR ** (
-            key.consecutive_guessed_failures - 1
-        )
-        return min(max(0.0, self._rate_window) * escalation, MAX_COOLDOWN_SECONDS)
-
-    def record_success(self, lease: PooledKeyLease) -> None:
-        """Clear a key's escalation once it serves, so recovery is immediate.
-
-        A key that serves has proved its credential, so the retirement ladder is
-        cleared too: the next authentication refusal starts from the shortest
-        probe rather than resuming a backoff the key has since grown out of.
+        Set ``proves_credential=False`` for an endpoint that serves requests
+        without checking the key. Succeeding there says nothing about the
+        credential and costs no budget, so it must neither reset a dead key's
+        streak nor count against its usage.
         """
         key = self._keys[lease.index]
-        key.consecutive_guessed_failures = 0
-        key.retirements = 0
-        self._publish_capacity()
-
-    def _usable_count(self) -> int:
         now = time.monotonic()
-        return sum(1 for key in self._keys if not key.retired(now))
-
-    def _publish_capacity(self) -> None:
-        """Report a change in usable keys, so a gate above can follow the pool.
-
-        Only retirement counts here. A cooldown is short and self-clearing;
-        retuning the gate on every one would make it flap without ever
-        describing a different pool.
-        """
-        if self._on_capacity_change is None:
+        self._roll_usage_window(key, now)
+        if not proves_credential:
             return
-        usable = self._usable_count()
-        if usable != self._published_capacity:
-            self._published_capacity = usable
-            self._on_capacity_change(usable)
-
-    def _restore(self, health: Mapping[int, _HealthRollback]) -> None:
-        """Undo sidelining from refusals that proved not to be key-local.
-
-        The strike count is rolled back with the cooldown: a key must not be
-        escalated toward retirement for a refusal the request itself caused.
-        Each field is restored only while it still holds the value this refusal
-        wrote, so a cooldown a concurrent request established afterwards - one
-        the provider did ask for - is left standing.
-        """
-        for index, rollback in health.items():
-            key = self._keys[index]
-            if key.cooling_until == rollback.applied_cooling_until:
-                key.cooling_until = rollback.previous_cooling_until
-            if key.consecutive_guessed_failures == rollback.applied_strikes:
-                key.consecutive_guessed_failures = rollback.previous_strikes
+        if key.consecutive_failures:
+            key.consecutive_failures = 0
+        if key.usage_limit <= 0:
+            return
+        key.usage_count += 1
+        if key.usage_count >= key.usage_limit and not key.exhausted:
+            key.exhausted = True
+            logger.warning(
+                "{} key pool: key #{} reached its usage limit ({}/{}). "
+                "Rotating to the next key.",
+                self._provider_name,
+                key.index,
+                key.usage_count,
+                key.usage_limit,
+            )
 
     async def run_key_local(
         self,
@@ -590,19 +380,13 @@ class KeyPool:
         once the body is flowing belong to the recovery controller and never
         reach this method.
 
-        Set ``proves_credential=False`` for an endpoint that serves requests
-        without checking the key. Succeeding there says nothing about the
-        credential, so it must not clear a dead key's escalating backoff.
-
-        Termination is bounded three ways. Pool state bounds the ordinary case:
-        retiring or cooling every key makes the next :meth:`acquire` raise
-        instead of looping. An ambiguous refusal is bounded separately, by
-        refusing to blame a second key for what is evidently the request. Both
-        of those, though, rest on a refusal actually taking its key out of
-        rotation - and how long a key cools is a number the *provider* chooses.
-        A refusal that keeps stating a reset of nearly zero would re-offer the
-        same key forever, so the attempt budget bounds the loop unconditionally
-        and reports the upstream failure the caller can act on.
+        Termination is bounded two ways. Pool state bounds the ordinary case:
+        cooling every eligible key makes the next :meth:`acquire` raise instead
+        of looping. An ambiguous refusal is bounded separately, by refusing to
+        blame a second key for what is evidently the request. Both rest on a
+        refusal actually taking its key out of rotation, so the attempt budget
+        bounds the loop unconditionally and reports the upstream failure the
+        caller can act on.
         """
         refused: dict[int, _HealthRollback] = {}
         last_refusal: BaseException | None = None
@@ -642,10 +426,23 @@ class KeyPool:
                     exc_type=type(last_error).__name__,
                 )
                 raise last_error
-            lease = await self.acquire(exclude=refused.keys())
+            try:
+                lease = await self.acquire(exclude=refused.keys())
+            except ExecutionFailure as failure:
+                if (
+                    last_error is not None
+                    and failure.kind is not FailureKind.AUTHENTICATION
+                ):
+                    # A prior attempt already surfaced the real upstream error -
+                    # with its headers and status - and that beats the pool's
+                    # summary of it. An authentication verdict is the exception:
+                    # "every key was rejected, check the configured keys" tells
+                    # the operator more than the last raw 401 did.
+                    raise last_error from failure
+                raise
             key = self._keys[lease.index]
             previous_cooling_until = key.cooling_until
-            previous_strikes = key.consecutive_guessed_failures
+            previous_cooling_reason = key.cooling_reason
             attempts += 1
             try:
                 result = await operation(lease.client)
@@ -653,20 +450,28 @@ class KeyPool:
                 raise
             except Exception as error:
                 last_error = error
-                action = self.record_failure(lease, error)
+                action, applied = self._record_failure(lease, error)
                 if action is KeyFailureAction.ESCALATE:
                     raise
                 if action is KeyFailureAction.HOP_AMBIGUOUS:
+                    # When this refusal extended nothing (a longer concurrent
+                    # cooldown stood), the rollback is inert: the refusal still
+                    # counts toward the every-key-refused tally, but restoring
+                    # it must not undo the other request's cooldown.
+                    if applied is None:
+                        applied = previous_cooling_until
+                        applied_reason = previous_cooling_reason
+                    else:
+                        applied_reason = key.cooling_reason
                     refused[lease.index] = _HealthRollback(
                         previous_cooling_until=previous_cooling_until,
-                        previous_strikes=previous_strikes,
-                        applied_cooling_until=key.cooling_until,
-                        applied_strikes=key.consecutive_guessed_failures,
+                        previous_cooling_reason=previous_cooling_reason,
+                        applied_cooling_until=applied,
+                        applied_cooling_reason=applied_reason,
                     )
                     last_refusal = error
             else:
-                if proves_credential:
-                    self.record_success(lease)
+                self.record_success(lease, proves_credential=proves_credential)
                 return result
 
     async def aclose(self) -> None:
@@ -684,33 +489,146 @@ class KeyPool:
                     exc_type=type(exc).__name__,
                 )
 
-    def _all_keys_retired_failure(self) -> ExecutionFailure:
-        return ExecutionFailure(
-            kind=FailureKind.AUTHENTICATION,
-            status_code=401,
-            message=(
-                f"Every {self._provider_name} API key in the pool was rejected "
-                f"({len(self._keys)} configured). Check the configured keys."
-            ),
-            retryable=False,
-        )
+    def _no_available_key_failure(
+        self, skip: frozenset[int], now: float
+    ) -> ExecutionFailure:
+        """Report an immediate refusal to serve, naming the soonest recovery.
 
-    def _pool_exhausted_failure(self, wait: float) -> ExecutionFailure:
-        # Retryable: reaching here means every key sits behind a provider
-        # cooldown, which is by nature temporary. Marking it terminal handed the
-        # client a hard 429 and, under a fan-out, handed one to every queued
-        # request at once. Letting the provider-wide recovery episode own the
-        # backoff keeps a transient wall from surfacing as an outage.
+        Every eligible key refused authentication: that is a configuration
+        problem the operator must fix, reported as terminal. Any other holdout
+        - rate limits, ambiguous refusals, spent budgets - is temporary, so the
+        failure is retryable and the caller's recovery policy owns the backoff.
+        """
+        candidates = [key for key in self._keys if key.index not in skip] or list(
+            self._keys
+        )
+        holdouts = [key for key in candidates if not key.ready(now)]
+        if holdouts and all(key.auth_cooling(now) for key in holdouts):
+            return ExecutionFailure(
+                kind=FailureKind.AUTHENTICATION,
+                status_code=401,
+                message=(
+                    f"Every {self._provider_name} API key in the pool was "
+                    f"rejected ({len(self._keys)} configured). Check the "
+                    f"configured keys."
+                ),
+                retryable=False,
+            )
+        finite = [
+            key.available_in(now)
+            for key in holdouts
+            if math.isfinite(key.available_in(now))
+        ]
+        wait = min(finite) if finite else None
         return ExecutionFailure(
             kind=FailureKind.RATE_LIMIT,
             status_code=429,
             message=(
-                f"Every {self._provider_name} API key in the pool is rate "
-                f"limited. The soonest key frees in about "
-                f"{_humanize_wait(wait)}."
+                f"Every {self._provider_name} API key in the pool is cooling "
+                f"or exhausted."
+                + (
+                    f" The soonest key frees in about {_humanize_wait(wait)}."
+                    if wait is not None
+                    else ""
+                )
             ),
             retryable=True,
         )
+
+    def _auth_cooldown(self, key: _PooledKey) -> float | None:
+        """Cool a key past an authentication refusal, escalating on streaks."""
+        key.consecutive_failures += 1
+        if key.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+            cooldown = _AUTH_HARD_COOLDOWN_S
+            detail = (
+                f"key #{key.index} refused {key.consecutive_failures} times in a "
+                f"row - hard cooldown for {_AUTH_HARD_COOLDOWN_S / 60:.0f}min "
+                "before it is probed again"
+            )
+        else:
+            cooldown = _AUTH_COOLDOWN_S
+            detail = (
+                f"key #{key.index} refused "
+                f"({key.consecutive_failures}/{_MAX_CONSECUTIVE_FAILURES}) - "
+                f"cooldown for {_AUTH_COOLDOWN_S:.0f}s"
+            )
+        return self._cool(key, cooldown, reason="authentication", detail=detail)
+
+    def _cool(
+        self, key: _PooledKey, seconds: float, *, reason: str, detail: str = ""
+    ) -> float | None:
+        """Hold a key out for ``seconds``, or skip when a longer cooldown stands.
+
+        Returns the deadline applied, or ``None`` when this call extended
+        nothing because a concurrent request's cooldown already held the key
+        out for longer.
+        """
+        now = time.monotonic()
+        until = now + seconds
+        if until <= key.cooling_until:
+            return None
+        key.cooling_until = until
+        key.cooling_reason = reason
+        now = time.monotonic()
+        usable = sum(1 for k in self._keys if not k.cooling(now))
+        logger.warning(
+            "{} key pool: {} ({} of {} keys usable)",
+            self._provider_name,
+            detail or f"key #{key.index} cooling for {seconds:.0f}s ({reason})",
+            usable,
+            len(self._keys),
+        )
+        trace_event(
+            stage="provider",
+            event="provider.key_pool.key_cooling",
+            source="provider",
+            provider=self._provider_name,
+            key_index=key.index,
+            reason=reason,
+            cooldown_s=round(seconds, 3),
+            usable_keys=usable,
+            pool_size=len(self._keys),
+        )
+        return until
+
+    def _stated_reset(self, error: BaseException) -> float | None:
+        """Return the cooldown the provider itself stated, when usable."""
+        stated = retry_after_seconds(error)
+        if stated is None:
+            stated = _rate_limit_reset_seconds(error)
+        if stated is not None and math.isfinite(stated) and stated > 0.0:
+            return stated
+        return None
+
+    def _roll_usage_window(self, key: _PooledKey, now: float) -> None:
+        """Roll a key's usage counter over once its window has elapsed."""
+        if not key.usage_window_seconds or now < key.window_reset_at:
+            return
+        if key.usage_count or key.exhausted:
+            logger.info(
+                "{} key pool: key #{} usage window elapsed, resetting "
+                "({} uses last window).",
+                self._provider_name,
+                key.index,
+                key.usage_count,
+            )
+        key.usage_count = 0
+        key.exhausted = False
+        key.window_reset_at = now + key.usage_window_seconds
+
+    def _restore(self, health: Mapping[int, _HealthRollback]) -> None:
+        """Undo sidelining from refusals that proved not to be key-local.
+
+        The cooldown and its reason are restored only while each still holds
+        the value this refusal wrote, so a cooldown a concurrent request
+        established afterwards - one the provider did ask for - is left
+        standing, classified by the reason that request earned.
+        """
+        for index, rollback in health.items():
+            key = self._keys[index]
+            if key.cooling_until == rollback.applied_cooling_until:
+                key.cooling_until = rollback.previous_cooling_until
+                key.cooling_reason = rollback.previous_cooling_reason
 
 
 def _status_code(error: BaseException) -> int | None:
@@ -746,6 +664,8 @@ def _rate_limit_reset_seconds(error: BaseException) -> float | None:
 
 
 def _humanize_wait(wait: float) -> str:
+    if wait < 90:
+        return f"{wait:.0f} seconds"
     if wait >= 3600:
         return f"{wait / 3600:.1f} hours"
     return f"{wait / 60:.0f} minutes"

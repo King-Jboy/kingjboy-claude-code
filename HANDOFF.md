@@ -5,6 +5,15 @@
 **State:** All work complete and committed on the `key-pool` branch. Not merged.
 **Last verification:** all 5 CI checks green — `2998 passed, 53 skipped in 187s`.
 
+> **Superseded (2026-08-21):** the key pool described below was replaced. The
+> per-key sliding windows, waiter queue, retirement ladder, and admission
+> retuning are gone; the pool now rotates least-recently-used, never throttles
+> locally, never waits (an empty pool fails fast, retryable), cools keys on
+> provider-reported resets or fixed defaults, and meters optional per-key usage
+> budgets with rolling windows. This document is kept as the record of the
+> original overhaul only — see `src/free_claude_code/providers/key_pool.py` and
+> `ARCHITECTURE.md` for the current design.
+
 ---
 
 ## 1. What this work was

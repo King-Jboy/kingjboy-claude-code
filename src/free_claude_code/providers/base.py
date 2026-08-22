@@ -41,6 +41,11 @@ class ProviderConfig:
     # key pool. Empty for every provider configured with a single credential,
     # and populated only when two or more keys make a pool meaningful.
     api_keys: tuple[str, ...] = ()
+    # Usage budget per pooled key, in served requests. Zero meters nothing;
+    # providers whose free tier caps calls per key (OpenRouter's daily quota)
+    # set a positive limit, optionally rolling over on a window.
+    key_usage_limit: int = 0
+    key_usage_window_seconds: float | None = None
 
 
 class BaseProvider(ABC):

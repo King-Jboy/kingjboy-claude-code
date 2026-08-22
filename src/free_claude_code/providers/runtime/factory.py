@@ -190,8 +190,8 @@ def create_provider(
         raise UnknownProviderError.for_provider(provider_id, PROVIDER_CATALOG)
 
     config = build_provider_config(descriptor, settings)
-    # Each pooled key enforces its own window, so the provider-wide gate must
-    # admit the pooled total; otherwise it would cap the pool at one key's rate.
+    # A pool serves the combined quota of its keys, so the provider-wide gate
+    # admits the pooled total; otherwise it would cap the pool at one key's rate.
     pool_scale = max(1, len(config.api_keys))
     pooled_ceiling = int(
         numeric_setting(

@@ -380,16 +380,16 @@ Each key gets its own rate-limit window, and all keys run at the same time, so t
 
 | Upstream response | What FCC does |
 | --- | --- |
-| `401` | Retires that key for the session, then immediately tries another. |
-| `403` | Sidelines that key and tries another, but does **not** retire it. |
-| `429` | Cools that key until the reset time the provider reported, then immediately tries another. |
+| `401` | Cools that key for 5 minutes, then immediately tries another. Three refusals in a row lengthen the cooldown to 20 minutes; it is never permanent. |
+| `403` | Cools that key for 60 seconds and tries another, but does **not** treat it as a dead key. |
+| `429` | Cools that key until the reset time the provider reported (60 seconds if it reported none), then immediately tries another. |
 | `5xx`, timeout, connection error | Treats it as a backend problem, not a key problem, and applies the normal shared backoff. |
 
 `401` and `403` are handled differently because providers disagree about which one means "bad key". OpenRouter answers `401`, which is unambiguous. NVIDIA NIM answers `403` — but other providers use `403` to refuse the *request* (content policy, or a model the account cannot reach). Retiring on `403` would let a single refused prompt walk the pool and kill every key. So a `403` only sidelines its key; the error is reported to you unchanged once **every** key has refused the same request alike, which is the only proof that the request, not the keys, was at fault.
 
-When a provider states its own reset time (`Retry-After` or `X-RateLimit-Reset`) FCC obeys it exactly. When there is no timing at all — the shape of a dead credential — each further refusal from the same key multiplies the wait (3s, 30s, 5min, capped at 10min), so a key that is never coming back drops out of rotation instead of costing a wasted round-trip forever. Any successful request clears that backoff, so a key that starts working again returns on its own.
+When a provider states its own reset time (`Retry-After` or `X-RateLimit-Reset`) FCC obeys it exactly. The pool never throttles on its own and never makes a request wait: switching keys is instant, costs none of a request's retry budget, and if every key is cooling at once the request fails right away with a retryable error rather than hanging behind a cooldown the provider chose. Any successful request clears a key's failure streak, so a key that starts working again returns to rotation on its own.
 
-Switching keys is instant and never uses up a request's retry budget. If every key is briefly rate limited, FCC waits for the first one to free up, up to a total of 60 seconds. If the wait would be longer — for example a daily cap that resets tomorrow — the request fails right away instead of hanging.
+For OpenRouter you can also give each key a daily usage budget (`OPENROUTER_KEY_USAGE_LIMIT`, default 1000 uses per key per 24h; `0` disables it). A key that reaches its budget sits out until the window rolls over, which models the free-tier daily cap locally instead of paying a `429` for the surplus requests.
 
 One key alone behaves exactly as before, so there is nothing to change if you only have one. Key health is held in memory and resets when FCC restarts. Live pool health appears on each provider card in **Admin UI → Providers** (`Key pool: 14 keys · 12 ready · 2 cooling`), and `fcc-doctor` reports the configured pool sizes.
 
@@ -750,7 +750,7 @@ Everything below is additional to upstream [Alishahryar1/free-claude-code](https
 
 **A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page you are developing, with tools that read the DOM and that tab's console — so debugging a page no longer means pasting a stack trace into a terminal. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host. That path is gated behind a per-extension registration, a `BROWSER_SHELL_ENABLED` switch, per-command approval in the panel, and a directory confinement — because the obvious alternative, an exec endpoint on `fcc-server`, would be unauthenticated LAN-reachable RCE given that server binds `0.0.0.0` by default and skips auth when `ANTHROPIC_AUTH_TOKEN` is blank. See [Connect Your Client](#connect-your-client).
 
-**Credential pooling.** `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS` accept a JSON list of keys that behave as one high-throughput, self-healing virtual key. Dead keys are walked past, rate-limited keys are cooled for exactly as long as the provider asked, and repeat offenders back off on an escalating schedule. See [Key Pools](#key-pools-nvidia-nim-and-openrouter).
+**Credential pooling.** `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS` accept a JSON list of keys that behave as one high-throughput, self-healing virtual key. Requests rotate across the pool, dead keys are walked past and probed again later, and rate-limited keys are cooled for exactly as long as the provider asked. See [Key Pools](#key-pools-nvidia-nim-and-openrouter).
 
 Verified live against both providers: 20 concurrent requests spread across all 14 OpenRouter keys, and a request still succeeded with three dead keys sitting in front of the working ones.
 

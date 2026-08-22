@@ -1,7 +1,6 @@
 """Credential-pool selection, health attribution, and the provider seam."""
 
 import asyncio
-import time
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,15 +14,15 @@ from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.providers import key_pool as key_pool_module
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.key_pool import (
+    _AUTH_COOLDOWN_S,
+    _AUTH_HARD_COOLDOWN_S,
     _MAX_ATTEMPTS_PER_KEY,
-    MAX_COOLDOWN_SECONDS,
-    MAX_POOL_WAIT_SECONDS,
-    MAX_RETIREMENT_SECONDS,
-    RETIREMENT_PROBE_SECONDS,
+    _MAX_CONSECUTIVE_FAILURES,
+    _PERMISSION_COOLDOWN_S,
+    _RATE_LIMIT_COOLDOWN_S,
     KeyFailureAction,
     KeyPool,
     PooledKeyLease,
-    _PooledKey,
 )
 from free_claude_code.providers.openai_chat import OpenAIChatProvider
 from free_claude_code.providers.openai_chat import provider as provider_module
@@ -46,18 +45,45 @@ class _RecordingClient(AsyncOpenAI):
         await super().close()
 
 
+class _Clock:
+    """Deterministic stand-in for the pool's clock.
+
+    ``time`` keeps a plausible epoch base so header tests can encode resets as
+    epoch seconds or milliseconds and have the magnitude heuristics read them.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def time(self) -> float:
+        return 1_800_000_000.0 + self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    stub = _Clock()
+    monkeypatch.setattr(key_pool_module, "time", stub)
+    return stub
+
+
 def _pool(
     keys: tuple[str, ...],
     *,
-    rate_limit: int = 4,
-    rate_window: float = 60.0,
+    usage_limit: int = 0,
+    usage_window_seconds: float | None = None,
 ) -> KeyPool:
     return KeyPool(
         keys,
         provider_name="TEST",
-        rate_limit=rate_limit,
-        rate_window=rate_window,
         client_factory=_RecordingClient,
+        usage_limit=usage_limit,
+        usage_window_seconds=usage_window_seconds,
     )
 
 
@@ -83,7 +109,7 @@ def test_a_pool_needs_at_least_one_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_selection_spreads_across_keys_by_headroom_then_least_recent() -> None:
+async def test_selection_rotates_least_recently_used() -> None:
     pool = _pool(("a", "b"))
 
     assert await _keys_used(pool, 4) == ["a", "b", "a", "b"]
@@ -92,7 +118,7 @@ async def test_selection_spreads_across_keys_by_headroom_then_least_recent() -> 
 
 
 @pytest.mark.asyncio
-async def test_a_retired_key_is_skipped() -> None:
+async def test_a_cooling_key_is_skipped_while_healthy_keys_serve() -> None:
     pool = _pool(("a", "b"))
     lease = await pool.acquire()
     assert lease.client.api_key == "a"
@@ -138,101 +164,117 @@ async def test_a_permission_denial_is_survivable_by_hopping() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_guessed_cooldown_escalates_so_a_dead_key_leaves_rotation() -> None:
-    # A dead key answers with no timing at all, so every refusal is a guess.
-    # Without escalation it returned to rotation each window forever, costing a
-    # wasted round-trip on roughly one request in `pool size`.
-    pool = _pool(("a", "b"), rate_window=2.0)
-    lease = await pool.acquire()
-    waits: list[float] = []
-
-    for _ in range(4):
-        before = time.monotonic()
-        pool.record_failure(lease, _status_error(403))
-        waits.append(pool._keys[lease.index].cooling_until - before)
-
-    assert waits[0] == pytest.approx(2.0, abs=0.1)
-    assert waits[1] == pytest.approx(20.0, abs=0.1)
-    assert waits[2] == pytest.approx(200.0, abs=0.1)
-    assert waits[3] == pytest.approx(MAX_COOLDOWN_SECONDS, abs=0.1)
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_stated_reset_is_obeyed_verbatim_and_never_escalated() -> None:
-    # Escalating past a reset the provider itself published would idle a
-    # healthy key long after it became usable again.
-    pool = _pool(("a", "b"), rate_window=2.0)
-    lease = await pool.acquire()
-
-    for _ in range(3):
-        before = time.monotonic()
-        pool.record_failure(lease, _status_error(429, **{"retry-after": "7"}))
-        assert pool._keys[lease.index].cooling_until - before == pytest.approx(
-            7.0, abs=0.1
-        )
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_success_clears_escalation_so_a_recovered_key_is_not_punished() -> None:
-    pool = _pool(("a", "b"), rate_window=2.0)
+async def test_an_authentication_refusal_cools_but_never_retires_the_key(
+    clock: _Clock,
+) -> None:
+    # A single 401 must not kill the key for the life of the process: providers
+    # also answer 401 during their own outages and while a fresh key propagates.
+    # Two ordinary cooldowns, then the hard one - never a tombstone.
+    pool = _pool(("a", "b"))
     lease = await pool.acquire()
     key = pool._keys[lease.index]
-    pool.record_failure(lease, _status_error(403))
-    pool.record_failure(lease, _status_error(403))
-    assert key.consecutive_guessed_failures == 2
+    holds: list[float] = []
 
+    for _expected in (
+        _AUTH_COOLDOWN_S,
+        _AUTH_COOLDOWN_S,
+        _AUTH_HARD_COOLDOWN_S,
+        _AUTH_HARD_COOLDOWN_S,
+    ):
+        clock.advance(2 * _AUTH_HARD_COOLDOWN_S)  # any prior cooldown has elapsed
+        before = clock.monotonic()
+        pool.record_failure(lease, _status_error(401))
+        holds.append(key.cooling_until - before)
+
+    assert holds == pytest.approx(
+        [
+            _AUTH_COOLDOWN_S,
+            _AUTH_COOLDOWN_S,
+            _AUTH_HARD_COOLDOWN_S,
+            _AUTH_HARD_COOLDOWN_S,
+        ]
+    )
+    assert key.consecutive_failures == _MAX_CONSECUTIVE_FAILURES + 1
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_authentication_cooldown_expires_and_the_key_is_probed_again(
+    clock: _Clock,
+) -> None:
+    pool = _pool(("a", "b"))
+    lease = await pool.acquire()
+    pool.record_failure(lease, _status_error(401))
+    assert pool.status().retired == 1
+
+    clock.advance(_AUTH_COOLDOWN_S + 1.0)
+
+    assert pool.status().retired == 0
+    # The probed key and the never-used key are both selectable again.
+    assert sorted(await _keys_used(pool, 2)) == ["a", "b"]
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_success_clears_the_failure_streak_so_recovery_is_immediate(
+    clock: _Clock,
+) -> None:
+    pool = _pool(("a", "b"))
+    lease = await pool.acquire()
+    key = pool._keys[lease.index]
+    pool.record_failure(lease, _status_error(401))
+    pool.record_failure(lease, _status_error(401))
+    assert key.consecutive_failures == 2
+
+    clock.advance(_AUTH_COOLDOWN_S + 1.0)
     pool.record_success(lease)
 
-    assert key.consecutive_guessed_failures == 0
-    # A key only serves once its cooldown has elapsed, so the next refusal
-    # starts the ladder over rather than resuming where it left off.
-    key.cooling_until = 0.0
-    before = time.monotonic()
-    pool.record_failure(lease, _status_error(403))
-    assert key.cooling_until - before == pytest.approx(2.0, abs=0.1)
+    assert key.consecutive_failures == 0
+    before = clock.monotonic()
+    pool.record_failure(lease, _status_error(401))
+    assert key.cooling_until - before == pytest.approx(_AUTH_COOLDOWN_S)
 
     await pool.aclose()
 
 
 @pytest.mark.asyncio
-async def test_an_unauthenticated_endpoint_cannot_clear_a_dead_key_s_backoff() -> None:
+async def test_an_unauthenticated_endpoint_cannot_clear_a_dead_key_s_streak(
+    clock: _Clock,
+) -> None:
     # Verified live: NVIDIA NIM and OpenRouter both serve /v1/models with an
     # invalid key. Model discovery hops through the pool, so a dead key
-    # "succeeds" there and would otherwise reset its escalation every refresh.
-    # One key, so the success provably lands on the key that was struck.
-    pool = _pool(("a",), rate_window=2.0)
+    # "succeeds" there and would otherwise reset its streak every refresh.
+    pool = _pool(("a",), usage_limit=5)
     key = pool._keys[0]
     lease = await pool.acquire()
-    pool.record_failure(lease, _status_error(403))
-    pool.record_failure(lease, _status_error(403))
-    assert key.consecutive_guessed_failures == 2
+    pool.record_failure(lease, _status_error(401))
+    assert key.consecutive_failures == 1
 
-    key.cooling_until = 0.0
+    clock.advance(_AUTH_COOLDOWN_S + 1.0)
     await pool.run_key_local(_succeeds, proves_credential=False)
 
-    assert key.consecutive_guessed_failures == 2, (
+    assert key.consecutive_failures == 1, (
         "a call that never checks the credential must not count as recovery"
     )
+    assert key.usage_count == 0, "free endpoints must not spend the key's budget"
 
     await pool.aclose()
 
 
 @pytest.mark.asyncio
-async def test_an_authenticated_success_still_clears_the_backoff() -> None:
-    pool = _pool(("a",), rate_window=2.0)
+async def test_an_authenticated_success_still_clears_the_streak(clock: _Clock) -> None:
+    pool = _pool(("a",))
     key = pool._keys[0]
     lease = await pool.acquire()
-    pool.record_failure(lease, _status_error(403))
-    assert key.consecutive_guessed_failures == 1
+    pool.record_failure(lease, _status_error(401))
+    assert key.consecutive_failures == 1
 
-    key.cooling_until = 0.0
+    clock.advance(_AUTH_COOLDOWN_S + 1.0)
     await pool.run_key_local(_succeeds)
 
-    assert key.consecutive_guessed_failures == 0
+    assert key.consecutive_failures == 0
 
     await pool.aclose()
 
@@ -242,38 +284,245 @@ async def _succeeds(client: AsyncOpenAI) -> str:
 
 
 @pytest.mark.asyncio
-async def test_waiting_is_bounded_in_total_not_merely_per_slice(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_key_reaching_its_usage_budget_sits_out_until_the_window_rolls(
+    clock: _Clock,
 ) -> None:
-    # Checking only the instantaneous projection let concurrent traffic keep a
-    # waiter alive forever: every re-cool looked individually survivable.
-    monkeypatch.setattr(key_pool_module, "MAX_POOL_WAIT_SECONDS", 2.0)
-    pool = _pool(("a", "b"), rate_window=1.0)
+    # OpenRouter's free tier caps each key daily; the pool models that budget
+    # locally instead of paying a 429 for the surplus requests.
+    pool = _pool(("a", "b"), usage_limit=2, usage_window_seconds=3600.0)
+    lease = await pool.acquire()
+    pool.record_success(lease)
+    clock.advance(1.0)
+    pool.record_success(lease)
 
-    async def keep_re_cooling() -> None:
-        while True:
-            for key in pool._keys:
-                key.cooling_until = time.monotonic() + 1.5
-            await asyncio.sleep(0.2)
+    assert pool._keys[lease.index].exhausted
+    assert await _keys_used(pool, 2) == ["b", "b"]
 
-    for key in pool._keys:
-        key.cooling_until = time.monotonic() + 1.5
-    churn = asyncio.create_task(keep_re_cooling())
-    started = time.monotonic()
-    try:
-        with pytest.raises(ExecutionFailure) as error:
-            await asyncio.wait_for(pool.acquire(), timeout=15)
-    finally:
-        churn.cancel()
+    clock.advance(3601.0)
 
-    assert error.value.kind is FailureKind.RATE_LIMIT
-    assert time.monotonic() - started < 10, "the total wait was not bounded"
+    assert (await pool.acquire()).client.api_key == "a"
+    clock.advance(1.0)
+    assert (await pool.acquire()).client.api_key == "b"
+
     await pool.aclose()
 
 
 @pytest.mark.asyncio
-async def test_status_counts_ready_cooling_and_retired_keys() -> None:
-    pool = _pool(("a", "b", "c"), rate_window=30.0)
+async def test_a_windowless_usage_budget_never_resets(clock: _Clock) -> None:
+    pool = _pool(("a", "b"), usage_limit=1)
+    for _ in range(2):
+        lease = await pool.acquire()
+        pool.record_success(lease)
+        clock.advance(1.0)
+
+    clock.advance(10 * _AUTH_HARD_COOLDOWN_S)
+    status = pool.status()
+
+    assert (status.ready, status.cooling) == (0, 2)
+    assert status.soonest_ready_in is None
+    with pytest.raises(ExecutionFailure, match="cooling or exhausted"):
+        await pool.acquire()
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_the_usage_budget_does_not_meter_without_a_limit() -> None:
+    pool = _pool(("a",))
+
+    for _ in range(50):
+        lease = await pool.acquire()
+        pool.record_success(lease)
+
+    assert pool.status().ready == 1
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_acquire_never_waits_for_a_cooling_pool() -> None:
+    # The pool reports an empty pool immediately; the caller's recovery policy
+    # owns the backoff. Parking here would stall a client connection behind a
+    # cooldown the provider chose.
+    pool = _pool(("a", "b"))
+    for _ in range(2):
+        lease = await pool.acquire()
+        pool.record_failure(lease, _status_error(429, **{"retry-after": "7200"}))
+
+    started = key_pool_module.time.monotonic()
+    with pytest.raises(ExecutionFailure) as error:
+        await asyncio.wait_for(pool.acquire(), timeout=5)
+
+    assert key_pool_module.time.monotonic() - started < 1.0
+    assert error.value.kind is FailureKind.RATE_LIMIT
+    assert error.value.status_code == 429
+    assert error.value.retryable is True
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_headerless_rate_limit_cools_for_sixty_seconds(
+    clock: _Clock,
+) -> None:
+    pool = _pool(("a",))
+    lease = await pool.acquire()
+    before = clock.monotonic()
+
+    pool.record_failure(lease, _status_error(429))
+
+    key = pool._keys[lease.index]
+    assert key.cooling_until - before == pytest.approx(_RATE_LIMIT_COOLDOWN_S)
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_stated_reset_is_obeyed_verbatim(clock: _Clock) -> None:
+    # Escalating past a reset the provider itself published would idle a healthy
+    # key long after it became usable again.
+    pool = _pool(("a", "b"))
+    lease = await pool.acquire()
+    key = pool._keys[lease.index]
+
+    for _ in range(3):
+        clock.advance(_RATE_LIMIT_COOLDOWN_S + 1.0)
+        before = clock.monotonic()
+        pool.record_failure(lease, _status_error(429, **{"retry-after": "7"}))
+        assert key.cooling_until - before == pytest.approx(7.0)
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_permission_denial_cools_for_sixty_seconds(clock: _Clock) -> None:
+    pool = _pool(("a", "b"))
+    lease = await pool.acquire()
+    before = clock.monotonic()
+
+    pool.record_failure(lease, _status_error(403))
+
+    key = pool._keys[lease.index]
+    assert key.cooling_until - before == pytest.approx(_PERMISSION_COOLDOWN_S)
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_stated_reset_of_zero_is_read_as_no_statement(clock: _Clock) -> None:
+    # A cooldown of zero has already elapsed by the time it is set, so obeying
+    # it verbatim left the key instantly selectable and the same refusal
+    # repeated at full speed. Zero states no timing; the default covers that.
+    pool = _pool(("a", "b"))
+    lease = await pool.acquire()
+    before = clock.monotonic()
+
+    pool.record_failure(lease, _status_error(429, **{"retry-after": "0"}))
+
+    key = pool._keys[lease.index]
+    assert key.cooling_until - before == pytest.approx(_RATE_LIMIT_COOLDOWN_S)
+    assert not key.ready(clock.monotonic())
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_reset_deadline_already_past_is_read_as_no_statement(
+    clock: _Clock,
+) -> None:
+    # Clock skew alone is enough to put `x-ratelimit-reset` behind us, and the
+    # epoch readings clamp a past deadline to zero.
+    pool = _pool(("a", "b"))
+    lease = await pool.acquire()
+    stale = str(int(clock.time()) - 30)
+    before = clock.monotonic()
+
+    pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": stale}))
+
+    key = pool._keys[lease.index]
+    assert key.cooling_until - before == pytest.approx(_RATE_LIMIT_COOLDOWN_S)
+    assert not key.ready(clock.monotonic())
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_reset_epoch_milliseconds_is_read_as_a_deadline(
+    clock: _Clock,
+) -> None:
+    pool = _pool(("a",))
+    lease = await pool.acquire()
+    reset_ms = str(int((clock.time() + 7200) * 1000))
+    before = clock.monotonic()
+
+    pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": reset_ms}))
+
+    assert pool._keys[lease.index].cooling_until - before == pytest.approx(
+        7200.0, abs=1.0
+    )
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_reset_epoch_seconds_is_read_as_a_deadline(
+    clock: _Clock,
+) -> None:
+    pool = _pool(("a",))
+    lease = await pool.acquire()
+    reset_s = str(int(clock.time() + 7200))
+    before = clock.monotonic()
+
+    pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": reset_s}))
+
+    assert pool._keys[lease.index].cooling_until - before == pytest.approx(
+        7200.0, abs=1.0
+    )
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_cooldown_that_elapses_returns_the_key_to_rotation(
+    clock: _Clock,
+) -> None:
+    pool = _pool(("a",))
+    lease = await pool.acquire()
+    pool.record_failure(lease, _status_error(429, **{"retry-after": "30"}))
+    with pytest.raises(ExecutionFailure):
+        await pool.acquire()
+
+    clock.advance(31.0)
+
+    assert await _keys_used(pool, 1) == ["a"]
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_that_never_cools_cannot_retry_forever() -> None:
+    # How long a key cools is a number the provider chooses, so a reset it keeps
+    # stating as near-zero must not be able to re-offer the same key without
+    # end. Left unbounded this served no request and hammered the upstream.
+    pool = _pool(("a", "b"))
+    attempts = 0
+
+    async def operation(client: AsyncOpenAI) -> str:
+        nonlocal attempts
+        attempts += 1
+        raise _status_error(429, **{"retry-after": "0.001"})
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await asyncio.wait_for(pool.run_key_local(operation), timeout=10)
+
+    assert attempts == _MAX_ATTEMPTS_PER_KEY * pool.size
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_status_counts_ready_cooling_and_retired_keys(clock: _Clock) -> None:
+    pool = _pool(("a", "b", "c"))
     assert pool.status().as_dict() == {
         "size": 3,
         "ready": 3,
@@ -286,15 +535,15 @@ async def test_status_counts_ready_cooling_and_retired_keys() -> None:
     pool.record_failure(PooledKeyLease(1, pool._keys[1].client), _status_error(403))
     status = pool.status()
 
-    # 401 retires key #0, 403 cools key #1, key #2 is untouched.
+    # 401 holds key #0 out as auth-cooling, 403 cools key #1, key #2 untouched.
     assert (status.size, status.ready, status.cooling, status.retired) == (3, 1, 1, 1)
     await pool.aclose()
 
 
 @pytest.mark.asyncio
-async def test_status_reports_when_no_key_is_ready() -> None:
+async def test_status_reports_when_no_key_is_ready(clock: _Clock) -> None:
     # The operator-facing case: everything is cooling and throughput is zero.
-    pool = _pool(("a", "b"), rate_window=30.0)
+    pool = _pool(("a", "b"))
     for index in (0, 1):
         pool.record_failure(
             PooledKeyLease(index, pool._keys[index].client), _status_error(403)
@@ -305,15 +554,15 @@ async def test_status_reports_when_no_key_is_ready() -> None:
     assert status.ready == 0
     assert status.cooling == 2
     assert status.soonest_ready_in is not None
-    assert 0 < status.soonest_ready_in <= 30.0
+    assert 0 < status.soonest_ready_in <= _PERMISSION_COOLDOWN_S
     await pool.aclose()
 
 
 @pytest.mark.asyncio
-async def test_a_request_level_refusal_does_not_count_as_a_strike() -> None:
+async def test_a_request_level_refusal_does_not_leave_the_pool_sidelined() -> None:
     # Every key refusing alike proves the request was at fault, so no key may
-    # be escalated toward retirement for it.
-    pool = _pool(("a", "b"), rate_window=2.0)
+    # stay out of rotation for it.
+    pool = _pool(("a", "b"))
 
     async def operation(client: AsyncOpenAI) -> str:
         raise _status_error(403)
@@ -321,7 +570,6 @@ async def test_a_request_level_refusal_does_not_count_as_a_strike() -> None:
     with pytest.raises(httpx.HTTPStatusError):
         await pool.run_key_local(operation)
 
-    assert [key.consecutive_guessed_failures for key in pool._keys] == [0, 0]
     assert await _keys_used(pool, 2) == ["a", "b"]
 
     await pool.aclose()
@@ -391,62 +639,8 @@ async def test_an_authentication_failure_holds_the_key_out_of_rotation() -> None
 
 
 @pytest.mark.asyncio
-async def test_a_retired_key_returns_to_rotation_to_be_probed_again() -> None:
-    # Providers answer 401 during their own auth outages, and for a key that has
-    # not finished propagating. Retiring for the life of the process turned a
-    # moment like that into capacity lost until the next restart.
-    pool = _pool(("a", "b"))
-    lease = await pool.acquire()
-    pool.record_failure(lease, _status_error(401))
-    key = pool._keys[lease.index]
-    assert key.retired(time.monotonic())
-    assert pool.status().retired == 1
-
-    key.retired_until = time.monotonic()
-
-    assert key.ready(time.monotonic())
-    assert pool.status().retired == 0
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_repeatedly_refused_key_is_probed_less_and_less_often() -> None:
-    # A credential that really is revoked must not cost a request every probe.
-    pool = _pool(("a", "b"))
-    lease = await pool.acquire()
-    holds: list[float] = []
-
-    for _ in range(3):
-        before = time.monotonic()
-        pool.record_failure(lease, _status_error(401))
-        holds.append(pool._keys[lease.index].retired_until - before)
-        pool._keys[lease.index].retired_until = 0.0
-
-    assert holds[0] == pytest.approx(RETIREMENT_PROBE_SECONDS, abs=1.0)
-    assert holds[1] > holds[0]
-    assert holds[2] == pytest.approx(MAX_RETIREMENT_SECONDS, abs=1.0)
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_key_that_serves_again_clears_its_retirement_ladder() -> None:
-    pool = _pool(("a", "b"))
-    lease = await pool.acquire()
-    pool.record_failure(lease, _status_error(401))
-    assert pool._keys[lease.index].retirements == 1
-
-    pool.record_success(lease)
-
-    assert pool._keys[lease.index].retirements == 0
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_every_key_refusing_authentication_still_fails_fast() -> None:
-    # A retirement expiring must not turn a misconfigured pool into a long stall
+async def test_every_key_refusing_authentication_fails_fast() -> None:
+    # A cooling key must not turn a misconfigured pool into a long stall
     # instead of a clear "check your keys".
     pool = _pool(("a", "b"))
     for index in (0, 1):
@@ -454,273 +648,15 @@ async def test_every_key_refusing_authentication_still_fails_fast() -> None:
             PooledKeyLease(index, pool._keys[index].client), _status_error(401)
         )
 
-    started = time.monotonic()
+    started = key_pool_module.time.monotonic()
     with pytest.raises(ExecutionFailure) as error:
         await pool.acquire()
 
-    assert time.monotonic() - started < 1.0
+    assert key_pool_module.time.monotonic() - started < 1.0
     assert error.value.kind is FailureKind.AUTHENTICATION
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_losing_a_key_retunes_the_provider_wide_gate() -> None:
-    # The gate admits one key's quota times the pool. Fixed at the configured
-    # count it keeps admitting at full rate into a pool that has lost keys, and
-    # the surplus queues inside the pool instead of being held at the door.
-    seen: list[int] = []
-    pool = KeyPool(
-        ("a", "b", "c"),
-        provider_name="TEST",
-        rate_limit=4,
-        rate_window=60.0,
-        client_factory=_RecordingClient,
-        on_capacity_change=seen.append,
-    )
-
-    pool.record_failure(PooledKeyLease(0, pool._keys[0].client), _status_error(401))
-    assert seen == [2]
-
-    # A cooldown is short and self-clearing, so it must not retune anything.
-    pool.record_failure(PooledKeyLease(1, pool._keys[1].client), _status_error(429))
-    assert seen == [2]
-
-    pool._keys[0].retired_until = 0.0
-    await pool.acquire()
-
-    assert seen == [2, 3]
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_waiting_callers_are_served_in_arrival_order() -> None:
-    # Without an order every waiter raced on each tick and the winner was
-    # arbitrary, so one request could lose repeatedly while the pool served
-    # everyone around it - a few subagents failing amid a working fan-out.
-    pool = _pool(("a",), rate_limit=1, rate_window=0.25)
-    await pool.acquire()
-    served: list[int] = []
-
-    async def caller(position: int) -> None:
-        lease = await pool.acquire()
-        served.append(position)
-        pool.record_success(lease)
-
-    callers = []
-    for position in range(5):
-        callers.append(asyncio.create_task(caller(position)))
-        # Establish a distinct arrival order before the next caller queues.
-        await asyncio.sleep(0.01)
-    await asyncio.wait_for(asyncio.gather(*callers), timeout=15)
-
-    assert served == [0, 1, 2, 3, 4]
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_caller_held_back_by_the_queue_sleeps_instead_of_polling() -> None:
-    """A caller that is not next in line must park, not re-read the pool.
-
-    Its own projection of the wait reads zero in exactly this state - a key is
-    free, it is simply owed to someone earlier - so treating that projection as
-    a sleep length spun the caller against the whole queue on every event-loop
-    tick until the head happened to be scheduled. Nothing it can observe moves
-    until the head leaves, and leaving already wakes it.
-    """
-    pool = _pool(("a",))
-    lease = await pool.acquire()
-    pool.record_failure(lease, _status_error(429, **{"retry-after": "5"}))
-    selections = 0
-    original = KeyPool._select
-
-    def counted(
-        pool_self: KeyPool, now: float, skip: frozenset[int] = frozenset()
-    ) -> _PooledKey | None:
-        nonlocal selections
-        selections += 1
-        return original(pool_self, now, skip)
-
-    head = asyncio.create_task(pool.acquire())
-    await asyncio.sleep(0.05)
-    # The key frees while the head caller is still parked on its wait slice,
-    # which is the only window in which a later caller is held back by order
-    # rather than by the pool having nothing to give.
-    pool._keys[0].cooling_until = 0.0
-    with patch.object(KeyPool, "_select", counted):
-        queued = asyncio.create_task(pool.acquire())
-        await asyncio.sleep(0.3)
-        polls = selections
-    await asyncio.wait_for(asyncio.gather(head, queued), timeout=10)
-
-    assert polls < 50
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_cooling_key_is_skipped_while_healthy_keys_serve() -> None:
-    pool = _pool(("a", "b"))
-    lease = await pool.acquire()
-
-    action = pool.record_failure(lease, _status_error(429, **{"retry-after": "30"}))
-
-    assert action is KeyFailureAction.HOP
-    assert await _keys_used(pool, 3) == ["b", "b", "b"]
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_short_cooldown_is_waited_out_rather_than_failed() -> None:
-    pool = _pool(("a",))
-    lease = await pool.acquire()
-    pool.record_failure(lease, _status_error(429, **{"retry-after": "0.05"}))
-
-    reacquired = await asyncio.wait_for(pool.acquire(), timeout=5)
-
-    assert reacquired.client.api_key == "a"
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_long_cooldown_fails_immediately_instead_of_parking() -> None:
-    pool = _pool(("a", "b"))
-    for _ in range(2):
-        lease = await pool.acquire()
-        pool.record_failure(lease, _status_error(429, **{"retry-after": "7200"}))
-
-    started = time.monotonic()
-    with pytest.raises(ExecutionFailure) as error:
-        await pool.acquire()
-
-    assert time.monotonic() - started < MAX_POOL_WAIT_SECONDS
-    assert error.value.kind is FailureKind.RATE_LIMIT
-    assert error.value.status_code == 429
-    # Retryable: every key sitting behind a provider cooldown is temporary by
-    # nature. Reporting it as terminal handed the client a hard 429 and, during
-    # a fan-out, handed one to every queued request at once.
-    assert error.value.retryable is True
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_rate_limit_reset_epoch_milliseconds_is_read_as_a_deadline() -> None:
-    pool = _pool(("a",))
-    lease = await pool.acquire()
-    reset_ms = str(int((time.time() + 7200) * 1000))
-
-    pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": reset_ms}))
-
-    with pytest.raises(ExecutionFailure, match="rate limited"):
-        await pool.acquire()
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_rate_limit_reset_epoch_seconds_is_read_as_a_deadline() -> None:
-    pool = _pool(("a",))
-    lease = await pool.acquire()
-    reset_s = str(int(time.time() + 7200))
-
-    pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": reset_s}))
-
-    with pytest.raises(ExecutionFailure, match="rate limited"):
-        await pool.acquire()
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_headerless_rate_limit_cools_for_one_window() -> None:
-    pool = _pool(("a",), rate_window=7200.0)
-    lease = await pool.acquire()
-
-    pool.record_failure(lease, _status_error(429))
-
-    with pytest.raises(ExecutionFailure, match="rate limited"):
-        await pool.acquire()
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_stated_reset_of_zero_is_read_as_no_statement() -> None:
-    # A cooldown of zero has already elapsed by the time it is set, so obeying
-    # it verbatim left the key instantly selectable and the same refusal
-    # repeated at full speed. Zero states no timing; the guess covers that.
-    pool = _pool(("a", "b"), rate_window=2.0)
-    lease = await pool.acquire()
-    before = time.monotonic()
-
-    pool.record_failure(lease, _status_error(429, **{"retry-after": "0"}))
-
-    key = pool._keys[lease.index]
-    assert key.consecutive_guessed_failures == 1
-    assert key.cooling_until - before == pytest.approx(2.0, abs=0.1)
-    assert not key.ready(time.monotonic())
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_reset_deadline_already_past_is_read_as_no_statement() -> None:
-    # Clock skew alone is enough to put `x-ratelimit-reset` behind us, and the
-    # epoch readings clamp a past deadline to zero.
-    pool = _pool(("a", "b"), rate_window=2.0)
-    lease = await pool.acquire()
-    stale = str(int(time.time()) - 30)
-    before = time.monotonic()
-
-    pool.record_failure(lease, _status_error(429, **{"x-ratelimit-reset": stale}))
-
-    key = pool._keys[lease.index]
-    assert key.cooling_until - before == pytest.approx(2.0, abs=0.1)
-    assert not key.ready(time.monotonic())
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_a_refusal_that_never_cools_cannot_retry_forever() -> None:
-    # How long a key cools is a number the provider chooses, so a reset it keeps
-    # stating as near-zero must not be able to re-offer the same key without
-    # end. Left unbounded this served no request and hammered the upstream.
-    pool = _pool(("a", "b"), rate_window=0.1)
-    attempts = 0
-
-    async def operation(client: AsyncOpenAI) -> str:
-        nonlocal attempts
-        attempts += 1
-        raise _status_error(429, **{"retry-after": "0.001"})
-
-    with pytest.raises(httpx.HTTPStatusError):
-        await asyncio.wait_for(pool.run_key_local(operation), timeout=10)
-
-    assert attempts == _MAX_ATTEMPTS_PER_KEY * pool.size
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_status_counts_a_spent_rate_window_as_cooling() -> None:
-    # A key whose window is spent cannot serve. Counting only cooldowns showed
-    # a fully saturated pool as ready, and suppressed the "soonest free" hint
-    # at exactly the moment an operator needed it.
-    pool = _pool(("a", "b"), rate_limit=1, rate_window=30.0)
-    await pool.acquire()
-    await pool.acquire()
-
-    status = pool.status()
-
-    assert (status.size, status.ready, status.cooling, status.retired) == (2, 0, 2, 0)
-    assert status.soonest_ready_in is not None
-    assert 0 < status.soonest_ready_in <= 30.0
+    assert error.value.status_code == 401
+    assert error.value.retryable is False
+    assert "2 configured" in error.value.message
 
     await pool.aclose()
 
@@ -744,9 +680,40 @@ async def test_a_rollback_leaves_a_concurrent_cooldown_standing() -> None:
     with pytest.raises(httpx.HTTPStatusError):
         await pool.run_key_local(operation)
 
-    assert pool._keys[0].cooling_until - time.monotonic() == pytest.approx(600, abs=5)
+    assert pool._keys[0].cooling_until - key_pool_module.time.monotonic() == (
+        pytest.approx(600, abs=5)
+    )
     # The key that only ever refused this request is still rolled back.
-    assert pool._keys[1].ready(time.monotonic())
+    assert pool._keys[1].ready(key_pool_module.time.monotonic())
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_that_extended_nothing_rolls_back_nothing() -> None:
+    # A concurrent request's 429 cooled this same key far longer than our own
+    # ambiguous refusal would. Proving the refusal request-level must undo only
+    # our contribution: the concurrent cooldown stands, reason and all, while
+    # the refusal still counts toward the every-key-refused verdict.
+    pool = _pool(("a", "b"))
+
+    async def operation(client: AsyncOpenAI) -> str:
+        if str(client.api_key) == "a":
+            pool.record_failure(
+                PooledKeyLease(0, pool._keys[0].client),
+                _status_error(429, **{"retry-after": "600"}),
+            )
+        raise _status_error(403)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await pool.run_key_local(operation)
+
+    key_a = pool._keys[0]
+    assert key_a.cooling_until - key_pool_module.time.monotonic() == (
+        pytest.approx(600, abs=5)
+    )
+    assert key_a.cooling_reason == "rate limit"
+    assert pool._keys[1].ready(key_pool_module.time.monotonic())
 
     await pool.aclose()
 
@@ -774,37 +741,6 @@ async def test_a_timeout_escalates_rather_than_blaming_the_key() -> None:
     action = pool.record_failure(lease, TimeoutError("upstream stalled"))
 
     assert action is KeyFailureAction.ESCALATE
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_retiring_every_key_fails_fast_with_an_auth_failure() -> None:
-    pool = _pool(("a", "b"))
-    for _ in range(2):
-        lease = await pool.acquire()
-        pool.record_failure(lease, _status_error(401))
-
-    with pytest.raises(ExecutionFailure) as error:
-        await pool.acquire()
-
-    assert error.value.kind is FailureKind.AUTHENTICATION
-    assert error.value.status_code == 401
-    assert error.value.retryable is False
-    assert "2 configured" in error.value.message
-
-    await pool.aclose()
-
-
-@pytest.mark.asyncio
-async def test_pool_admits_the_sum_of_its_key_windows() -> None:
-    pool = _pool(("a", "b", "c"), rate_limit=2)
-
-    used = await _keys_used(pool, 6)
-
-    assert sorted(used) == ["a", "a", "b", "b", "c", "c"]
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(pool.acquire(), timeout=0.2)
 
     await pool.aclose()
 
@@ -842,6 +778,24 @@ async def test_run_key_local_reraises_an_escalating_failure() -> None:
 
     # Escalation belongs to the shared recovery episode, not to key hopping.
     assert attempts == 1
+
+    await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_run_key_local_reports_the_last_upstream_error_when_the_pool_empties() -> (
+    None
+):
+    # The provider's own 429 is more actionable than the pool's summary of it.
+    pool = _pool(("a",))
+
+    async def operation(_client: AsyncOpenAI) -> str:
+        raise _status_error(429, **{"retry-after": "30"})
+
+    with pytest.raises(httpx.HTTPStatusError) as error:
+        await pool.run_key_local(operation)
+
+    assert error.value.response.status_code == 429
 
     await pool.aclose()
 

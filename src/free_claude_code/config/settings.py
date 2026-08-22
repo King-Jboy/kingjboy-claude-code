@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     open_router_api_keys: str = Field(
         default="", validation_alias="OPENROUTER_API_KEYS"
     )
+    # Usage budget per pooled key per 24h window. OpenRouter's free tier caps
+    # each key daily; 0 disables local metering.
+    open_router_key_usage_limit: int = Field(
+        default=1000, validation_alias="OPENROUTER_KEY_USAGE_LIMIT"
+    )
 
     # ==================== Mistral La Plateforme ====================
     mistral_api_key: str = Field(default="", validation_alias="MISTRAL_API_KEY")
@@ -205,6 +210,12 @@ class Settings(BaseSettings):
     # Optional pool of interchangeable keys as a JSON list; overrides the single
     # key above. See ``open_router_api_keys`` for why this stays a raw string.
     nvidia_nim_api_keys: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEYS")
+    # NIM's free tier is rate-limited per minute rather than by a consumable
+    # budget, so no local usage metering by default; set a positive value to
+    # self-impose a per-key budget anyway.
+    nvidia_nim_key_usage_limit: int = Field(
+        default=0, validation_alias="NVIDIA_NIM_KEY_USAGE_LIMIT"
+    )
 
     # ==================== LM Studio Config ====================
     lm_studio_base_url: str = Field(

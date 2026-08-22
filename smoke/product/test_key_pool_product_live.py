@@ -3,9 +3,10 @@
 The pool's whole failure policy turns on which status a provider returns for a
 credential it will not accept, and providers disagree. Observed 2026-08-04:
 NVIDIA NIM answers ``403``, OpenRouter answers ``401``. Those codes take
-different branches in :func:`KeyPool.record_failure` - ``401`` retires a key
-permanently, ``403`` only cools it - so a provider silently changing its answer
-would quietly degrade rotation without failing any hermetic test. These probes
+different branches in :func:`KeyPool.record_failure` - ``401`` cools a key on the
+authentication ladder, ``403`` cools it briefly as an ambiguous refusal - so a
+provider silently changing its answer would quietly degrade rotation without
+failing any hermetic test. These probes
 pin the observed behaviour against the real endpoints.
 """
 
@@ -55,8 +56,6 @@ def _pool_for(provider_id: str, keys: list[str], base_url: str) -> KeyPool:
     return KeyPool(
         keys,
         provider_name=provider_id,
-        rate_limit=10,
-        rate_window=60.0,
         client_factory=lambda key: AsyncOpenAI(
             api_key=key, base_url=base_url, max_retries=0
         ),
@@ -87,9 +86,9 @@ async def test_invalid_credential_status_matches_pool_policy_e2e(
         status = getattr(error.value, "status_code", None)
         assert status == expected, (
             f"{provider_id} now answers {status} for an invalid credential, not "
-            f"{expected}. KeyPool.record_failure branches on this: 401 retires a "
-            f"key for the process lifetime, 403 only cools it. Re-check the "
-            f"classification before trusting rotation on this provider."
+            f"{expected}. KeyPool.record_failure branches on this: 401 cools a "
+            f"key on the authentication ladder, 403 cools it briefly. Re-check "
+            f"the classification before trusting rotation on this provider."
         )
         action = pool.record_failure(PooledKeyLease(0, lease.client), error.value)
         assert action in EXPECTED_ACTIONS, (

@@ -96,6 +96,34 @@ def resolve_rate_policy(
     return rate_with_margin(limit, margin), window
 
 
+def resolve_key_usage_policy(
+    descriptor: ProviderDescriptor, settings: Settings
+) -> tuple[int, float | None]:
+    """Return the usage budget per pooled key and its rolling window.
+
+    Providers meter keys differently, so the budget follows the provider: a
+    provider whose free tier caps calls per key on a schedule (OpenRouter's
+    daily quota) counts uses against a window; one rate-limited per minute
+    instead (NVIDIA NIM) needs no local budget at all because the reactive
+    ``429`` cooldowns already model it. Zero meters nothing.
+    """
+    limits: dict[str, tuple[str, float | None]] = {
+        # OpenRouter: 1000 calls per key per day on the free tier.
+        "open_router": ("open_router_key_usage_limit", 86400.0),
+        # NIM's free tier is rate-limited per minute, not by a consumable
+        # budget, so the reactive cooldowns carry it alone.
+        "nvidia_nim": ("nvidia_nim_key_usage_limit", None),
+    }
+    entry = limits.get(descriptor.provider_id)
+    if entry is None:
+        return 0, None
+    attr, window = entry
+    limit = numeric_setting(settings, attr, 0.0)
+    if limit <= 0:
+        return 0, None
+    return int(limit), window
+
+
 def provider_credential(descriptor: ProviderDescriptor, settings: Settings) -> str:
     """Return the configured credential for a provider descriptor.
 
@@ -172,10 +200,13 @@ def build_provider_config(
     # setups on the existing provider-wide admission path unchanged.
     pool = provider_credential_pool(descriptor, settings)
     rate_limit, rate_window = resolve_rate_policy(descriptor, settings)
+    key_usage_limit, key_usage_window = resolve_key_usage_policy(descriptor, settings)
     return ProviderConfig(
         api_key=credential,
         base_url=resolved_base_url,
         api_keys=pool if len(pool) > 1 else (),
+        key_usage_limit=key_usage_limit,
+        key_usage_window_seconds=key_usage_window,
         rate_limit=rate_limit,
         rate_window=rate_window,
         max_concurrency=settings.provider_max_concurrency,

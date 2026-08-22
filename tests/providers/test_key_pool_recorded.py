@@ -24,12 +24,10 @@ _BASE_URL = "https://recorded.provider.test/v1"
 _COMPLETIONS = f"{_BASE_URL}/chat/completions"
 
 
-def _pool(keys: tuple[str, ...], *, rate_window: float = 60.0) -> KeyPool:
+def _pool(keys: tuple[str, ...]) -> KeyPool:
     return KeyPool(
         keys,
         provider_name="RECORDED",
-        rate_limit=100,
-        rate_window=rate_window,
         client_factory=lambda key: AsyncOpenAI(
             api_key=key, base_url=_BASE_URL, max_retries=0
         ),
@@ -86,8 +84,9 @@ async def test_recorded_nvidia_refusal_cools_rather_than_retires() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_recorded_openrouter_refusal_retires_the_key() -> None:
-    # OpenRouter sends 401 for the same condition, which is unambiguous.
+async def test_recorded_openrouter_refusal_cools_the_key() -> None:
+    # OpenRouter sends 401 for the same condition: unambiguous, so the key sits
+    # out for a long authentication cooldown - but never permanently.
     respx.post(_COMPLETIONS).mock(return_value=_reply(OPENROUTER_INVALID_KEY))
     pool = _pool(("dead", "spare"))
     lease = await pool.acquire()
@@ -108,7 +107,7 @@ async def test_recorded_rate_limit_headers_drive_the_cooldown() -> None:
     # No Retry-After, reset expressed as epoch milliseconds. Guessing this
     # wrong would idle a key for hours or hammer it immediately.
     respx.post(_COMPLETIONS).mock(return_value=_reply(OPENROUTER_RATE_LIMITED))
-    pool = _pool(("throttled", "spare"), rate_window=3.0)
+    pool = _pool(("throttled", "spare"))
     lease = await pool.acquire()
 
     with pytest.raises(APIStatusError) as error:
@@ -117,9 +116,9 @@ async def test_recorded_rate_limit_headers_drive_the_cooldown() -> None:
 
     assert error.value.status_code == 429
     assert action is KeyFailureAction.HOP
-    # The reset is a fixed past instant, so the parse floors at zero rather
-    # than producing the negative wait an unguarded subtraction would give.
-    assert pool.status().cooling in (0, 1)
+    # The reset is a fixed past instant, so the parse floors at zero and the
+    # default cooldown carries the key instead.
+    assert pool.status().cooling == 1
     await pool.aclose()
 
 
@@ -144,30 +143,30 @@ async def test_a_dead_key_is_walked_past_to_serve_the_request() -> None:
 @respx.mock
 async def test_model_listing_succeeds_on_a_dead_key_and_proves_nothing() -> None:
     # Recorded from both pooled providers: /v1/models ignores the credential.
-    # Counting this as recovery would reset a dead key's escalating backoff on
+    # Counting this as recovery would reset a dead key's failure streak on
     # every discovery refresh.
     respx.get(f"{_BASE_URL}/models").mock(
         return_value=_reply(UNAUTHENTICATED_MODEL_LIST)
     )
-    pool = _pool(("dead",), rate_window=2.0)
+    pool = _pool(("dead",))
     lease = await pool.acquire()
     key = pool._keys[lease.index]
-    pool.record_failure(lease, _forbidden())
-    pool.record_failure(lease, _forbidden())
-    assert key.consecutive_guessed_failures == 2
+    pool.record_failure(lease, _unauthorized())
+    pool.record_failure(lease, _unauthorized())
+    assert key.consecutive_failures == 2
 
     key.cooling_until = 0.0
     await pool.run_key_local(
         lambda client: client.models.list(), proves_credential=False
     )
 
-    assert key.consecutive_guessed_failures == 2
+    assert key.consecutive_failures == 2
     await pool.aclose()
 
 
-def _forbidden() -> httpx.HTTPStatusError:
+def _unauthorized() -> httpx.HTTPStatusError:
     request = httpx.Request("POST", _COMPLETIONS)
     response = httpx.Response(
-        NVIDIA_INVALID_KEY.status, request=request, json=NVIDIA_INVALID_KEY.json
+        OPENROUTER_INVALID_KEY.status, request=request, json=OPENROUTER_INVALID_KEY.json
     )
-    return httpx.HTTPStatusError("403", request=request, response=response)
+    return httpx.HTTPStatusError("401", request=request, response=response)
