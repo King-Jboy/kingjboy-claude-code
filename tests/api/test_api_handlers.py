@@ -325,6 +325,79 @@ async def test_messages_handler_discards_partial_stream_false_output_on_error() 
 
 
 @pytest.mark.asyncio
+async def test_messages_handler_closes_provider_body_when_stream_false_stops_early() -> (
+    None
+):
+    # Aggregation stops at an in-band error frame with the provider body still
+    # suspended mid-stream. The handler must close it on the spot: the upstream
+    # stream and its admission slot cannot wait for the garbage collector.
+    closed = False
+
+    class TrackingProvider(FakeProvider):
+        async def stream_response(
+            self,
+            request: MessagesRequest,
+            input_tokens: int = 0,
+            *,
+            request_id: str | None = None,
+            response_model: str | None = None,
+            reasoning: ReasoningPolicy,
+        ) -> AsyncIterator[str]:
+            self.requests.append(request)
+            nonlocal closed
+            try:
+                for event in self.events:
+                    yield event
+            finally:
+                closed = True
+
+    provider = TrackingProvider(
+        [
+            format_sse_event(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_partial",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "model": "test-model",
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                },
+            ),
+            format_sse_event(
+                "error",
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": "provider overloaded",
+                    },
+                },
+            ),
+            format_sse_event("message_stop", {"type": "message_stop"}),
+        ]
+    )
+    handler = MessagesHandler(Settings(), provider_resolver=lambda _: provider)
+    request = MessagesRequest(
+        model="nvidia_nim/test-model",
+        max_tokens=100,
+        stream=False,
+        messages=[Message(role="user", content="hi")],
+    )
+
+    response = await handler.create(request)
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 529
+    assert closed, "stream=false stopped at an error frame without closing the body"
+
+
+@pytest.mark.asyncio
 async def test_messages_handler_stream_false_provider_exception_keeps_status() -> None:
     class FailingProvider(FakeProvider):
         async def stream_response(

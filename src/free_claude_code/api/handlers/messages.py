@@ -45,6 +45,7 @@ from free_claude_code.core.anthropic import (
     anthropic_status_for_error_type,
     get_token_count,
 )
+from free_claude_code.core.async_iterators import try_close_async_iterator
 from free_claude_code.core.diagnostics import safe_exception_message
 from free_claude_code.core.failures import ExecutionFailure, find_execution_failure
 from free_claude_code.core.reasoning import ReasoningControl, ReasoningPolicy
@@ -146,48 +147,58 @@ class MessagesHandler:
             # complete JSON Message; the internal pipeline is always SSE, so
             # serving that raw here breaks the client SDK's response parse.
             try:
-                message, error = await aggregate_anthropic_sse_to_message(result.body)
-            except GeneratorExit:
-                raise
-            except asyncio.CancelledError:
-                raise
-            except ExecutionFailure as exc:
-                return self._execution_failure_response(exc, request_id=request_id)
-            except BaseExceptionGroup as exc:
-                failure = find_execution_failure(exc)
-                if failure is not None:
-                    return self._execution_failure_response(
-                        failure, request_id=request_id
+                try:
+                    message, error = await aggregate_anthropic_sse_to_message(
+                        result.body
                     )
-                return self._unexpected_execution_error_response(
-                    exc,
-                    request_id=request_id,
-                    context="CREATE_MESSAGE_NON_STREAM_ERROR",
-                )
-            except Exception as exc:
-                return self._unexpected_execution_error_response(
-                    exc,
-                    request_id=request_id,
-                    context="CREATE_MESSAGE_NON_STREAM_ERROR",
-                )
-            if error is not None:
-                error_type, message_text = _stream_error_fields(error)
-                status_code = anthropic_status_for_error_type(error_type)
-                trace_terminal_execution_error(
-                    wire_api="messages",
-                    request_id=request_id,
-                    status_code=status_code,
-                    error_type=error_type,
-                )
-                return terminal_execution_error_response(
-                    status_code=status_code,
-                    content=anthropic_error_payload(
-                        error_type=error_type,
-                        message=message_text,
+                except GeneratorExit:
+                    raise
+                except asyncio.CancelledError:
+                    raise
+                except ExecutionFailure as exc:
+                    return self._execution_failure_response(exc, request_id=request_id)
+                except BaseExceptionGroup as exc:
+                    failure = find_execution_failure(exc)
+                    if failure is not None:
+                        return self._execution_failure_response(
+                            failure, request_id=request_id
+                        )
+                    return self._unexpected_execution_error_response(
+                        exc,
                         request_id=request_id,
-                    ),
-                )
-            return JSONResponse(content=message)
+                        context="CREATE_MESSAGE_NON_STREAM_ERROR",
+                    )
+                except Exception as exc:
+                    return self._unexpected_execution_error_response(
+                        exc,
+                        request_id=request_id,
+                        context="CREATE_MESSAGE_NON_STREAM_ERROR",
+                    )
+                if error is not None:
+                    error_type, message_text = _stream_error_fields(error)
+                    status_code = anthropic_status_for_error_type(error_type)
+                    trace_terminal_execution_error(
+                        wire_api="messages",
+                        request_id=request_id,
+                        status_code=status_code,
+                        error_type=error_type,
+                    )
+                    return terminal_execution_error_response(
+                        status_code=status_code,
+                        content=anthropic_error_payload(
+                            error_type=error_type,
+                            message=message_text,
+                            request_id=request_id,
+                        ),
+                    )
+                return JSONResponse(content=message)
+            finally:
+                # The aggregation owns the body only while it runs. Every exit
+                # from this branch - a complete reply, an in-band stream error,
+                # or an exception - must release the upstream stream and its
+                # admission slot now, not whenever the garbage collector gets
+                # to the abandoned generator.
+                await try_close_async_iterator(result.body)
         return await anthropic_sse_streaming_response(
             result.body,
             pre_start_error_response=lambda exc: self._pre_start_error_response(

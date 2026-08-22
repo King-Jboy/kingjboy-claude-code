@@ -216,10 +216,10 @@ def test_saving_a_malformed_pool_is_rejected_before_any_write(
     assert dotenv_values_from_file(managed)["NVIDIA_NIM_API_KEYS"] == POOL_KEYS
 
 
-def _admission_for_pool(size: int) -> Any:
+def _admission_for_pool(size: int, **overrides: str) -> Any:
     """Return the admission controller built for a pool of the given size."""
     keys = "[" + ", ".join(f'"key-{index}"' for index in range(size)) + "]"
-    settings = _settings(nvidia_nim_api_key="", NVIDIA_NIM_API_KEYS=keys)
+    settings = _settings(nvidia_nim_api_key="", NVIDIA_NIM_API_KEYS=keys, **overrides)
     with (
         patch("free_claude_code.providers.openai_chat.provider.AsyncOpenAI"),
         patch(
@@ -284,6 +284,26 @@ def test_pooled_concurrency_stops_scaling_at_the_ceiling() -> None:
     assert _admission_for_pool(2)["max_concurrency"] == 10
     assert _admission_for_pool(4)["max_concurrency"] == 20
     assert _admission_for_pool(40)["max_concurrency"] == MAX_POOLED_CONCURRENCY
+
+
+def test_a_pooled_ceiling_below_one_keys_concurrency_still_binds() -> None:
+    # The ceiling is a cap, not a floor: an operator who lowers it below one
+    # key's concurrency means it, and the setting must not be silently ignored.
+    admission = _admission_for_pool(
+        2, PROVIDER_MAX_CONCURRENCY="40", PROVIDER_MAX_POOLED_CONCURRENCY="32"
+    )
+
+    assert admission["max_concurrency"] == 32
+
+
+def test_the_pooled_ceiling_never_touches_a_single_key_provider() -> None:
+    # The setting exists to bound pool scaling; a single-credential provider
+    # keeps its own concurrency whatever the pooled ceiling says.
+    admission = _admission_for_pool(
+        1, PROVIDER_MAX_CONCURRENCY="40", PROVIDER_MAX_POOLED_CONCURRENCY="8"
+    )
+
+    assert admission["max_concurrency"] == 40
 
 
 def test_providers_without_a_pool_attribute_never_report_one() -> None:

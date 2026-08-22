@@ -98,6 +98,18 @@ async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
     return bool(done)
 
 
+def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> float:
+    """Return the next poll slice, shortened so a ping lands on the threshold.
+
+    Quiet time accrues in fixed slices, so without a shortened final slice the
+    first keepalive would fire a full interval past the documented threshold
+    (5.0s of silence would first be reported at 6.0s).
+    """
+    if quiet >= quiet_after:
+        return interval
+    return min(interval, quiet_after - quiet)
+
+
 # Yielded in place of a chunk when the upstream has gone quiet long enough that
 # the client needs to hear something.
 _KEEPALIVE = object()
@@ -125,8 +137,10 @@ async def _chunks_with_keepalive(
     while True:
         chunk_task = asyncio.ensure_future(anext(iterator))
         try:
-            while not await _settled_within(chunk_task, interval):
-                quiet += interval
+            while not await _settled_within(
+                chunk_task, _keepalive_wait_step(quiet, quiet_after, interval)
+            ):
+                quiet += _keepalive_wait_step(quiet, quiet_after, interval)
                 if quiet >= quiet_after:
                     yield _KEEPALIVE
         except BaseException:
@@ -571,9 +585,18 @@ class _OpenAIChatStreamRunner:
                 try:
                     quiet = 0.0
                     while not await _settled_within(
-                        create_task, KEEPALIVE_INTERVAL_SECONDS
+                        create_task,
+                        _keepalive_wait_step(
+                            quiet,
+                            UPSTREAM_QUIET_KEEPALIVE_SECONDS,
+                            KEEPALIVE_INTERVAL_SECONDS,
+                        ),
                     ):
-                        quiet += KEEPALIVE_INTERVAL_SECONDS
+                        quiet += _keepalive_wait_step(
+                            quiet,
+                            UPSTREAM_QUIET_KEEPALIVE_SECONDS,
+                            KEEPALIVE_INTERVAL_SECONDS,
+                        )
                         if quiet >= UPSTREAM_QUIET_KEEPALIVE_SECONDS:
                             for event in recovery.flush():
                                 yield event

@@ -302,6 +302,12 @@ class _PrefetchedStream(AsyncIterator[str]):
             self._done = True
             raise
         except BaseExceptionGroup as exc:
+            # Cancellation is control flow, not a stream outcome: a group
+            # carrying it must propagate, or a cancelled recovery task would
+            # surface to the client as an ordinary error frame instead of the
+            # disconnect the runtime relies on.
+            if exc.subgroup(asyncio.CancelledError) is not None:
+                raise
             return self._terminal_chunk(find_execution_failure(exc) or exc)
         except Exception as exc:
             return self._terminal_chunk(exc)

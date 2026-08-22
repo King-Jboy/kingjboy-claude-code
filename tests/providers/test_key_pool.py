@@ -1,6 +1,7 @@
 """Credential-pool selection, health attribution, and the provider seam."""
 
 import asyncio
+import time
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1055,6 +1056,30 @@ async def test_an_uncommitted_stream_stays_silent_so_errors_stay_typed() -> None
 
 def test_the_ping_frame_matches_the_anthropic_event_shape() -> None:
     assert anthropic_ping_frame() == 'event: ping\ndata: {"type": "ping"}\n\n'
+
+
+@pytest.mark.asyncio
+async def test_the_first_keepalive_lands_on_the_quiet_threshold() -> None:
+    # Quiet time accrues in fixed interval slices; without a shortened final
+    # slice the first keepalive lands a full interval past the documented
+    # threshold (0.3s of silence would first be reported at 0.4s).
+    async def silent_stream():
+        await asyncio.sleep(0.8)
+        yield "chunk"
+
+    started = time.monotonic()
+    pings = [
+        time.monotonic() - started
+        async for item in provider_module._chunks_with_keepalive(
+            silent_stream(), quiet_after=0.3, interval=0.2
+        )
+        if item is provider_module._KEEPALIVE
+    ]
+
+    assert pings, "no keepalive fired while the upstream stayed silent"
+    assert 0.22 < pings[0] < 0.36, (
+        f"first keepalive fired at {pings[0]:.3f}s; the threshold is 0.3s"
+    )
 
 
 @pytest.mark.asyncio

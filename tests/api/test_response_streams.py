@@ -216,6 +216,26 @@ async def test_anthropic_post_start_exception_emits_terminal_error_frame() -> No
 
 
 @pytest.mark.asyncio
+async def test_post_start_cancellation_group_propagates_instead_of_erroring() -> None:
+    # Cancellation travelling inside an exception group is control flow, not a
+    # stream outcome: converting it to a terminal error frame would tell the
+    # client the request failed when really it is being torn down.
+    response = await anthropic_sse_streaming_response(
+        _body_then_raises(
+            ['event: message_start\ndata: {"type":"message_start"}\n\n'],
+            BaseExceptionGroup("teardown", [asyncio.CancelledError()]),
+        ),
+        pre_start_error_response=_json_error,
+        request_id="req_test",
+    )
+
+    assert isinstance(response, StreamingResponse)
+    with pytest.raises(BaseExceptionGroup) as group:
+        await _drain(response)
+    assert group.value.subgroup(asyncio.CancelledError) is not None
+
+
+@pytest.mark.asyncio
 async def test_non_streaming_response_releases_resource_before_return() -> None:
     release = AsyncMock()
     response = JSONResponse({"ok": True})

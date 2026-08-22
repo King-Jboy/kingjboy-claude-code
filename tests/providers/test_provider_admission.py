@@ -462,6 +462,37 @@ async def test_cancelled_backoff_leader_transfers_to_a_waiter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_leader_at_the_gate_releases_leadership() -> None:
+    # A leader between probes owns the episode but holds no permit, so the
+    # gate itself is its only cleanup path. Cancelled while waiting to re-enter
+    # the gate's condition - on the lock acquisition, not during the guarded
+    # backoff sleep - it must hand leadership on, or every later caller parks
+    # on a condition nothing will ever notify.
+    controller = _controller(base_delay=2.0, max_delay=60.0)
+    leader_session = controller.new_retry_session()
+    leader = await controller.open_attempt(leader_session)
+    assert await leader.retry(_status_error(503))
+    await leader.aclose()
+
+    # Hold the condition so the leader's next gate entry suspends on the lock
+    # acquisition itself - the one await the gate's own guards miss.
+    async with controller._condition:
+        reentry = asyncio.create_task(controller.open_attempt(leader_session))
+        await asyncio.sleep(0.05)
+        reentry.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await reentry
+
+    follower_session = controller.new_retry_session()
+    attempt = await asyncio.wait_for(
+        controller.open_attempt(follower_session), timeout=1.0
+    )
+    await attempt.succeeded()
+    await attempt.aclose()
+
+
+@pytest.mark.asyncio
 async def test_stale_in_flight_success_cannot_close_recovery_episode() -> None:
     controller = _controller()
     leader_session = controller.new_retry_session()

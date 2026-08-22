@@ -314,6 +314,20 @@ class ProviderAdmissionController:
                 await attempt.aclose()
 
     async def _wait_for_gate(self, session: ProviderRetrySession) -> _GatePermit:
+        try:
+            return await self._wait_for_gate_loop(session)
+        except asyncio.CancelledError:
+            # A leader between probe resolutions owns the episode but holds no
+            # permit, so no other cleanup path exists for it. Cancellation can
+            # land while it waits to re-enter the condition (the waiter sleep
+            # and the backoff sleep are guarded above their own awaits; the
+            # lock acquisition itself is not). Left alone, a cancelled leader
+            # strands the episode headless and every later caller parks on a
+            # condition nothing will ever notify.
+            await self._abandon_orphaned_leadership(session)
+            raise
+
+    async def _wait_for_gate_loop(self, session: ProviderRetrySession) -> _GatePermit:
         while True:
             if (terminal_error := session._terminal_failure()) is not None:
                 raise ProviderRecoveryExhausted(terminal_error)
@@ -680,6 +694,24 @@ class ProviderAdmissionController:
             ):
                 return
             episode.leader = None
+            self._condition.notify_all()
+
+    async def _abandon_orphaned_leadership(self, session: ProviderRetrySession) -> None:
+        """Release episode leadership a cancelled leader still holds.
+
+        Unlike ``_abandon_waiting_leader`` this is generation-agnostic - the
+        caller was cancelled before it could claim or identify a generation -
+        and clears ``probe_active`` too: a leader waiting inside the gate never
+        holds a live permit, so an active flag beside a departing leader
+        belongs to nobody and would block the next leader forever.
+        """
+        async with self._condition:
+            episode = self._episode
+            if episode is None or episode.leader is not session:
+                return
+            episode.leader = None
+            episode.probe_active = False
+            episode.ready_at = time.monotonic()
             self._condition.notify_all()
 
     def _release_concurrency(self) -> None:

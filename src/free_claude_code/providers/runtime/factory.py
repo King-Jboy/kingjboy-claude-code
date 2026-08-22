@@ -193,19 +193,28 @@ def create_provider(
     # A pool serves the combined quota of its keys, so the provider-wide gate
     # admits the pooled total; otherwise it would cap the pool at one key's rate.
     pool_scale = max(1, len(config.api_keys))
-    pooled_ceiling = int(
-        numeric_setting(
-            settings, "provider_max_pooled_concurrency", MAX_POOLED_CONCURRENCY
+    max_concurrency = config.max_concurrency
+    if pool_scale > 1:
+        # Concurrency is bounded by local sockets rather than by quota, so a
+        # pool scales it per key - capped by the pooled ceiling, which an
+        # operator may set anywhere (including below one key's figure; a
+        # streaming response holds its slot for tens of seconds, so a low cap
+        # trades stranded quota for socket safety by choice). Single-credential
+        # providers never feel the pooled ceiling.
+        pooled_ceiling = max(
+            1,
+            int(
+                numeric_setting(
+                    settings, "provider_max_pooled_concurrency", MAX_POOLED_CONCURRENCY
+                )
+            ),
         )
-    )
+        max_concurrency = min(config.max_concurrency * pool_scale, pooled_ceiling)
     admission = ProviderAdmissionController(
         provider_name=provider_id,
         rate_limit=(config.rate_limit or 40) * pool_scale,
         rate_window=config.rate_window or 60.0,
-        max_concurrency=min(
-            config.max_concurrency * pool_scale,
-            max(config.max_concurrency, pooled_ceiling),
-        ),
+        max_concurrency=max_concurrency,
     )
     factory = (injected_factories or {}).get(provider_id)
     if provider_id in _INJECTED_PROVIDER_IDS and factory is None:

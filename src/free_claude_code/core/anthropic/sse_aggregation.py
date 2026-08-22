@@ -60,7 +60,11 @@ async def aggregate_anthropic_sse_to_message(
             elif dtype == "input_json_delta":
                 parts[idx].append(str(delta.get("partial_json", "")))
             elif dtype == "signature_delta":
-                blocks[idx]["signature"] = str(delta.get("signature", ""))
+                # A signature can arrive split across deltas like any other
+                # field; overwriting here would keep only the last fragment.
+                blocks[idx]["signature"] = str(blocks[idx].get("signature", "")) + str(
+                    delta.get("signature", "")
+                )
         elif ptype == "message_delta":
             delta = payload.get("delta")
             if isinstance(delta, dict):
