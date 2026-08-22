@@ -908,6 +908,43 @@ input[type="checkbox"] {
   overflow-wrap: break-word;
 }
 
+/* Key-pool health, in the same quiet register as the shell block it sits
+   beside: reference state, not a warning surface. */
+.pools {
+  padding: 10px 11px;
+  border-radius: var(--radius-control);
+  background: var(--neutral-soft);
+}
+
+.pools[hidden] {
+  display: none;
+}
+
+.pools-title {
+  margin: 0 0 3px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.pools-row {
+  margin: 3px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.pools-note {
+  color: var(--faint);
+}
+
+.pools-refresh {
+  margin-top: 7px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
 .sheet-footer {
   flex: none;
   display: flex;

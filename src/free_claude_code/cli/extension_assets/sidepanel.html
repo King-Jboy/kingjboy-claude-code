@@ -97,6 +97,17 @@
             <h3 class="shell-title">Shell commands</h3>
             <p id="shell-state" class="shell-state"></p>
           </section>
+
+          <!-- Pool health from the proxy. Hidden rather than shown broken:
+               an older proxy without the endpoint, or one that is down, owes
+               the settings sheet nothing. -->
+          <section id="pools" class="pools" hidden>
+            <h3 class="pools-title">Key pools</h3>
+            <div id="pools-body" class="pools-body"></div>
+            <button id="pools-refresh" class="ghost pools-refresh" type="button">
+              Refresh
+            </button>
+          </section>
         </div>
 
         <div class="sheet-footer">
