@@ -288,10 +288,11 @@ Resolution order:
 | Blank, several routes recorded | the **smallest**, since one number covers every tier the client can select |
 | Blank, nothing recorded | `262144` — a guess, so run `fcc-context` instead of relying on it |
 
-`fcc-doctor` prints the window and where it came from:
+`fcc-doctor` prints the window and where it came from — and when several routes are recorded, names each so you can see which one sets the session's ceiling:
 
 ```
 [  ok  ] context window: 262,144 tokens (from context.md for nvidia_nim/deepseek-ai/deepseek-v4-pro)
+[  ok  ] context window: 131,072 tokens (from context.md: smallest of 2 routes - nvidia_nim/small/model=131,072 · open_router/big/model=1,048,576)
 ```
 
 > The VS Code and JetBrains integrations below launch Claude Code themselves, so they never read any of this. Set `CLAUDE_CODE_AUTO_COMPACT_WINDOW` in their own config to the value `fcc-doctor` reports.
@@ -336,22 +337,28 @@ nvidia_nim: no published context length, probing
     stepfun-ai/step-3.7-flash                        262,144
 ```
 
-It reads the number where a provider publishes it and measures it where one does not. OpenRouter reports `context_length` for every model, so those are instant and need no key. NVIDIA NIM publishes nothing, so each model gets one deliberately oversized request and the script reads the ceiling out of the rejection:
+Each model's window is resolved in layers, cheapest first:
+
+1. **Published** — read from the provider's own catalog. OpenRouter reports `context_length` for every model with no key at all; Groq reports `context_window` for every model behind `GROQ_API_KEY`. Instant, and no request is spent.
+2. **Curated** — FCC's built-in table of provider-documented windows (DeepSeek, Gemini, Cerebras, Mistral, Codestral, and Groq without a key), so those providers resolve with zero requests too.
+3. **Recorded** — whatever a previous run left in the table. A number you write by hand (marked `manual`) always wins, so later runs never undo your correction.
+4. **Measured** — NVIDIA NIM only. NIM publishes nothing, so each model gets one deliberately oversized request and the script reads the ceiling out of the rejection:
 
 ```
 This model's maximum context length is 262144 tokens. However, your messages
 resulted in 360007 tokens. Please reduce the length of the messages.
 ```
 
-That costs no inference, because the probe deliberately overshoots — a rejection states the ceiling no matter how far over you were. Only a model that *accepts* the probe has to be re-probed larger.
+That costs no inference, because the probe deliberately overshoots — a rejection states the ceiling no matter how far over you were. A probe that comes back rate-limited waits out the provider's own retry timing and tries once more on another key, instead of recording a throttle as the model's answer. A model that *accepts* the largest probe is recorded as at least that size rather than probed larger — bigger probes buy real prefill for a number nothing needs. Probing can be switched off entirely with `--no-probe`.
 
 ```bash
 fcc-context --all        # whole catalog, slow
-fcc-context --refresh    # re-measure recorded models
+fcc-context --refresh    # re-resolve recorded models
+fcc-context --no-probe   # published + curated only, zero probes
 fcc-context --models nvidia_nim/meta/llama-3.3-70b-instruct
 ```
 
-`--provider` limits what gets re-measured, not what the table contains, so an OpenRouter-only run leaves your NVIDIA NIM rows alone. Keys come from `~/.fcc/.env` and a configured pool is used round-robin, so one key's rate limit does not stall the run. A model a provider lists but does not serve to your account is recorded with the reason instead of a number — on NVIDIA NIM that turns out to be most of the catalog, which is why `--all` is rarely worth running.
+`--provider` limits what gets re-resolved, not what the table contains, so an OpenRouter-only run leaves your NVIDIA NIM rows alone. Keys come from `~/.fcc/.env` and a configured pool is used round-robin, so one key's rate limit does not stall the run. A model a provider lists but does not serve to your account is recorded with the reason instead of a number — on NVIDIA NIM that turns out to be most of the catalog, which is why `--all` is rarely worth running.
 
 ### Reasoning Control
 

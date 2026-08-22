@@ -50,6 +50,31 @@ def test_a_recorded_window_is_reported_with_the_model_it_came_from(
     assert "nvidia_nim/deepseek-ai/deepseek-v4-flash" in finding.detail
 
 
+def test_every_recorded_route_is_named_when_the_smallest_one_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The session advertises one window - the smallest recorded route - so an
+    # operator chasing a too-small number needs to see which route set it.
+    _home_with_context_table(
+        monkeypatch,
+        tmp_path,
+        "## nvidia_nim\n\n| Model | Context | Source |\n| --- | ---: | --- |\n"
+        "| `small/model` | 131,072 | measured |\n\n"
+        "## open_router\n\n| Model | Context | Source |\n| --- | ---: | --- |\n"
+        "| `big/model` | 1,048,576 | published |\n",
+    )
+    settings = _settings(
+        model="nvidia_nim/small/model", MODEL_SONNET="open_router/big/model"
+    )
+
+    (finding,) = list(doctor.check_context_window(settings))
+
+    assert "131,072 tokens" in finding.detail
+    assert "smallest of 2 routes" in finding.detail
+    assert "nvidia_nim/small/model=131,072" in finding.detail
+    assert "open_router/big/model=1,048,576" in finding.detail
+
+
 def test_an_unrecorded_model_falls_back_and_says_how_to_fix_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

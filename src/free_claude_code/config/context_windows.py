@@ -67,6 +67,25 @@ def load_context_windows(path: Path | None = None) -> dict[str, int]:
     return windows
 
 
+def recorded_route_windows(
+    settings: ChatModelConfig,
+    *,
+    windows: dict[str, int] | None = None,
+) -> list[tuple[str, int]]:
+    """Return each configured route's recorded window, in configuration order.
+
+    This is the display half of the table: the resolver picks one number for
+    the CLI, but the operator deciding whether that number is right wants to
+    see every route it was chosen from.
+    """
+    recorded = load_context_windows() if windows is None else windows
+    return [
+        (ref.model_ref, recorded[ref.model_ref])
+        for ref in configured_chat_model_refs(settings)
+        if ref.model_ref in recorded
+    ]
+
+
 def resolve_client_context_window(
     settings: ChatModelConfig,
     *,

@@ -27,6 +27,7 @@ from free_claude_code.config.admin.values import load_value_state
 from free_claude_code.config.api_keys import parse_api_key_list
 from free_claude_code.config.context_windows import (
     CONTEXT_WINDOWS_FILENAME,
+    recorded_route_windows,
     resolve_client_context_window,
 )
 from free_claude_code.config.model_refs import parse_model_name, parse_provider_type
@@ -152,13 +153,25 @@ def check_context_window(settings: Settings) -> Iterator[Finding]:
 
     Saying where the number came from is the point: the same value means very
     different things when it was measured for your model versus when it is the
-    conservative fallback nothing matched.
+    conservative fallback nothing matched. With several routes recorded, the
+    smallest one wins for the whole session, so each is named - an operator
+    chasing a too-small window needs to see which route set it.
     """
     resolved = resolve_client_context_window(
         settings, configured=settings.client_context_window
     )
     detail = f"{resolved.value:,} tokens"
     if resolved.source == CONTEXT_WINDOWS_FILENAME:
+        routes = recorded_route_windows(settings)
+        if len(routes) > 1:
+            listing = " · ".join(f"{ref}={value:,}" for ref, value in routes)
+            yield Finding(
+                Level.OK,
+                "context window",
+                f"{detail} (from {CONTEXT_WINDOWS_FILENAME}: smallest of "
+                f"{len(routes)} routes - {listing})",
+            )
+            return
         yield Finding(
             Level.OK,
             "context window",

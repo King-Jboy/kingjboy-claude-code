@@ -1,26 +1,33 @@
-"""Record each routable model's real context window in ``~/.fcc/context.md``.
+"""Record each routable model's context window in ``~/.fcc/context.md``.
 
 Registered as ``fcc-context``. FCC reads that table to decide what context
 window to advertise to a launched CLI, so leaving ``CLIENT_CONTEXT_WINDOW``
 blank makes the window follow whichever model ``MODEL`` points at. This command
 is what fills the table in.
 
-Most OpenAI-compatible providers never put a context length on the wire --
-NVIDIA NIM's ``/v1/models`` returns only ``id``, ``object``, ``created``,
-``owned_by`` -- so the number is read where published and measured where not:
+A model's window is resolved in layers, cheapest and most trustworthy first:
 
-* **OpenRouter** publishes ``context_length`` for every model. Instant, and no
-  key is required.
-* **NVIDIA NIM** publishes nothing, so each model gets one deliberately
-  oversized request. The rejection states the ceiling ("This model's maximum
-  context length is 262144 tokens"), which costs no inference.
+* **Published** - read from the provider's own model catalog. OpenRouter states
+  ``context_length`` for every model with no key at all; Groq states
+  ``context_window`` for every model behind its key. Instant, and no request is
+  spent.
+* **Curated** - a small table in ``config/curated_contexts.py`` for providers
+  that document windows but never put them on the wire (DeepSeek, Gemini,
+  Cerebras, Mistral, Codestral, and Groq without a key).
+* **Recorded** - whatever a previous run left in the table. Any row with a
+  number - including one written by hand and marked ``manual`` - is kept as-is,
+  so later runs never undo the operator's own correction.
+* **Measured** - NVIDIA NIM only, and last: NIM publishes nothing, so each
+  model gets one deliberately oversized request whose rejection states the
+  ceiling ("This model's maximum context length is 262144 tokens"). A probe
+  costs no inference, waits out rate limits instead of recording them as
+  failures, and can be switched off entirely with ``--no-probe``.
 
 The table holds exactly the models you can route to -- everything in
 ``PINNED_MODELS`` plus the ``MODEL`` / ``MODEL_*`` routes -- so it stays a
-readable list of models you actually use rather than a growing catalogue. Add a
-model to your pinned list, re-run, and its window joins the table; unpin one and
-it leaves. Already-recorded models are not probed again, so adding a model costs
-one probe rather than a full sweep.
+readable list of models you actually use rather than a growing catalogue. Add
+a model to your pinned list, re-run, and its window joins the table; unpin one
+and it leaves.
 
 This module stays inside the ``cli -> config, core`` import boundary. It talks
 to provider HTTP endpoints directly rather than constructing a provider, the
@@ -42,6 +49,11 @@ from pydantic import ValidationError
 
 from free_claude_code.config.api_keys import parse_api_key_list
 from free_claude_code.config.context_windows import context_windows_path
+from free_claude_code.config.curated_contexts import (
+    CURATED_CONTEXT_WINDOWS,
+    curated_context_window,
+    curated_providers,
+)
 from free_claude_code.config.model_refs import (
     configured_chat_model_refs,
     pinned_model_refs,
@@ -51,8 +63,9 @@ from free_claude_code.config.settings import Settings
 NIM_CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 NIM_MODELS_URL = "https://integrate.api.nvidia.com/v1/models"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
 
-SUPPORTED_PROVIDERS = ("nvidia_nim", "open_router")
+PROBED_PROVIDERS = ("nvidia_nim",)
 
 # Probe sizes in tokens, largest first, because a rejection states the ceiling
 # no matter how far over it the probe was. Overshooting therefore costs one
@@ -60,9 +73,6 @@ SUPPORTED_PROVIDERS = ("nvidia_nim", "open_router")
 # which is the slow path. The smaller rungs exist only as a fallback for
 # gateways that drop the connection on a multi-megabyte body.
 PROBE_LADDER = (1_100_000, 400_000, 200_000)
-
-# Only a model whose window exceeds the first rung needs escalation.
-ESCALATION_LADDER = (2_200_000, 4_400_000)
 
 # Models that cannot take a chat prompt at all. Probing them yields nothing but
 # noise and burns rate limit.
@@ -92,14 +102,36 @@ STATED_LIMIT = re.compile(
 # negative remainder, which still pins the ceiling exactly.
 NEGATIVE_BUDGET = re.compile(r"max_tokens must be at least 1, got -(\d+)", re.I)
 
+# A 429 note carries the provider's own retry timing: "HTTP 429; retry-after 30s".
+RETRY_AFTER_NOTE = re.compile(r"retry-after (\d+)s")
+
 TABLE_ROW = re.compile(
     r"^\|\s*`(?P<model>[^`]+)`\s*\|\s*(?P<context>[^|]+?)\s*\|\s*(?P<source>[^|]+?)\s*\|$"
 )
 
+# Never wait out a provider-stated cooldown longer than this per probe; a
+# giant reset is a signal to slow the whole scan, not to park a worker.
+MAX_429_WAIT_S = 60.0
+
+
+def measurable_providers() -> tuple[str, ...]:
+    """Return every provider this command can produce a window for."""
+
+    return tuple(
+        dict.fromkeys(
+            (
+                *PROBED_PROVIDERS,
+                "open_router",
+                "groq",
+                *curated_providers(),
+            )
+        )
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class ModelContext:
-    """One model's measured or published context window."""
+    """One model's published, curated, or measured context window."""
 
     provider: str
     model: str
@@ -140,25 +172,50 @@ def is_chat_model(model_id: str) -> bool:
     return not any(marker in lowered for marker in NON_CHAT_MARKERS)
 
 
-def openrouter_contexts() -> list[ModelContext]:
-    """Read published context lengths; OpenRouter states them for every model."""
-    response = httpx.get(OPENROUTER_MODELS_URL, timeout=60.0)
+# ---------- published metadata ----------
+
+
+def _catalog_rows(
+    url: str, headers: dict[str, str], provider: str, field: str
+) -> dict[str, int]:
+    """Read one provider's model catalog into ``{model: window}``."""
+    response = httpx.get(url, headers=headers, timeout=60.0)
     response.raise_for_status()
-    rows: list[ModelContext] = []
+    windows: dict[str, int] = {}
     for item in response.json().get("data", []):
         model_id = item.get("id")
-        context = item.get("context_length")
-        if not isinstance(model_id, str) or not model_id:
-            continue
-        rows.append(
-            ModelContext(
-                provider="open_router",
-                model=model_id,
-                context=context if isinstance(context, int) and context > 0 else None,
-                source="published",
+        context = item.get(field)
+        if isinstance(model_id, str) and model_id:
+            windows[model_id] = (
+                context if isinstance(context, int) and context > 0 else 0
             )
-        )
-    return rows
+    return windows
+
+
+def openrouter_contexts() -> list[ModelContext]:
+    """Read published context lengths; OpenRouter states them for every model."""
+    return [
+        ModelContext("open_router", model, context or None, "published")
+        for model, context in _catalog_rows(
+            OPENROUTER_MODELS_URL, {}, "open_router", "context_length"
+        ).items()
+    ]
+
+
+def groq_contexts(api_key: str) -> list[ModelContext]:
+    """Read published context lengths; Groq states them for every model."""
+    return [
+        ModelContext("groq", model, context or None, "published")
+        for model, context in _catalog_rows(
+            GROQ_MODELS_URL,
+            {"authorization": f"Bearer {api_key}"},
+            "groq",
+            "context_window",
+        ).items()
+    ]
+
+
+# ---------- NIM probing ----------
 
 
 def nim_model_ids(key: str) -> list[str]:
@@ -189,6 +246,11 @@ def _probe_once(model: str, key: str, size: int, timeout: float) -> ModelContext
     except Exception as exc:
         return type(exc).__name__
 
+    if response.status_code == 429:
+        retry = response.headers.get("retry-after", "").strip()
+        seconds = retry if retry.isdigit() else "30"
+        return f"HTTP 429; retry-after {seconds}s"
+
     text = response.text
     if match := STATED_LIMIT.search(text):
         return ModelContext("nvidia_nim", model, int(match.group(1)), "measured")
@@ -203,11 +265,19 @@ def _probe_once(model: str, key: str, size: int, timeout: float) -> ModelContext
     try:
         payload = response.json()
     except ValueError:
-        return f"HTTP {response.status_code}"
+        payload = None
 
     if isinstance(payload, dict) and payload.get("choices"):
         return f"accepted >={size:,}"
-    return _error_note(payload) or f"HTTP {response.status_code}"
+
+    # Carrying the provider's own words is the diagnostics: a reworded
+    # rejection reads here as text to pin, instead of as a bare status code
+    # that explains nothing.
+    note = _error_note(payload)
+    if note:
+        return note
+    snippet = " ".join(text.split())[:120]
+    return snippet or f"HTTP {response.status_code}"
 
 
 def probe_nim_model(model: str, key: str, *, timeout: float) -> ModelContext:
@@ -215,8 +285,10 @@ def probe_nim_model(model: str, key: str, *, timeout: float) -> ModelContext:
 
     The first rung is already past every window a provider is likely to serve,
     so the usual outcome is one rejection carrying the exact number. Smaller
-    rungs are tried only when the transport rejects the body outright, and
-    larger ones only when the model genuinely swallowed the first probe.
+    rungs are tried only when the transport rejects the body outright. A model
+    that swallows the largest rung is recorded as at least that size rather
+    than escalated further: bigger probes buy real prefill on giant-window
+    models, for a number Claude Code barely benefits from.
     """
     note = "no response"
     for size in PROBE_LADDER:
@@ -225,19 +297,16 @@ def probe_nim_model(model: str, key: str, *, timeout: float) -> ModelContext:
             return outcome
         note = outcome
         if outcome.startswith("accepted"):
-            break
+            return ModelContext(
+                "nvidia_nim",
+                model,
+                None,
+                f"{note} - set the window by hand if a larger one matters",
+            )
         # A model that is missing or broken will not answer any smaller probe.
         if "Not found" in outcome or "Internal server error" in outcome:
             return ModelContext("nvidia_nim", model, None, note)
 
-    if note.startswith("accepted"):
-        for size in ESCALATION_LADDER:
-            outcome = _probe_once(model, key, size, timeout)
-            if isinstance(outcome, ModelContext):
-                return outcome
-            note = outcome
-            if not outcome.startswith("accepted"):
-                break
     return ModelContext("nvidia_nim", model, None, note)
 
 
@@ -265,8 +334,11 @@ def _error_note(payload: object) -> str:
     return ""
 
 
+# ---------- table read and render ----------
+
+
 def read_existing(path: Path) -> dict[tuple[str, str], ModelContext]:
-    """Parse a previous run so re-runs only probe what is genuinely new."""
+    """Parse a previous run so re-runs only resolve what is genuinely new."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -302,19 +374,20 @@ def render(rows: Sequence[ModelContext]) -> str:
         "",
         "This lists exactly the models you can route to -- `PINNED_MODELS` plus",
         "your `MODEL` / `MODEL_*` routes. Add a model and re-run `fcc-context` to",
-        "measure it; remove one and it leaves on the next run. Models already",
-        "measured are not probed again.",
+        "resolve it; remove one and it leaves on the next run.",
         "",
-        "`published` came from the provider's own metadata. `measured` came from the",
-        "ceiling the provider stated when refusing an oversized request. `derived`",
-        "was computed from a reported token overflow and snapped to the nearest",
-        "power of two. Anything else is the reason no number could be obtained --",
-        "most often that the model is listed but not served to your account.",
+        "`published` came from the provider's own model catalog. `curated` came",
+        "from FCC's built-in table of provider-documented windows. `measured`",
+        "came from the ceiling the provider stated when refusing an oversized",
+        "request, and `derived` was computed from a reported token overflow and",
+        "snapped to the nearest power of two. Anything else is the reason no",
+        "number could be obtained -- most often that the model is listed but not",
+        "served to your account.",
         "",
-        "You can fill a number in by hand for a model that cannot be measured;",
+        "You can fill a number in by hand for a model that cannot be resolved;",
         "mark it `manual` so it is not mistaken for a reading. Any row with a",
         "number is kept as-is on later runs -- only `fcc-context --refresh`",
-        "re-measures it.",
+        "resolves it again.",
         "",
     ]
     by_provider: dict[str, list[ModelContext]] = {}
@@ -335,6 +408,80 @@ def render(rows: Sequence[ModelContext]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+# ---------- layered resolution ----------
+
+
+def resolve_model(
+    provider: str,
+    model: str,
+    published: dict[str, int],
+    known: dict[tuple[str, str], ModelContext],
+    *,
+    refresh: bool,
+) -> ModelContext:
+    """Resolve one model's window: recorded, then published, then curated."""
+    key = (provider, model)
+    if not refresh and key in known and known[key].context:
+        return known[key]
+    if published.get(model):
+        return ModelContext(provider, model, published[model], "published")
+    value = curated_context_window(provider, model)
+    if value:
+        return ModelContext(provider, model, value, "curated")
+    if key in known:
+        # A recorded note ("unknown" with a reason) is a better answer than a
+        # generic one; a recorded number was already handled above.
+        return known[key]
+    return ModelContext(
+        provider, model, None, "no published value - set by hand and mark `manual`"
+    )
+
+
+def _provider_models(
+    provider: str,
+    selected: dict[str, frozenset[str]] | None,
+    published: dict[str, int],
+) -> list[str]:
+    """Return the model ids to cover for one provider."""
+    if selected is not None:
+        return sorted(selected.get(provider, frozenset()))
+    if published:
+        return sorted(published)
+    return sorted(
+        model
+        for model in CURATED_CONTEXT_WINDOWS.get(provider, {})
+        if not model.endswith("-")
+    )
+
+
+def _published_windows(
+    provider: str, settings: Settings
+) -> tuple[dict[str, int], bool]:
+    """Return the provider's live catalog, and whether one was readable."""
+    if provider == "open_router":
+        try:
+            rows = openrouter_contexts()
+        except Exception as exc:
+            print(f"  failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return {}, False
+        return {row.model: row.context or 0 for row in rows}, True
+    if provider == "groq":
+        key = settings.groq_api_key.strip()
+        if not key:
+            print("  no GROQ_API_KEY; curated values only", file=sys.stderr)
+            return {}, False
+        try:
+            rows = groq_contexts(key)
+        except Exception as exc:
+            print(f"  failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return {}, False
+        return {row.model: row.context or 0 for row in rows}, True
+    return {}, False
+
+
+# ---------- CLI ----------
+
+
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="fcc-context",
@@ -346,8 +493,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--provider",
         action="append",
-        choices=list(SUPPORTED_PROVIDERS),
-        help="Limit to one provider; repeatable. Defaults to both.",
+        choices=list(measurable_providers()),
+        help="Limit to one provider; repeatable. Defaults to every measurable one.",
     )
     parser.add_argument(
         "--all",
@@ -366,7 +513,17 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--refresh",
         action="store_true",
-        help="Re-probe models already recorded instead of reusing their value.",
+        help="Re-resolve models already recorded instead of reusing their value.",
+    )
+    parser.add_argument(
+        "--probe",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Probe NVIDIA NIM models with one oversized request each, since NIM "
+            "publishes no window. --no-probe resolves only what catalogs and "
+            "the curated table state."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -388,6 +545,13 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         ),
     )
     return parser.parse_args(argv)
+
+
+def _retry_wait_s(note: str) -> float:
+    """Read the provider's retry timing out of a 429 note, capped sensibly."""
+    if match := RETRY_AFTER_NOTE.search(note):
+        return min(float(match.group(1)), MAX_429_WAIT_S)
+    return 30.0
 
 
 def nim_rows(
@@ -419,16 +583,34 @@ def nim_rows(
     todo = [model for model in models if model not in reused_ids]
     print(f"  {len(reused)} already known, probing {len(todo)}", file=sys.stderr)
 
+    if not args.probe:
+        if todo:
+            print("  --no-probe: leaving new models unresolved", file=sys.stderr)
+        return reused + [
+            ModelContext("nvidia_nim", model, None, "not probed (--no-probe)")
+            for model in todo
+        ]
+
+    def probe(model: str, index: int) -> ModelContext:
+        row = probe_nim_model(model, keys[index % len(keys)], timeout=args.timeout)
+        if row.context is None and row.source.startswith("HTTP 429"):
+            # A rate limit is the scan's own fault, not the model's: wait out
+            # what the provider asked and try once more on another key before
+            # recording an unknown that is really a throttle.
+            wait = _retry_wait_s(row.source)
+            print(
+                f"    {model:<48} rate limited; retrying on another key in {wait:.0f}s",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
+            row = probe_nim_model(
+                model, keys[(index + 1) % len(keys)], timeout=args.timeout
+            )
+        return row
+
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        probed = list(
-            pool.map(
-                lambda pair: probe_nim_model(
-                    pair[1], keys[pair[0] % len(keys)], timeout=args.timeout
-                ),
-                enumerate(todo),
-            )
-        )
+        probed = list(pool.map(lambda pair: probe(pair[1], pair[0]), enumerate(todo)))
     for row in probed:
         status = f"{row.context:,}" if row.context else f"? ({row.source})"
         print(f"    {row.model:<48} {status}", file=sys.stderr)
@@ -442,20 +624,21 @@ def selected_models_by_provider(
     """Return the per-provider model ids to cover, or None to cover everything.
 
     An empty mapping means nothing routable belongs to a provider this command
-    can measure. That is worth saying out loud: the alternative is a run that
+    can resolve. That is worth saying out loud: the alternative is a run that
     reports zero models and looks like a bug rather than a routing choice.
     """
     if args.all:
         return None
+    measurable = set(measurable_providers())
     selected: dict[str, set[str]] = {}
     for ref in tuple(args.models) or routable_model_refs(settings):
         provider, _, model = ref.partition("/")
-        if provider in SUPPORTED_PROVIDERS and model:
+        if provider in measurable and model:
             selected.setdefault(provider, set()).add(model)
     if not selected:
         print(
             "None of your pinned models or model routes use a provider this "
-            f"command can measure ({', '.join(SUPPORTED_PROVIDERS)}). "
+            f"command can resolve ({', '.join(measurable_providers())}). "
             "Pass --all or --models to choose explicitly.",
             file=sys.stderr,
         )
@@ -486,31 +669,30 @@ def run(argv: Sequence[str] | None = None) -> int:
     selected = selected_models_by_provider(args, settings)
     if selected == {}:
         return 1
-    providers: Iterable[str] = args.provider or SUPPORTED_PROVIDERS
+    providers: Iterable[str] = args.provider or measurable_providers()
     known = read_existing(output)
     rows: list[ModelContext] = []
 
-    if "open_router" in providers:
-        print("open_router: reading published metadata", file=sys.stderr)
-        try:
-            published = openrouter_contexts()
-        except Exception as exc:
-            print(f"  failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        else:
-            if selected is not None:
-                wanted = selected.get("open_router", frozenset())
-                published = [row for row in published if row.model in wanted]
-            print(f"  {len(published)} models", file=sys.stderr)
-            rows += published
+    for provider in providers:
+        if provider == "nvidia_nim":
+            print("nvidia_nim: no published context length, probing", file=sys.stderr)
+            rows += nim_rows(
+                args,
+                settings,
+                known,
+                (None if selected is None else selected.get("nvidia_nim", frozenset())),
+            )
+            continue
 
-    if "nvidia_nim" in providers:
-        print("nvidia_nim: no published context length, probing", file=sys.stderr)
-        rows += nim_rows(
-            args,
-            settings,
-            known,
-            None if selected is None else selected.get("nvidia_nim", frozenset()),
-        )
+        print(f"{provider}: resolving windows", file=sys.stderr)
+        published, _ = _published_windows(provider, settings)
+        if published:
+            print(f"  {len(published)} models publish a window", file=sys.stderr)
+        models = _provider_models(provider, selected, published)
+        rows += [
+            resolve_model(provider, model, published, known, refresh=args.refresh)
+            for model in models
+        ]
 
     # The table holds exactly what is in scope and nothing else, so it stays a
     # readable list of the models you actually use. Rows this run did not visit

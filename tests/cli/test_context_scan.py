@@ -1,5 +1,6 @@
 """`fcc-context`: which models it covers, and how it merges into the table."""
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -287,10 +288,11 @@ def test_refresh_re_probes_a_recorded_model(
 def test_routing_only_to_unmeasurable_providers_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Someone on DeepSeek or Groq gets a run that covers nothing. Reporting
-    # zero models would read as a bug rather than as a routing choice.
+    # Someone on a provider with no published, curated, or probeable window gets
+    # a run that covers nothing. Reporting zero models would read as a bug
+    # rather than as a routing choice.
     monkeypatch.setattr(
-        context_scan, "Settings", lambda: _settings(model="deepseek/deepseek-chat")
+        context_scan, "Settings", lambda: _settings(model="fireworks/some/model")
     )
 
     exit_code = context_scan.run(["--output", str(tmp_path / "context.md")])
@@ -316,3 +318,196 @@ def test_the_rendered_table_round_trips_through_the_reader(tmp_path: Path) -> No
     assert parsed[("nvidia_nim", "a/one")].context == 1_048_576
     assert parsed[("nvidia_nim", "b/two")].context is None
     assert parsed[("open_router", "c/three:free")].context == 131_072
+
+
+# ---------- layered resolution ----------
+
+
+GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
+
+
+def test_a_curated_provider_resolves_without_any_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # DeepSeek documents its window but publishes nothing; the curated table
+    # fills it in with zero requests spent.
+    output = tmp_path / "context.md"
+    monkeypatch.setattr(
+        context_scan, "Settings", lambda: _settings(model="deepseek/deepseek-chat")
+    )
+
+    exit_code = context_scan.run(["--output", str(output)])
+
+    assert exit_code == 0
+    written = output.read_text(encoding="utf-8")
+    assert "| `deepseek-chat` | 128,000 | curated |" in written
+
+
+def test_groq_publishes_its_windows_when_a_key_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "context.md"
+    monkeypatch.setattr(
+        context_scan,
+        "Settings",
+        lambda: _settings(
+            model="groq/llama-3.3-70b-versatile", GROQ_API_KEY="groq-key"
+        ),
+    )
+    with respx.mock:
+        respx.get(GROQ_MODELS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"id": "llama-3.3-70b-versatile", "context_window": 131072},
+                        {"id": "future/model", "context_window": 65536},
+                    ]
+                },
+            )
+        )
+
+        exit_code = context_scan.run(["--output", str(output)])
+
+    assert exit_code == 0
+    written = output.read_text(encoding="utf-8")
+    assert "| `llama-3.3-70b-versatile` | 131,072 | published |" in written
+
+
+def test_groq_without_a_key_falls_back_to_the_curated_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "context.md"
+    monkeypatch.setattr(
+        context_scan,
+        "Settings",
+        lambda: _settings(model="groq/llama-3.3-70b-versatile"),
+    )
+
+    exit_code = context_scan.run(["--output", str(output)])
+
+    assert exit_code == 0
+    written = output.read_text(encoding="utf-8")
+    assert "| `llama-3.3-70b-versatile` | 131,072 | curated |" in written
+    assert "no GROQ_API_KEY; curated values only" in capsys.readouterr().err
+
+
+def test_a_recorded_number_beats_a_conflicting_published_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The operator corrected a row by hand; the next run must not drag it back
+    # to whatever the catalog claims.
+    output = _table(
+        tmp_path,
+        "## open_router\n\n| Model | Context | Source |\n| --- | ---: | --- |\n"
+        "| `model` | 270,000 | manual |\n",
+    )
+    monkeypatch.setattr(
+        context_scan, "Settings", lambda: _settings(model="open_router/model")
+    )
+    with respx.mock:
+        respx.get(OPENROUTER_URL).mock(
+            return_value=httpx.Response(
+                200, json={"data": [{"id": "model", "context_length": 131072}]}
+            )
+        )
+
+        context_scan.run(["--provider", "open_router", "--output", str(output)])
+
+    written = output.read_text(encoding="utf-8")
+    assert "| `model` | 270,000 | manual |" in written
+
+
+def test_no_probe_leaves_new_models_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "context.md"
+    monkeypatch.setattr(
+        context_scan,
+        "Settings",
+        lambda: _settings(model="nvidia_nim/new/model", NVIDIA_NIM_API_KEYS='["a"]'),
+    )
+    with respx.mock:
+        chat = respx.post(NIM_CHAT_URL).mock(
+            return_value=httpx.Response(400, json={"message": "no"})
+        )
+
+        exit_code = context_scan.run(
+            ["--provider", "nvidia_nim", "--no-probe", "--output", str(output)]
+        )
+
+    assert exit_code == 0
+    assert chat.call_count == 0
+    written = output.read_text(encoding="utf-8")
+    assert "| `new/model` | unknown | not probed (--no-probe) |" in written
+
+
+def test_a_rate_limited_probe_waits_and_retries_on_another_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A 429 is the scan's own pacing, not the model's ceiling: recording it as
+    # an unknown turned a throttle into a permanent wrong answer.
+    monkeypatch.setattr(context_scan.time, "sleep", lambda _s: None)
+    with respx.mock:
+        route = respx.post(NIM_CHAT_URL).mock(
+            side_effect=[
+                httpx.Response(429, headers={"retry-after": "1"}),
+                httpx.Response(
+                    400,
+                    json={
+                        "message": "This model's maximum context length is 262144 tokens."
+                    },
+                ),
+            ]
+        )
+
+        row = context_scan.nim_rows(
+            _nim_args(),
+            _settings(NVIDIA_NIM_API_KEYS='["a", "b"]'),
+            {},
+            frozenset({"model"}),
+        )[0]
+
+    assert route.call_count == 2
+    assert row.context == 262_144
+    assert row.source == "measured"
+
+
+def test_a_model_that_swallows_the_largest_probe_is_not_escalated() -> None:
+    # Escalating past an accepted probe buys real prefill on giant-window
+    # models for a number nothing needs; the rung is recorded as a floor note.
+    with respx.mock:
+        route = respx.post(NIM_CHAT_URL).mock(
+            return_value=httpx.Response(200, json={"choices": [{"index": 0}]})
+        )
+
+        row = context_scan.probe_nim_model("a/model", "key", timeout=5.0)
+
+    assert route.call_count == 1
+    assert row.context is None
+    assert "accepted" in row.source
+
+
+def test_an_unrecognized_rejection_carries_the_providers_own_words() -> None:
+    # When NVIDIA rewords the rejection, the regexes miss and the note is the
+    # only thing that makes the failure fixable.
+    with respx.mock:
+        respx.post(NIM_CHAT_URL).mock(
+            return_value=httpx.Response(
+                400, text="Your prompt exceeds the allowed enormity quota."
+            )
+        )
+
+        row = context_scan.probe_nim_model("a/model", "key", timeout=5.0)
+
+    assert row.context is None
+    assert "enormity quota" in row.source
+
+
+def _nim_args() -> argparse.Namespace:
+    return argparse.Namespace(
+        refresh=False,
+        probe=True,
+        workers=2,
+        timeout=5.0,
+    )
