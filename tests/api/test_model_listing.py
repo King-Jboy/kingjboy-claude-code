@@ -26,7 +26,7 @@ def _settings(
         anthropic_auth_token="",
         deepseek_api_key="deepseek-key",
         open_router_api_key="open-router-key",
-        wafer_api_key="wafer-key",
+        zai_api_key="zai-key",
     )
 
 
@@ -120,23 +120,23 @@ def test_models_list_uses_cached_metadata_for_configured_refs():
     assert ids[0] == "claude-3-freecc-no-thinking/open_router/plain-model"
 
 
-def test_models_list_includes_cached_wafer_models():
+def test_models_list_includes_cached_zai_models():
     app = create_test_app(
         _settings(
-            model="wafer/DeepSeek-V4-Pro",
+            model="zai/glm-4.7",
             model_opus=None,
             model_haiku=None,
         )
     )
-    _cache_models(app, "wafer", "DeepSeek-V4-Pro", "MiniMax-M2.7")
+    _cache_models(app, "zai", "glm-4.7", "glm-4.7-air")
 
     response = TestClient(app).get("/v1/models")
 
     ids = [item["id"] for item in response.json()["data"]]
-    assert "anthropic/wafer/DeepSeek-V4-Pro" in ids
-    assert "claude-3-freecc-no-thinking/wafer/DeepSeek-V4-Pro" in ids
-    assert "anthropic/wafer/MiniMax-M2.7" in ids
-    assert "claude-3-freecc-no-thinking/wafer/MiniMax-M2.7" in ids
+    assert "anthropic/zai/glm-4.7" in ids
+    assert "claude-3-freecc-no-thinking/zai/glm-4.7" in ids
+    assert "anthropic/zai/glm-4.7-air" in ids
+    assert "claude-3-freecc-no-thinking/zai/glm-4.7-air" in ids
 
 
 def test_configured_scope_drops_discovered_models_but_keeps_routes_and_aliases():

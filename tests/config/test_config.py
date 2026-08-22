@@ -59,7 +59,6 @@ class TestSettings:
         assert settings.debug_subagent_stack is False
         assert settings.log_level == "INFO"
         assert settings.open_admin_browser is True
-        assert settings.vertex_location == "global"
 
     def test_open_admin_browser_loads_from_environment(self, monkeypatch):
         from free_claude_code.config.settings import Settings
@@ -231,13 +230,6 @@ class TestSettings:
         monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
         assert Settings().ollama_base_url == "http://localhost:11434/v1"
 
-    def test_ollama_cloud_api_key_from_env(self, monkeypatch):
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("OLLAMA_API_KEY", "ollama-cloud-key")
-
-        assert Settings().ollama_api_key == "ollama-cloud-key"
-
     def test_provider_rate_limit_from_env(self, monkeypatch):
         """PROVIDER_RATE_LIMIT env var is loaded into settings."""
         from free_claude_code.config.settings import Settings
@@ -309,93 +301,6 @@ class TestSettings:
         with pytest.raises(ValidationError, match="cannot inherit"):
             Settings()
 
-    def test_wafer_api_key_from_env(self, monkeypatch):
-        """WAFER_API_KEY env var is loaded into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("WAFER_API_KEY", "wafer-key")
-        settings = Settings()
-        assert settings.wafer_api_key == "wafer-key"
-
-    def test_minimax_settings_from_env(self, monkeypatch):
-        """MiniMax key and proxy env vars load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
-        monkeypatch.setenv("MINIMAX_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-        assert settings.minimax_api_key == "minimax-key"
-        assert settings.minimax_proxy == "http://proxy.test:8080"
-
-    def test_cloudflare_settings_from_env(self, monkeypatch):
-        """Cloudflare token, account, and proxy env vars load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cf-token")
-        monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "cf-account")
-        monkeypatch.setenv("CLOUDFLARE_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-        assert settings.cloudflare_api_token == "cf-token"
-        assert settings.cloudflare_account_id == "cf-account"
-        assert settings.cloudflare_proxy == "http://proxy.test:8080"
-
-    def test_azure_openai_settings_from_env(self, monkeypatch):
-        """Azure OpenAI key, resource URL, and proxy load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
-        monkeypatch.setenv(
-            "AZURE_OPENAI_BASE_URL",
-            "https://resource.openai.azure.com/openai/v1/",
-        )
-        monkeypatch.setenv("AZURE_OPENAI_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-
-        assert settings.azure_openai_api_key == "azure-key"
-        assert settings.azure_openai_base_url == (
-            "https://resource.openai.azure.com/openai/v1/"
-        )
-        assert settings.azure_openai_proxy == "http://proxy.test:8080"
-
-    def test_vertex_settings_from_env(self, monkeypatch):
-        """Vertex project, location, and proxy env vars load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("VERTEX_PROJECT_ID", "vertex-project")
-        monkeypatch.setenv("VERTEX_LOCATION", "us-central1")
-        monkeypatch.setenv("VERTEX_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-        assert settings.vertex_project_id == "vertex-project"
-        assert settings.vertex_location == "us-central1"
-        assert settings.vertex_proxy == "http://proxy.test:8080"
-
-    def test_vercel_settings_from_env(self, monkeypatch):
-        """Vercel AI Gateway key and proxy env vars load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("AI_GATEWAY_API_KEY", "vercel-key")
-        monkeypatch.setenv("VERCEL_AI_GATEWAY_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-        assert settings.vercel_ai_gateway_api_key == "vercel-key"
-        assert settings.vercel_ai_gateway_proxy == "http://proxy.test:8080"
-
-    def test_bedrock_settings_from_official_environment(self, monkeypatch):
-        """Bedrock key, regional base URL, and proxy load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-key")
-        monkeypatch.setenv(
-            "BEDROCK_BASE_URL", "https://bedrock-mantle.us-west-2.api.aws/v1"
-        )
-        monkeypatch.setenv("BEDROCK_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-
-        assert settings.bedrock_api_key == "bedrock-key"
-        assert settings.bedrock_base_url == (
-            "https://bedrock-mantle.us-west-2.api.aws/v1"
-        )
-        assert settings.bedrock_proxy == "http://proxy.test:8080"
-
     def test_huggingface_settings_from_env(self, monkeypatch):
         """Hugging Face key and proxy env vars load into settings."""
         from free_claude_code.config.settings import Settings
@@ -406,36 +311,6 @@ class TestSettings:
         assert settings.huggingface_api_key == "hf-key"
         assert settings.huggingface_proxy == "http://proxy.test:8080"
         assert not hasattr(settings, "hf_token")
-
-    def test_cohere_settings_from_env(self, monkeypatch):
-        """Cohere key and proxy env vars load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("COHERE_API_KEY", "cohere-key")
-        monkeypatch.setenv("COHERE_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-        assert settings.cohere_api_key == "cohere-key"
-        assert settings.cohere_proxy == "http://proxy.test:8080"
-
-    def test_github_models_settings_from_env(self, monkeypatch):
-        """GitHub Models token and proxy env vars load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("GITHUB_MODELS_TOKEN", "github-token")
-        monkeypatch.setenv("GITHUB_MODELS_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-        assert settings.github_models_token == "github-token"
-        assert settings.github_models_proxy == "http://proxy.test:8080"
-
-    def test_sambanova_settings_from_env(self, monkeypatch):
-        """SambaNova key and proxy env vars load into settings."""
-        from free_claude_code.config.settings import Settings
-
-        monkeypatch.setenv("SAMBANOVA_API_KEY", "sambanova-key")
-        monkeypatch.setenv("SAMBANOVA_PROXY", "http://proxy.test:8080")
-        settings = Settings()
-        assert settings.sambanova_api_key == "sambanova-key"
-        assert settings.sambanova_proxy == "http://proxy.test:8080"
 
     def test_legacy_hf_token_env_is_ignored(self, monkeypatch):
         """HF_TOKEN is migrated by startup config migration, not read by Settings."""
@@ -863,30 +738,28 @@ class TestPerModelMapping:
                 "open_router/anthropic/claude-3-haiku",
             ),
             ({"MODEL": "deepseek/deepseek-chat"}, "deepseek/deepseek-chat", None),
-            ({"MODEL": "wafer/DeepSeek-V4-Pro"}, "wafer/DeepSeek-V4-Pro", None),
             (
-                {"MODEL": "cloudflare/@cf/moonshotai/kimi-k2.6"},
-                "cloudflare/@cf/moonshotai/kimi-k2.6",
+                {"MODEL": "huggingface/deepseek-ai/DeepSeek-V3"},
+                "huggingface/deepseek-ai/DeepSeek-V3",
                 None,
             ),
             (
-                {"MODEL": "github_models/openai/gpt-4.1"},
-                "github_models/openai/gpt-4.1",
+                {"MODEL": "kimi/kimi-k2-0905-preview"},
+                "kimi/kimi-k2-0905-preview",
                 None,
             ),
             (
-                {"MODEL": "sambanova/Meta-Llama-3.3-70B-Instruct"},
-                "sambanova/Meta-Llama-3.3-70B-Instruct",
+                {"MODEL": "groq/llama-3.3-70b-versatile"},
+                "groq/llama-3.3-70b-versatile",
+                None,
+            ),
+            (
+                {"MODEL": "zai/glm-4.7"},
+                "zai/glm-4.7",
                 None,
             ),
             ({"MODEL": "lmstudio/qwen2.5-7b"}, "lmstudio/qwen2.5-7b", None),
-            ({"MODEL": "llamacpp/local-model"}, "llamacpp/local-model", None),
             ({"MODEL": "ollama/llama3.1"}, "ollama/llama3.1", None),
-            (
-                {"MODEL": "ollama_cloud/qwen3-coder:480b"},
-                "ollama_cloud/qwen3-coder:480b",
-                None,
-            ),
         ],
     )
     def test_settings_models_from_env(
@@ -1079,57 +952,28 @@ class TestPerModelMapping:
 
         assert parse_provider_type("nvidia_nim/meta/llama") == "nvidia_nim"
         assert parse_provider_type("open_router/deepseek/r1") == "open_router"
-        assert parse_provider_type("mistral/devstral-small-latest") == "mistral"
-        assert (
-            parse_provider_type("mistral_codestral/codestral-latest")
-            == "mistral_codestral"
-        )
         assert parse_provider_type("deepseek/deepseek-chat") == "deepseek"
         assert parse_provider_type("lmstudio/qwen") == "lmstudio"
-        assert parse_provider_type("llamacpp/model") == "llamacpp"
         assert parse_provider_type("ollama/llama3.1") == "ollama"
-        assert parse_provider_type("ollama_cloud/qwen3-coder:480b") == "ollama_cloud"
-        assert parse_provider_type("wafer/DeepSeek-V4-Pro") == "wafer"
-        assert parse_provider_type("minimax/MiniMax-M3") == "minimax"
-        assert (
-            parse_provider_type("cloudflare/@cf/moonshotai/kimi-k2.6") == "cloudflare"
-        )
-        assert parse_provider_type("vercel/openai/gpt-5.5") == "vercel"
         assert (
             parse_provider_type("huggingface/openai/gpt-oss-120b:fastest")
             == "huggingface"
         )
-        assert parse_provider_type("cohere/command-a-plus-05-2026") == "cohere"
-        assert parse_provider_type("github_models/openai/gpt-4.1") == ("github_models")
-        assert parse_provider_type("gemini/models/gemini-3.1-flash-lite") == "gemini"
+        assert parse_provider_type("kimi/kimi-k2-0905-preview") == "kimi"
         assert parse_provider_type("groq/llama-3.3-70b-versatile") == "groq"
-        assert (
-            parse_provider_type("sambanova/Meta-Llama-3.3-70B-Instruct") == "sambanova"
-        )
-        assert parse_provider_type("cerebras/llama3.1-8b") == "cerebras"
+        assert parse_provider_type("zai/glm-4.7") == "zai"
 
     def test_parse_model_name(self):
         """parse_model_name extracts model name from model string."""
 
         assert parse_model_name("nvidia_nim/meta/llama") == "meta/llama"
-        assert parse_model_name("mistral/devstral-small-latest") == (
-            "devstral-small-latest"
-        )
-        assert (
-            parse_model_name("mistral_codestral/codestral-latest") == "codestral-latest"
-        )
         assert parse_model_name("deepseek/deepseek-chat") == "deepseek-chat"
         assert parse_model_name("lmstudio/qwen") == "qwen"
-        assert parse_model_name("llamacpp/model") == "model"
         assert parse_model_name("ollama/llama3.1") == "llama3.1"
-        assert parse_model_name("ollama_cloud/qwen3-coder:480b") == "qwen3-coder:480b"
-        assert parse_model_name("wafer/DeepSeek-V4-Pro") == "DeepSeek-V4-Pro"
-        assert parse_model_name("minimax/MiniMax-M3") == "MiniMax-M3"
-        assert (
-            parse_model_name("cloudflare/@cf/moonshotai/kimi-k2.6")
-            == "@cf/moonshotai/kimi-k2.6"
+        assert parse_model_name("kimi/kimi-k2-0905-preview") == "kimi-k2-0905-preview"
+        assert parse_model_name("groq/llama-3.3-70b-versatile") == (
+            "llama-3.3-70b-versatile"
         )
-        assert parse_model_name("vercel/openai/gpt-5.5") == "openai/gpt-5.5"
         assert (
             parse_model_name("huggingface/openai/gpt-oss-120b:fastest")
             == "openai/gpt-oss-120b:fastest"

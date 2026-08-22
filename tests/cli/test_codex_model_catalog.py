@@ -109,16 +109,16 @@ def test_codex_catalog_preserves_no_thinking_only_entries_for_routing() -> None:
 def test_codex_catalog_ordering_and_priorities_are_deterministic() -> None:
     catalog = build_codex_model_catalog(
         _models_payload(
-            "anthropic/gemini/models/gemini-test",
+            "anthropic/deepseek/deepseek-chat",
             "anthropic/nvidia_nim/nvidia/test",
-            "anthropic/gemini/models/gemini-test",
+            "anthropic/deepseek/deepseek-chat",
             "anthropic/open_router/provider/test",
         )
     )
 
     models = _catalog_models(catalog)
     assert _slugs(catalog) == [
-        "gemini/models/gemini-test",
+        "deepseek/deepseek-chat",
         "nvidia_nim/nvidia/test",
         "open_router/provider/test",
     ]

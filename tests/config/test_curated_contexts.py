@@ -16,10 +16,16 @@ def test_an_unlisted_model_is_unknown_rather_than_guessed() -> None:
 
 
 def test_a_family_prefix_covers_revisions() -> None:
-    # Codestral ships dated revisions beside -latest; the family entry exists
-    # so the table does not chase every version string.
-    assert curated_context_window("mistral_codestral", "codestral-latest") == 256_000
-    assert curated_context_window("mistral_codestral", "codestral-2508") == 256_000
+    # A family entry exists so the table does not chase every version string.
+    from free_claude_code.config import curated_contexts
+
+    original = curated_contexts.CURATED_CONTEXT_WINDOWS
+    curated_contexts.CURATED_CONTEXT_WINDOWS = {"kimi": {"kimi-k2-": 128_000}}
+    try:
+        assert curated_context_window("kimi", "kimi-k2-0905-preview") == 128_000
+        assert curated_context_window("kimi", "kimi-k2-thinking") == 128_000
+    finally:
+        curated_contexts.CURATED_CONTEXT_WINDOWS = original
 
 
 def test_a_specific_entry_would_beat_a_family_prefix() -> None:

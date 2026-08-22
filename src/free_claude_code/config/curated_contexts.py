@@ -22,13 +22,6 @@ CURATED_CONTEXT_WINDOWS: dict[str, dict[str, int]] = {
         "deepseek-chat": 128_000,
         "deepseek-reasoner": 128_000,
     },
-    # Google AI Studio's OpenAI-compatible endpoint publishes no length; the
-    # 2.x generation is 1M input across the board.
-    "gemini": {
-        "gemini-2.5-pro": 1_048_576,
-        "gemini-2.5-flash": 1_048_576,
-        "gemini-2.0-flash": 1_048_576,
-    },
     # Fallback for when no GROQ_API_KEY is set to read the live catalog, which
     # also states these. Only families whose figure is stable are recorded.
     "groq": {
@@ -36,21 +29,6 @@ CURATED_CONTEXT_WINDOWS: dict[str, dict[str, int]] = {
         "llama-3.1-8b-instant": 131_072,
         "openai/gpt-oss-120b": 131_072,
         "openai/gpt-oss-20b": 131_072,
-    },
-    # Cerebras caps the 8B model far below its siblings; the rest of the
-    # family serves 128K.
-    "cerebras": {
-        "llama3.1-8b": 8_192,
-        "llama-3.3-70b": 128_000,
-    },
-    "mistral": {
-        "mistral-large-latest": 128_000,
-        "open-mistral-nemo": 128_000,
-    },
-    # The Codestral endpoint only ever serves this family; revisions keep the
-    # same 256K window.
-    "mistral_codestral": {
-        "codestral-": 256_000,
     },
 }
 

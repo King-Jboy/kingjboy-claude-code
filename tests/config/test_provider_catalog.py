@@ -32,29 +32,7 @@ def test_catalog_local_assignments_are_exact() -> None:
         provider_id
         for provider_id, descriptor in PROVIDER_CATALOG.items()
         if descriptor.local
-    } == {"lmstudio", "llamacpp", "ollama"}
-
-
-def test_ollama_cloud_is_remote_and_distinct_from_local_ollama() -> None:
-    cloud = PROVIDER_CATALOG["ollama_cloud"]
-    local = PROVIDER_CATALOG["ollama"]
-
-    assert cloud.local is False
-    assert cloud.credential_env == "OLLAMA_API_KEY"
-    assert local.local is True
-    assert local.credential_env is None
-
-
-def test_provider_configuration_attrs_cover_multi_field_and_adc_providers() -> None:
-    assert PROVIDER_CATALOG["azure_openai"].configuration_attrs() == (
-        "azure_openai_api_key",
-        "azure_openai_base_url",
-    )
-    assert PROVIDER_CATALOG["cloudflare"].configuration_attrs() == (
-        "cloudflare_api_token",
-        "cloudflare_account_id",
-    )
-    assert PROVIDER_CATALOG["vertex"].configuration_attrs() == ("vertex_project_id",)
+    } == {"lmstudio", "ollama"}
 
 
 def test_every_provider_declares_its_configuration_boundary() -> None:

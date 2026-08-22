@@ -36,7 +36,6 @@ router = APIRouter()
 STATIC_DIR = Path(__file__).resolve().parent / "admin_static"
 LOCAL_PROVIDER_PATHS = {
     "lmstudio": "/models",
-    "llamacpp": "/models",
     "ollama": "/api/tags",
 }
 LOCAL_PROBE_TIMEOUT_SECONDS = 1.5
@@ -330,8 +329,6 @@ def _filtered_values(values: dict[str, Any]) -> dict[str, Any]:
 def _local_provider_url(provider_id: str, values: dict[str, str]) -> str:
     if provider_id == "lmstudio":
         return values.get("LM_STUDIO_BASE_URL", "")
-    if provider_id == "llamacpp":
-        return values.get("LLAMACPP_BASE_URL", "")
     if provider_id == "ollama":
         return values.get("OLLAMA_BASE_URL", "")
     return ""

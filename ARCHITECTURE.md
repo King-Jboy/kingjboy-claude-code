@@ -726,22 +726,6 @@ declared non-SSE media type retains the bounded diagnostic failure path. The
 Admin API exposes only safe connected-account state and never serializes token
 objects.
 
-[providers/google_openai/](src/free_claude_code/providers/google_openai/) owns the
-Google-specific protocol behavior shared by AI Studio and Vertex AI: literal
-Google `extra_body` construction, exclusive reasoning serialization, and
-thought-signature replay. Each concrete profile selects one Google reasoning
-encoder, and that encoder is the sole writer of `reasoning_effort` or
-`extra_body.google.thinking_config` for its request. Caller-provided Google
-thinking configuration is preserved only for provider-default reasoning;
-combining it with FCC reasoning controls fails during deterministic preflight.
-Thought-signature replay is a separate component and never mutates reasoning
-controls. Neither concrete provider imports from the other. AI Studio owns its
-API-key endpoint; [providers/vertex/](src/free_claude_code/providers/vertex/)
-owns project/location endpoint composition, renewable Application Default
-Credentials, and translation of Google's native publisher-model catalog. The
-OpenAI transport receives a callable credential source, so access-token refresh
-does not require rebuilding provider generations or persisting ephemeral tokens.
-
 `OpenAIChatProvider` explicitly implements preflight by constructing the same
 upstream request body it will later stream. `BaseProvider` makes that operation
 abstract, so a new provider cannot silently omit the commit-boundary validation.
@@ -794,10 +778,6 @@ are a separate customer contract; its profile maps provider-neutral reasoning
 to Kimi's named efforts and identifies FCC through the upstream user agent.
 Z.ai is treated as the GLM Coding Plan provider and uses Z.ai's Coding Plan
 OpenAI base.
-Mistral La Plateforme keeps its native `reasoning_effort` and thinking-chunk
-request/stream mapping inside
-[providers/mistral/reasoning.py](src/free_claude_code/providers/mistral/reasoning.py), including its
-fallback retry when an upstream request rejects reasoning fields.
 NIM reasoning budget control is also treated as a provider-owned best-effort
 downgrade: if an upstream NIM deployment rejects explicit budget control, FCC
 retries without the budget while preserving thinking enablement.

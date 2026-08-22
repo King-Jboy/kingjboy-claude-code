@@ -327,17 +327,6 @@ CAPABILITY_CONTRACTS: tuple[CapabilityContract, ...] = (
     ),
     CapabilityContract(
         "local_providers",
-        "llamacpp_openai_chat",
-        "llamacpp_endpoint",
-        "free_claude_code.providers.openai_chat.OpenAIChatProvider",
-        "OpenAI Chat request and llama.cpp URL",
-        "Anthropic SSE converted from OpenAI Chat chunks",
-        "typed provider failure for local upstream errors",
-        ("tests/providers/test_llamacpp.py",),
-        ("test_llamacpp_models_endpoint_when_available",),
-    ),
-    CapabilityContract(
-        "local_providers",
         "ollama_openai_chat",
         "ollama_endpoint",
         "free_claude_code.providers.openai_chat.OpenAIChatProvider",

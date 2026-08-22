@@ -388,19 +388,17 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
     assert "REASONING_FABLE" in keys
     assert "ANTHROPIC_AUTH_TOKEN" in keys
     assert "OPENROUTER_API_KEY" in keys
-    assert "AWS_BEARER_TOKEN_BEDROCK" in keys
-    assert "BEDROCK_BASE_URL" in keys
-    assert "FIREWORKS_API_KEY" in keys
-    assert "CLOUDFLARE_API_TOKEN" in keys
-    assert "CLOUDFLARE_ACCOUNT_ID" in keys
-    assert "GITHUB_MODELS_TOKEN" in keys
-    assert "GEMINI_API_KEY" in keys
+    assert "NVIDIA_NIM_API_KEY" in keys
+    assert "DEEPSEEK_API_KEY" in keys
+    assert "HUGGINGFACE_API_KEY" in keys
+    assert "KIMI_API_KEY" in keys
     assert "GROQ_API_KEY" in keys
-    assert "SAMBANOVA_API_KEY" in keys
+    assert "ZAI_API_KEY" in keys
     assert "TELEGRAM_PROXY_URL" in keys
-    assert "CEREBRAS_API_KEY" in keys
-    assert "OLLAMA_API_KEY" in keys
     assert "FCC_OPEN_BROWSER" in keys
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in keys
+    assert "GEMINI_API_KEY" not in keys
+    assert "MISTRAL_API_KEY" not in keys
     assert "ZAI_BASE_URL" not in keys
     assert "CLAUDE_WORKSPACE" not in keys
     assert "CLAUDE_CLI_BIN" not in keys
@@ -736,56 +734,6 @@ def test_admin_apply_writes_complete_managed_env_and_masks_preview(
     }
 
 
-def test_admin_apply_writes_fireworks_key_and_masks_preview(monkeypatch, tmp_path):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "fireworks/test-model",
-                "FIREWORKS_API_KEY": "fw-secret",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "FIREWORKS_API_KEY=********" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=fireworks/test-model" in text
-    assert "FIREWORKS_API_KEY=fw-secret" in text
-
-
-def test_admin_apply_writes_gemini_key_and_masks_preview(monkeypatch, tmp_path):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "gemini/models/gemini-3.1-flash-lite",
-                "GEMINI_API_KEY": "gm-secret",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "GEMINI_API_KEY=********" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=gemini/models/gemini-3.1-flash-lite" in text
-    assert "GEMINI_API_KEY=gm-secret" in text
-
-
 def test_admin_apply_writes_groq_key_and_masks_preview(monkeypatch, tmp_path):
     _set_home(monkeypatch, tmp_path)
     _clear_process_config(monkeypatch)
@@ -809,111 +757,6 @@ def test_admin_apply_writes_groq_key_and_masks_preview(monkeypatch, tmp_path):
     text = env_file.read_text(encoding="utf-8")
     assert "MODEL=groq/llama-3.3-70b-versatile" in text
     assert "GROQ_API_KEY=gq-secret" in text
-
-
-def test_admin_apply_writes_sambanova_key_and_masks_preview(monkeypatch, tmp_path):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "sambanova/Meta-Llama-3.3-70B-Instruct",
-                "SAMBANOVA_API_KEY": "sn-secret",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "SAMBANOVA_API_KEY=********" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=sambanova/Meta-Llama-3.3-70B-Instruct" in text
-    assert "SAMBANOVA_API_KEY=sn-secret" in text
-
-
-def test_admin_apply_writes_cerebras_key_and_masks_preview(monkeypatch, tmp_path):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "cerebras/llama3.1-8b",
-                "CEREBRAS_API_KEY": "cb-secret",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "CEREBRAS_API_KEY=********" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=cerebras/llama3.1-8b" in text
-    assert "CEREBRAS_API_KEY=cb-secret" in text
-
-
-def test_admin_apply_writes_bedrock_region_config_and_masks_key(monkeypatch, tmp_path):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "bedrock/openai.gpt-oss-120b",
-                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-secret",
-                "BEDROCK_BASE_URL": ("https://bedrock-mantle.us-west-2.api.aws/v1"),
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "AWS_BEARER_TOKEN_BEDROCK=********" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=bedrock/openai.gpt-oss-120b" in text
-    assert "AWS_BEARER_TOKEN_BEDROCK=bedrock-secret" in text
-    assert "BEDROCK_BASE_URL=https://bedrock-mantle.us-west-2.api.aws/v1" in text
-
-
-def test_admin_apply_writes_cloudflare_fields_and_masks_preview(monkeypatch, tmp_path):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "cloudflare/@cf/moonshotai/kimi-k2.6",
-                "CLOUDFLARE_API_TOKEN": "cf-secret",
-                "CLOUDFLARE_ACCOUNT_ID": "cf-account",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "CLOUDFLARE_API_TOKEN=********" in body["env_preview"]
-    assert "CLOUDFLARE_ACCOUNT_ID=cf-account" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=cloudflare/@cf/moonshotai/kimi-k2.6" in text
-    assert "CLOUDFLARE_API_TOKEN=cf-secret" in text
-    assert "CLOUDFLARE_ACCOUNT_ID=cf-account" in text
 
 
 def test_admin_apply_writes_huggingface_key_and_masks_preview(monkeypatch, tmp_path):
@@ -1031,58 +874,6 @@ def test_admin_constructor_captured_setting_requires_restart(
         "admin_url": None,
         "fields": [key],
     }
-
-
-def test_admin_apply_writes_cohere_key_and_masks_preview(monkeypatch, tmp_path):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "cohere/command-a-plus-05-2026",
-                "COHERE_API_KEY": "cohere-secret",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "COHERE_API_KEY=********" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=cohere/command-a-plus-05-2026" in text
-    assert "COHERE_API_KEY=cohere-secret" in text
-
-
-def test_admin_apply_writes_github_models_token_and_masks_preview(
-    monkeypatch, tmp_path
-):
-    _set_home(monkeypatch, tmp_path)
-    _clear_process_config(monkeypatch)
-    app = create_test_app()
-
-    response = _local_client(app).post(
-        "/admin/api/config/apply",
-        json={
-            "values": {
-                "MODEL": "github_models/openai/gpt-4.1",
-                "GITHUB_MODELS_TOKEN": "github-secret",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["applied"] is True
-    assert "GITHUB_MODELS_TOKEN=********" in body["env_preview"]
-    env_file = tmp_path / ".fcc" / ".env"
-    text = env_file.read_text(encoding="utf-8")
-    assert "MODEL=github_models/openai/gpt-4.1" in text
-    assert "GITHUB_MODELS_TOKEN=github-secret" in text
 
 
 def test_admin_apply_preserves_hidden_diagnostics_and_smoke_values(

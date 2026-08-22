@@ -22,7 +22,6 @@ DEFAULT_TARGETS = frozenset(
         "clients",
         "config",
         "extensibility",
-        "llamacpp",
         "lmstudio",
         "messaging",
         "ollama",
@@ -47,37 +46,17 @@ SECRET_KEY_PARTS = ("KEY", "TOKEN", "SECRET", "WEBHOOK", "AUTH")
 
 PROVIDER_SMOKE_DEFAULT_MODELS: dict[str, str] = {
     "nvidia_nim": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
-    "azure_openai": "azure_openai/gpt-5.1",
     # OpenRouter moves models off the free tier without notice; kimi-k2.6:free
     # now 404s with "use the paid slug". Verified free 2026-08-04.
     "open_router": "open_router/google/gemma-4-26b-a4b-it:free",
-    "mistral": "mistral/devstral-small-latest",
-    "mistral_codestral": "mistral_codestral/codestral-latest",
     "deepseek": "deepseek/deepseek-v4-pro",
-    "ollama_cloud": "ollama_cloud/qwen3-coder:480b",
     "lmstudio": "lmstudio/local-model",
-    "llamacpp": "llamacpp/local-model",
     "ollama": "ollama/llama3.1",
-    "kimi_code": "kimi_code/k3",
-    "wafer": "wafer/DeepSeek-V4-Pro",
-    "minimax": "minimax/MiniMax-M3",
-    "opencode": "opencode/gpt-5.3-codex",
-    "opencode_go": "opencode_go/minimax-m2.7",
-    "vercel": "vercel/openai/gpt-5.5",
-    "bedrock": "bedrock/openai.gpt-oss-120b",
     "huggingface": "huggingface/openai/gpt-oss-120b:fastest",
-    "cohere": "cohere/command-a-plus-05-2026",
-    "github_models": "github_models/openai/gpt-4.1",
     "zai": "zai/glm-5.2",
-    "gemini": "gemini/models/gemini-3.1-flash-lite",
-    "vertex": "vertex/google/gemini-3.5-flash",
     "groq": "groq/llama-3.3-70b-versatile",
-    "sambanova": "sambanova/Meta-Llama-3.3-70B-Instruct",
-    "kilo": "kilo/kilo-auto/free",
-    "cerebras": "cerebras/llama3.1-8b",
-    "cloudflare": "cloudflare/@cf/moonshotai/kimi-k2.6",
+    "kimi": "kimi/moonshotai/kimi-k2.6",
 }
-MISTRAL_REASONING_SMOKE_DEFAULT_MODEL = "mistral/mistral-medium-3-5"
 
 NVIDIA_NIM_CLI_DEFAULT_MODELS: tuple[str, ...] = (
     "z-ai/glm-5.2",
@@ -108,7 +87,6 @@ TARGET_REQUIRED_ENV: dict[str, tuple[str, ...]] = {
     "rate_limit": ("configured provider model",),
     "tools": ("configured tool-capable provider model",),
     "lmstudio": ("LM_STUDIO_BASE_URL with a running LM Studio server",),
-    "llamacpp": ("LLAMACPP_BASE_URL with a running llama-server",),
     "ollama": ("OLLAMA_BASE_URL with a running Ollama server",),
     "nvidia_nim_cli": (
         "NVIDIA_NIM_API_KEY",
@@ -231,21 +209,6 @@ class SmokeConfig:
             ProviderModel(provider="open_router", full_model=full_model, source=source)
             for full_model, source in openrouter_free_cli_model_refs().items()
         ]
-
-    def mistral_reasoning_smoke_model(self) -> ProviderModel | None:
-        """Return a Mistral model expected to accept native reasoning input."""
-        if self.provider_matrix and "mistral" not in self.provider_matrix:
-            return None
-        if not self.has_provider_configuration("mistral"):
-            return None
-        override_env = "FCC_SMOKE_MODEL_MISTRAL_REASONING"
-        if override := os.getenv(override_env):
-            full_model = _normalize_provider_model("mistral", override)
-            source = override_env
-        else:
-            full_model = MISTRAL_REASONING_SMOKE_DEFAULT_MODEL
-            source = "mistral_reasoning_default"
-        return ProviderModel(provider="mistral", full_model=full_model, source=source)
 
     def _include_provider_in_smoke(
         self, provider: str, mapped_providers: set[str]

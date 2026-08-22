@@ -15,16 +15,6 @@ def test_lmstudio_models_endpoint_when_available(smoke_config: SmokeConfig) -> N
 
 
 @pytest.mark.live
-@pytest.mark.smoke_target("llamacpp")
-def test_llamacpp_models_endpoint_when_available(smoke_config: SmokeConfig) -> None:
-    first_local_provider_model_id(
-        "llamacpp",
-        smoke_config.settings.llamacpp_base_url,
-        timeout_s=smoke_config.timeout_s,
-    )
-
-
-@pytest.mark.live
 @pytest.mark.smoke_target("ollama")
 def test_ollama_models_endpoint_when_available(smoke_config: SmokeConfig) -> None:
     first_local_provider_model_id(

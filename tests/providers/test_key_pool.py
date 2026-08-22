@@ -1072,21 +1072,23 @@ async def test_the_first_keepalive_lands_on_the_quiet_threshold() -> None:
     # slice the first keepalive lands a full interval past the documented
     # threshold (0.3s of silence would first be reported at 0.4s).
     async def silent_stream():
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.2)
         yield "chunk"
 
     started = time.monotonic()
     pings = [
         time.monotonic() - started
         async for item in provider_module._chunks_with_keepalive(
-            silent_stream(), quiet_after=0.3, interval=0.2
+            silent_stream(), quiet_after=0.5, interval=0.3
         )
         if item is provider_module._KEEPALIVE
     ]
 
     assert pings, "no keepalive fired while the upstream stayed silent"
-    assert 0.22 < pings[0] < 0.36, (
-        f"first keepalive fired at {pings[0]:.3f}s; the threshold is 0.3s"
+    # 0.5s is the threshold; a full interval late would be 0.6s. The margins
+    # absorb timer jitter from a loaded parallel test run.
+    assert 0.42 < pings[0] < 0.58, (
+        f"first keepalive fired at {pings[0]:.3f}s; the threshold is 0.5s"
     )
 
 

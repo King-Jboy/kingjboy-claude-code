@@ -30,7 +30,7 @@ from .env_files import (
 )
 from .model_refs import ModelCatalogScope, parse_model_ref_list
 from .nim import NimSettings
-from .provider_catalog import BEDROCK_DEFAULT_BASE, SUPPORTED_PROVIDER_IDS
+from .provider_catalog import SUPPORTED_PROVIDER_IDS
 from .reasoning import ReasoningPreference
 
 
@@ -87,14 +87,6 @@ class LiteralDotEnvSettingsSource(DotEnvSettingsSource):
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    # ==================== Azure OpenAI ====================
-    azure_openai_api_key: str = Field(
-        default="", validation_alias="AZURE_OPENAI_API_KEY"
-    )
-    azure_openai_base_url: str = Field(
-        default="", validation_alias="AZURE_OPENAI_BASE_URL"
-    )
-
     # ==================== OpenRouter Config ====================
     open_router_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
     # Optional pool of interchangeable keys as a JSON list; overrides the single
@@ -109,89 +101,20 @@ class Settings(BaseSettings):
         default=1000, validation_alias="OPENROUTER_KEY_USAGE_LIMIT"
     )
 
-    # ==================== Mistral La Plateforme ====================
-    mistral_api_key: str = Field(default="", validation_alias="MISTRAL_API_KEY")
-
-    # ==================== Mistral Codestral (codestral.mistral.ai) ====================
-    codestral_api_key: str = Field(default="", validation_alias="CODESTRAL_API_KEY")
-
     # ==================== DeepSeek Config ====================
     deepseek_api_key: str = Field(default="", validation_alias="DEEPSEEK_API_KEY")
 
     # ==================== Kimi Config ====================
     kimi_api_key: str = Field(default="", validation_alias="KIMI_API_KEY")
 
-    # ==================== Kimi Code Subscription ====================
-    kimi_code_api_key: str = Field(default="", validation_alias="KIMI_CODE_API_KEY")
-
-    # ==================== Wafer Config ====================
-    wafer_api_key: str = Field(default="", validation_alias="WAFER_API_KEY")
-
-    # ==================== MiniMax Config ====================
-    minimax_api_key: str = Field(default="", validation_alias="MINIMAX_API_KEY")
-
-    # ==================== OpenCode Zen / OpenCode Go ====================
-    # Same key from opencode.ai/auth; zen uses prefix ``opencode/``, Go uses ``opencode_go/``.
-    opencode_api_key: str = Field(default="", validation_alias="OPENCODE_API_KEY")
-
-    # ==================== Vercel AI Gateway ====================
-    vercel_ai_gateway_api_key: str = Field(
-        default="", validation_alias="AI_GATEWAY_API_KEY"
-    )
-
-    # ==================== Amazon Bedrock Mantle ====================
-    bedrock_api_key: str = Field(
-        default="", validation_alias="AWS_BEARER_TOKEN_BEDROCK"
-    )
-    bedrock_base_url: str = Field(
-        default=BEDROCK_DEFAULT_BASE,
-        validation_alias="BEDROCK_BASE_URL",
-    )
-
     # ==================== Hugging Face Inference Providers ====================
     huggingface_api_key: str = Field(default="", validation_alias="HUGGINGFACE_API_KEY")
-
-    # ==================== Cohere Compatibility API ====================
-    cohere_api_key: str = Field(default="", validation_alias="COHERE_API_KEY")
-
-    # ==================== GitHub Models ====================
-    github_models_token: str = Field(default="", validation_alias="GITHUB_MODELS_TOKEN")
-
-    # ==================== SambaNova Cloud ====================
-    sambanova_api_key: str = Field(default="", validation_alias="SAMBANOVA_API_KEY")
-
-    # ==================== Kilo.ai Config ====================
-    kilo_api_key: str = Field(default="", validation_alias="KILO_API_KEY")
 
     # ==================== Z.ai Config ====================
     zai_api_key: str = Field(default="", validation_alias="ZAI_API_KEY")
 
-    # ==================== Fireworks AI Config ====================
-    fireworks_api_key: str = Field(default="", validation_alias="FIREWORKS_API_KEY")
-
-    # ==================== Cloudflare Workers AI Config ====================
-    cloudflare_api_token: str = Field(
-        default="", validation_alias="CLOUDFLARE_API_TOKEN"
-    )
-    cloudflare_account_id: str = Field(
-        default="", validation_alias="CLOUDFLARE_ACCOUNT_ID"
-    )
-
-    # ==================== Google Gemini (Google AI Studio) ====================
-    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
-
-    # ==================== Google Vertex AI ====================
-    vertex_project_id: str = Field(default="", validation_alias="VERTEX_PROJECT_ID")
-    vertex_location: str = Field(default="global", validation_alias="VERTEX_LOCATION")
-
     # ==================== Groq (OpenAI-compatible) ====================
     groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
-
-    # ==================== Cerebras Inference (OpenAI-compatible) ====================
-    cerebras_api_key: str = Field(default="", validation_alias="CEREBRAS_API_KEY")
-
-    # ==================== Ollama Cloud ====================
-    ollama_api_key: str = Field(default="", validation_alias="OLLAMA_API_KEY")
 
     # ==================== Messaging Platform Selection ====================
     # Valid: "telegram" | "discord" | "none"
@@ -221,12 +144,6 @@ class Settings(BaseSettings):
     lm_studio_base_url: str = Field(
         default="http://localhost:1234/v1",
         validation_alias="LM_STUDIO_BASE_URL",
-    )
-
-    # ==================== Llama.cpp Config ====================
-    llamacpp_base_url: str = Field(
-        default="http://localhost:8080/v1",
-        validation_alias="LLAMACPP_BASE_URL",
     )
 
     # ==================== Ollama Config ====================
@@ -272,37 +189,13 @@ class Settings(BaseSettings):
 
     # ==================== Per-Provider Proxy ====================
     openai_proxy: str = Field(default="", validation_alias="OPENAI_PROXY")
-    azure_openai_proxy: str = Field(default="", validation_alias="AZURE_OPENAI_PROXY")
     nvidia_nim_proxy: str = Field(default="", validation_alias="NVIDIA_NIM_PROXY")
     open_router_proxy: str = Field(default="", validation_alias="OPENROUTER_PROXY")
-    mistral_proxy: str = Field(default="", validation_alias="MISTRAL_PROXY")
-    codestral_proxy: str = Field(default="", validation_alias="CODESTRAL_PROXY")
     lmstudio_proxy: str = Field(default="", validation_alias="LMSTUDIO_PROXY")
-    llamacpp_proxy: str = Field(default="", validation_alias="LLAMACPP_PROXY")
     kimi_proxy: str = Field(default="", validation_alias="KIMI_PROXY")
-    kimi_code_proxy: str = Field(default="", validation_alias="KIMI_CODE_PROXY")
-    wafer_proxy: str = Field(default="", validation_alias="WAFER_PROXY")
-    minimax_proxy: str = Field(default="", validation_alias="MINIMAX_PROXY")
-    opencode_proxy: str = Field(default="", validation_alias="OPENCODE_PROXY")
-    opencode_go_proxy: str = Field(default="", validation_alias="OPENCODE_GO_PROXY")
-    vercel_ai_gateway_proxy: str = Field(
-        default="", validation_alias="VERCEL_AI_GATEWAY_PROXY"
-    )
-    bedrock_proxy: str = Field(default="", validation_alias="BEDROCK_PROXY")
     huggingface_proxy: str = Field(default="", validation_alias="HUGGINGFACE_PROXY")
-    cohere_proxy: str = Field(default="", validation_alias="COHERE_PROXY")
-    github_models_proxy: str = Field(default="", validation_alias="GITHUB_MODELS_PROXY")
-    sambanova_proxy: str = Field(default="", validation_alias="SAMBANOVA_PROXY")
-    kilo_proxy: str = Field(default="", validation_alias="KILO_PROXY")
     zai_proxy: str = Field(default="", validation_alias="ZAI_PROXY")
-    fireworks_proxy: str = Field(default="", validation_alias="FIREWORKS_PROXY")
-    cloudflare_proxy: str = Field(default="", validation_alias="CLOUDFLARE_PROXY")
-    gemini_proxy: str = Field(default="", validation_alias="GEMINI_PROXY")
-    vertex_proxy: str = Field(default="", validation_alias="VERTEX_PROXY")
     groq_proxy: str = Field(default="", validation_alias="GROQ_PROXY")
-    cerebras_proxy: str = Field(default="", validation_alias="CEREBRAS_PROXY")
-    ollama_cloud_proxy: str = Field(default="", validation_alias="OLLAMA_CLOUD_PROXY")
-
     # ==================== Provider Rate Limiting ====================
     provider_rate_limit: int = Field(default=40, validation_alias="PROVIDER_RATE_LIMIT")
     provider_rate_window: int = Field(

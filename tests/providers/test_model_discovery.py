@@ -10,9 +10,9 @@ from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.config.provider_catalog import (
     DEEPSEEK_DEFAULT_BASE,
+    LMSTUDIO_DEFAULT_BASE,
     NVIDIA_NIM_DEFAULT_BASE,
     OPENROUTER_DEFAULT_BASE,
-    WAFER_DEFAULT_BASE,
 )
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
@@ -38,10 +38,8 @@ def _settings(
     nvidia_nim_api_key: str = "",
     open_router_api_key: str = "",
     deepseek_api_key: str = "",
-    wafer_api_key: str = "",
-    opencode_api_key: str = "",
     zai_api_key: str = "",
-    vertex_project_id: str = "",
+    lm_studio_base_url: str = LMSTUDIO_DEFAULT_BASE,
 ) -> Settings:
     return Settings.model_construct(
         model=model,
@@ -52,11 +50,9 @@ def _settings(
         nvidia_nim_api_key=nvidia_nim_api_key,
         open_router_api_key=open_router_api_key,
         deepseek_api_key=deepseek_api_key,
-        wafer_api_key=wafer_api_key,
-        opencode_api_key=opencode_api_key,
         zai_api_key=zai_api_key,
-        vertex_project_id=vertex_project_id,
         log_api_error_tracebacks=False,
+        lm_studio_base_url=lm_studio_base_url,
     )
 
 
@@ -102,11 +98,6 @@ async def test_nim_lists_openai_compatible_model_infos() -> None:
     "provider",
     [
         profiled_provider(
-            "llamacpp",
-            ProviderConfig(api_key="llamacpp", base_url="http://localhost:8080/v1"),
-            admission=immediate_admission(),
-        ),
-        profiled_provider(
             "ollama",
             ProviderConfig(api_key="ollama", base_url="http://localhost:11434"),
             admission=immediate_admission(),
@@ -140,24 +131,6 @@ async def test_deepseek_lists_models_from_root_endpoint() -> None:
         return_value=SimpleNamespace(data=[SimpleNamespace(id="deepseek-chat")]),
     ) as mock_list:
         assert await provider.list_model_infos() == _infos("deepseek-chat")
-
-    mock_list.assert_awaited_once_with()
-
-
-@pytest.mark.asyncio
-async def test_wafer_lists_models_from_default_models_endpoint() -> None:
-    provider = profiled_provider(
-        "wafer",
-        ProviderConfig(api_key="wafer-key", base_url=WAFER_DEFAULT_BASE),
-        admission=immediate_admission(),
-    )
-    with patch.object(
-        provider._client.models,
-        "list",
-        new_callable=AsyncMock,
-        return_value=SimpleNamespace(data=[SimpleNamespace(id="DeepSeek-V4-Pro")]),
-    ) as mock_list:
-        assert await provider.list_model_infos() == _infos("DeepSeek-V4-Pro")
 
     mock_list.assert_awaited_once_with()
 
@@ -284,8 +257,8 @@ async def test_openrouter_model_metadata_rejects_malformed_ids() -> None:
 @pytest.mark.asyncio
 async def test_model_listing_rejects_malformed_payload() -> None:
     provider = profiled_provider(
-        "llamacpp",
-        ProviderConfig(api_key="llamacpp", base_url="http://localhost:8080/v1"),
+        "ollama",
+        ProviderConfig(api_key="ollama", base_url="http://localhost:11434"),
         admission=immediate_admission(),
     )
     with (
@@ -303,8 +276,8 @@ async def test_model_listing_rejects_malformed_payload() -> None:
 @pytest.mark.asyncio
 async def test_model_listing_propagates_upstream_errors() -> None:
     provider = profiled_provider(
-        "llamacpp",
-        ProviderConfig(api_key="llamacpp", base_url="http://localhost:8080/v1"),
+        "ollama",
+        ProviderConfig(api_key="ollama", base_url="http://localhost:11434"),
         admission=immediate_admission(),
     )
     with (
@@ -544,28 +517,6 @@ async def test_runtime_refresh_model_list_cache_uses_configured_remote_keys_and_
         "lmstudio": frozenset({"local-qwen"}),
     }
     assert result.refreshed_provider_ids == ("open_router", "lmstudio")
-    assert result.failed_provider_ids == ()
-
-
-@pytest.mark.asyncio
-async def test_runtime_refresh_model_list_cache_treats_vertex_project_as_configuration() -> (
-    None
-):
-    settings = _settings(
-        model="nvidia_nim/nim-model",
-        vertex_project_id="vertex-project",
-    )
-    runtime = _manager(
-        settings,
-        {"vertex": FakeProvider(_infos("google/gemini-3.5-flash"))},
-    )
-
-    result = await runtime.refresh_model_list_cache()
-
-    assert runtime.cached_model_ids() == {
-        "vertex": frozenset({"google/gemini-3.5-flash"})
-    }
-    assert result.refreshed_provider_ids == ("vertex",)
     assert result.failed_provider_ids == ()
 
 

@@ -12,8 +12,8 @@ A model's window is resolved in layers, cheapest and most trustworthy first:
   ``context_window`` for every model behind its key. Instant, and no request is
   spent.
 * **Curated** - a small table in ``config/curated_contexts.py`` for providers
-  that document windows but never put them on the wire (DeepSeek, Gemini,
-  Cerebras, Mistral, Codestral, and Groq without a key).
+  that document windows but never put them on the wire (DeepSeek, and Groq
+  without a key).
 * **Recorded** - whatever a previous run left in the table. Any row with a
   number - including one written by hand and marked ``manual`` - is kept as-is,
   so later runs never undo the operator's own correction.

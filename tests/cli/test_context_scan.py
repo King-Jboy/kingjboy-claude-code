@@ -292,7 +292,7 @@ def test_routing_only_to_unmeasurable_providers_says_so(
     # a run that covers nothing. Reporting zero models would read as a bug
     # rather than as a routing choice.
     monkeypatch.setattr(
-        context_scan, "Settings", lambda: _settings(model="fireworks/some/model")
+        context_scan, "Settings", lambda: _settings(model="huggingface/some/model")
     )
 
     exit_code = context_scan.run(["--output", str(tmp_path / "context.md")])

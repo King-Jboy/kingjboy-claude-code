@@ -149,34 +149,34 @@ def test_model_router_routes_prefixed_provider_model_directly(settings):
     assert routed.resolved.provider_model_ref == "deepseek/deepseek-chat"
 
 
-def test_model_router_routes_wafer_provider_model_directly(settings):
+def test_model_router_routes_huggingface_provider_model_directly(settings):
     routed = ModelRouter(settings).resolve_messages_request(
         MessagesRequest(
-            model="wafer/DeepSeek-V4-Pro",
+            model="huggingface/deepseek-ai/DeepSeek-V3",
             max_tokens=100,
             messages=[Message(role="user", content="hello")],
         )
     )
 
-    assert routed.request.model == "DeepSeek-V4-Pro"
-    assert routed.resolved.provider_id == "wafer"
-    assert routed.resolved.provider_model == "DeepSeek-V4-Pro"
-    assert routed.resolved.provider_model_ref == "wafer/DeepSeek-V4-Pro"
+    assert routed.request.model == "deepseek-ai/DeepSeek-V3"
+    assert routed.resolved.provider_id == "huggingface"
+    assert routed.resolved.provider_model == "deepseek-ai/DeepSeek-V3"
+    assert routed.resolved.provider_model_ref == "huggingface/deepseek-ai/DeepSeek-V3"
 
 
-def test_model_router_routes_minimax_provider_model_directly(settings):
+def test_model_router_routes_kimi_provider_model_directly(settings):
     routed = ModelRouter(settings).resolve_messages_request(
         MessagesRequest(
-            model="minimax/MiniMax-M3",
+            model="kimi/kimi-k2-0905-preview",
             max_tokens=100,
             messages=[Message(role="user", content="hello")],
         )
     )
 
-    assert routed.request.model == "MiniMax-M3"
-    assert routed.resolved.provider_id == "minimax"
-    assert routed.resolved.provider_model == "MiniMax-M3"
-    assert routed.resolved.provider_model_ref == "minimax/MiniMax-M3"
+    assert routed.request.model == "kimi-k2-0905-preview"
+    assert routed.resolved.provider_id == "kimi"
+    assert routed.resolved.provider_model == "kimi-k2-0905-preview"
+    assert routed.resolved.provider_model_ref == "kimi/kimi-k2-0905-preview"
 
 
 def test_model_router_routes_gateway_encoded_provider_model_directly(settings):

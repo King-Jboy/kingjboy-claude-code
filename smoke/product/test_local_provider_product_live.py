@@ -16,15 +16,6 @@ def test_lmstudio_messages_e2e(smoke_config: SmokeConfig) -> None:
     )
 
 
-@pytest.mark.smoke_target("llamacpp")
-def test_llamacpp_openai_chat_e2e(smoke_config: SmokeConfig) -> None:
-    _local_provider_messages_e2e(
-        smoke_config,
-        provider="llamacpp",
-        base_url=smoke_config.settings.llamacpp_base_url,
-    )
-
-
 @pytest.mark.smoke_target("ollama")
 def test_ollama_openai_chat_e2e(smoke_config: SmokeConfig) -> None:
     _local_provider_messages_e2e(

@@ -59,26 +59,6 @@ def _create_open_router(
     return OpenRouterProvider(config, admission=admission)
 
 
-def _create_mistral(
-    config: ProviderConfig,
-    _settings: Settings,
-    admission: ProviderAdmissionController,
-) -> BaseProvider:
-    from free_claude_code.providers.mistral import MistralProvider
-
-    return MistralProvider(config, admission=admission)
-
-
-def _create_kilo(
-    config: ProviderConfig,
-    _settings: Settings,
-    admission: ProviderAdmissionController,
-) -> BaseProvider:
-    from free_claude_code.providers.kilo import KiloProvider
-
-    return KiloProvider(config, admission=admission)
-
-
 def _create_deepseek(
     config: ProviderConfig,
     _settings: Settings,
@@ -99,66 +79,11 @@ def _create_lmstudio(
     return LMStudioProvider(config, admission=admission)
 
 
-def _create_cloudflare(
-    config: ProviderConfig,
-    settings: Settings,
-    admission: ProviderAdmissionController,
-) -> BaseProvider:
-    from free_claude_code.providers.cloudflare import CloudflareProvider
-
-    return CloudflareProvider(
-        config,
-        account_id=settings.cloudflare_account_id,
-        admission=admission,
-    )
-
-
-def _create_gemini(
-    config: ProviderConfig,
-    _settings: Settings,
-    admission: ProviderAdmissionController,
-) -> BaseProvider:
-    from free_claude_code.providers.gemini import GeminiProvider
-
-    return GeminiProvider(config, admission=admission)
-
-
-def _create_vertex(
-    config: ProviderConfig,
-    settings: Settings,
-    admission: ProviderAdmissionController,
-) -> BaseProvider:
-    from free_claude_code.providers.vertex import VertexProvider
-
-    return VertexProvider(
-        config,
-        project_id=settings.vertex_project_id,
-        location=settings.vertex_location,
-        admission=admission,
-    )
-
-
-def _create_github_models(
-    config: ProviderConfig,
-    _settings: Settings,
-    admission: ProviderAdmissionController,
-) -> BaseProvider:
-    from free_claude_code.providers.github_models import GitHubModelsProvider
-
-    return GitHubModelsProvider(config, admission=admission)
-
-
 _SPECIAL_PROVIDER_FACTORIES: dict[str, ProviderFactory] = {
     "nvidia_nim": _create_nvidia_nim,
     "open_router": _create_open_router,
-    "mistral": _create_mistral,
-    "kilo": _create_kilo,
     "deepseek": _create_deepseek,
     "lmstudio": _create_lmstudio,
-    "cloudflare": _create_cloudflare,
-    "gemini": _create_gemini,
-    "vertex": _create_vertex,
-    "github_models": _create_github_models,
 }
 _INJECTED_PROVIDER_IDS = {"openai"}
 

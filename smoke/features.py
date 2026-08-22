@@ -170,7 +170,6 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
         (
             "test_provider_adaptive_thinking_history_e2e",
             "test_provider_reasoning_tool_continuation_e2e",
-            "test_gemini_thought_signature_tool_continuation_e2e",
             "test_claude_cli_adaptive_thinking_e2e",
             "test_route_reasoning_config_e2e",
         ),
@@ -188,7 +187,6 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
             "test_provider_interleaved_thinking_tool_e2e",
             "test_provider_tool_result_continuation_e2e",
             "test_provider_interrupted_tool_turn_resume_e2e",
-            "test_gemini_thought_signature_tool_continuation_e2e",
             "test_provider_reasoning_tool_continuation_e2e",
         ),
         ("tools", "providers"),
@@ -401,17 +399,6 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
         ("test_lmstudio_messages_e2e",),
         ("lmstudio",),
         ("LM_STUDIO_BASE_URL with running LM Studio server",),
-        "skip when local upstream is unavailable",
-    ),
-    FeatureCoverage(
-        "llamacpp_endpoint",
-        "llama.cpp OpenAI Chat and local no-key operation work when running",
-        "public_surface",
-        ("tests/providers/test_llamacpp.py",),
-        ("test_llamacpp_models_endpoint_when_available",),
-        ("test_llamacpp_openai_chat_e2e",),
-        ("llamacpp",),
-        ("LLAMACPP_BASE_URL with running llama-server",),
         "skip when local upstream is unavailable",
     ),
     FeatureCoverage(
