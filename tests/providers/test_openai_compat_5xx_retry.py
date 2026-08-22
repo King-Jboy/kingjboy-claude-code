@@ -2,10 +2,10 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import openai
 import pytest
-from httpx import Request, Response
+from httpx2 import Request, Response
 
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.core.failures import ExecutionFailure
@@ -27,7 +27,7 @@ def _connection_error(message: str = "connect failed") -> openai.APIConnectionEr
     error = openai.APIConnectionError(
         request=Request("POST", "https://test.api.nvidia.com/v1/chat/completions")
     )
-    error.__cause__ = httpx.ConnectError(message)
+    error.__cause__ = httpx2.ConnectError(message)
     return error
 
 

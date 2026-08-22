@@ -6,6 +6,7 @@ from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import httpx2
 import openai
 import pytest
 from openai import AsyncOpenAI
@@ -815,7 +816,12 @@ async def test_run_key_local_stops_when_the_pool_is_exhausted() -> None:
 
     async def operation(_client: AsyncOpenAI) -> str:
         raise openai.AuthenticationError(
-            "bad key", response=_status_error(401).response, body=None
+            "bad key",
+            response=httpx2.Response(
+                401,
+                request=httpx2.Request("POST", f"{_BASE_URL}/chat/completions"),
+            ),
+            body=None,
         )
 
     with pytest.raises(ExecutionFailure) as error:
