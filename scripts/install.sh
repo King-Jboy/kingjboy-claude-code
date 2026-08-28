@@ -10,7 +10,7 @@ FCC_MACOS_BUNDLE_ID="io.github.alishahryar1.free-claude-code"
 FCC_MACOS_OWNER_FILE=".free-claude-code-owner"
 # Include retired and unused entry points so updates reject older FCC processes
 # before replacement, even ones this installer no longer sets up.
-FCC_COMMANDS="fcc-desktop fcc-server fcc-claude fcc-codex fcc-pi fcc-init free-claude-code"
+FCC_COMMANDS="fcc-desktop fcc-server fcc-claude fcc-codex fcc-pi fcc-hermes fcc-dsh fcc-grok fcc-init free-claude-code"
 
 dry_run=0
 voice_nim=0

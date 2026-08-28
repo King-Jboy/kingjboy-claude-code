@@ -50,6 +50,21 @@ README_FEATURES: tuple[str, ...] = (
 
 FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
     FeatureCoverage(
+        "hermes_cli_integration",
+        "Hermes discovers FCC models and sends Responses through the proxy",
+        "public_surface",
+        (
+            "tests/cli/test_hermes_config.py",
+            "tests/cli/test_hermes_launcher.py",
+        ),
+        ("test_probe_and_models_routes",),
+        (),
+        ("clients",),
+        ("Hermes Agent 0.20.4+",),
+        "skip only when Hermes is absent; the local fake upstream must pass",
+        product_e2e_reason="Hermes CLI headless E2E runs in live smoke suite",
+    ),
+    FeatureCoverage(
         "dsh_cli_integration",
         "DeepSeek Harness discovers FCC models and sends Responses through the proxy",
         "public_surface",
@@ -66,6 +81,21 @@ FEATURE_INVENTORY: tuple[FeatureCoverage, ...] = (
         ("clients",),
         ("DeepSeek Harness 0.1.0-rc.8",),
         "skip only when DSH is absent; the local fake upstream must pass",
+    ),
+    FeatureCoverage(
+        "grok_cli_integration",
+        "Grok Build discovers FCC models and sends Responses through the proxy",
+        "public_surface",
+        (
+            "tests/cli/test_grok_launcher.py",
+            "tests/cli/test_model_catalog.py",
+        ),
+        ("test_probe_and_models_routes",),
+        (),
+        ("clients",),
+        ("Grok Build 1.0.5+",),
+        "skip only when Grok Build is absent; the local fake upstream must pass",
+        product_e2e_reason="Grok Build headless E2E runs in live smoke suite",
     ),
     FeatureCoverage(
         "zero_cost_provider_access",

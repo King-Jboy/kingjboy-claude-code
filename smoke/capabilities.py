@@ -509,6 +509,20 @@ CAPABILITY_CONTRACTS: tuple[CapabilityContract, ...] = (
     ),
     CapabilityContract(
         "cli",
+        "hermes_cli_integration",
+        "hermes_cli_integration",
+        "free_claude_code.cli.launchers.hermes",
+        "Hermes Agent 0.20.4+, live FCC catalog, and process-only managed overlay",
+        "Responses provider scoped to FCC for attached terminal sessions",
+        "version, policy, activation, proxy, or catalog failure exits before inference",
+        (
+            "tests/cli/test_hermes_config.py",
+            "tests/cli/test_hermes_launcher.py",
+        ),
+        (),
+    ),
+    CapabilityContract(
+        "cli",
         "dsh_cli_integration",
         "dsh_cli_integration",
         "free_claude_code.cli.launchers.dsh",
@@ -524,6 +538,20 @@ CAPABILITY_CONTRACTS: tuple[CapabilityContract, ...] = (
             "test_dsh_cli_terminal_failure_e2e",
             "test_dsh_cli_web_startup_e2e",
         ),
+    ),
+    CapabilityContract(
+        "cli",
+        "grok_cli_integration",
+        "grok_cli_integration",
+        "free_claude_code.cli.launchers.grok",
+        "Grok Build 1.0.5+, live FCC Responses catalog, and child-only config",
+        "Responses route scoped to FCC for attached TUI, headless, and ACP sessions",
+        "version, route conflict, proxy, or catalog failure exits before inference",
+        (
+            "tests/cli/test_grok_launcher.py",
+            "tests/cli/test_model_catalog.py",
+        ),
+        (),
     ),
     CapabilityContract(
         "extensibility",

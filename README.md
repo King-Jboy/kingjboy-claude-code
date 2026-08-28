@@ -50,7 +50,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 
 ## What You Get
 
-- Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, or Pi with `fcc-pi`.
+- Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, Pi with `fcc-pi`, Hermes with `fcc-hermes`, DeepSeek Harness with `fcc-dsh`, or Grok Build with `fcc-grok`.
 - Run FCC in the background from a desktop launcher on Windows or macOS.
 - Switch among 14 cloud and local providers from the Admin UI.
 - Use each coding agent's native model picker.
@@ -398,13 +398,14 @@ It exits non-zero if anything failed, so you can gate a script on it. Doctor nev
 
 ## Connect Your Client
 
-> **DeepSeek Harness:** this fork also ships `fcc-dsh`, a launcher for the
-> [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Hash) coding agent
-> (`npm install -g @deepseek-ai/dsh@0.1.0-rc.8`). Run `fcc-dsh` and it points
-> DSH's Responses provider at your proxy. The bundled installer does not
-> install DSH itself.
+> **Other Coding Agents:** this fork also ships launchers for additional coding agents:
+> - **Hermes Agent (`fcc-hermes`)**: Attached terminal sessions for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+> - **DeepSeek Harness (`fcc-dsh`)**: Points [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Hash) at your FCC proxy (`npm install -g @deepseek-ai/dsh@0.1.0-rc.8`).
+> - **Grok Build (`fcc-grok`)**: Attached terminal sessions for [Grok Build](https://github.com/xai-org/grok-build).
+> 
+> The bundled installer does not install these harnesses automatically; install the upstream CLI and run the respective wrapper.
 
-For terminal use, start `fcc-server`, then run `fcc-claude`, `fcc-codex`, or `fcc-pi`. Use the guides below for editor integrations.
+For terminal use, start `fcc-server`, then run `fcc-claude`, `fcc-codex`, `fcc-pi`, `fcc-hermes`, `fcc-dsh`, or `fcc-grok`. Use the guides below for editor integrations.
 
 <details>
 <summary><strong>Chrome side panel</strong></summary>
