@@ -36,9 +36,11 @@ class ResponsesStreamAssembler:
         self._request = request
         self._response_id = new_response_id()
         self._created_at = int(time.time())
+        self._sequence_number = 0
         self._ledger = ResponsesOutputLedger()
         self._completer = ResponseBlockCompleter(
             self._ledger,
+            next_sequence_number=self._next_sequence_number,
             on_invalid_function_call=self._fail_invalid_function_call,
         )
         self._started = False
@@ -46,6 +48,11 @@ class ResponsesStreamAssembler:
         self._provisional_error: dict[str, Any] | None = None
         self.terminal = False
         self.final_response: dict[str, Any] | None = None
+
+    def _next_sequence_number(self) -> int:
+        seq = self._sequence_number
+        self._sequence_number += 1
+        return seq
 
     def process_anthropic_event(self, event: AnthropicSseEvent) -> list[str]:
         if self.terminal:
@@ -116,7 +123,11 @@ class ResponsesStreamAssembler:
             chunks.extend(self._finish_incomplete_response())
             return chunks
         self.final_response = self.response_payload(status="completed")
-        chunks.append(events.response_completed(self.final_response))
+        chunks.append(
+            events.response_completed(
+                self.final_response, sequence_number=self._next_sequence_number()
+            )
+        )
         self.terminal = True
         return chunks
 
@@ -140,7 +151,11 @@ class ResponsesStreamAssembler:
         self._provisional_error = None
         self.final_response = self.response_payload(status="failed", error=error)
         self.terminal = True
-        return [events.response_failed(self.final_response)]
+        return [
+            events.response_failed(
+                self.final_response, sequence_number=self._next_sequence_number()
+            )
+        ]
 
     def _finish_incomplete_response(self) -> list[str]:
         self.final_response = self.response_payload(
@@ -148,13 +163,22 @@ class ResponsesStreamAssembler:
             incomplete_details={"reason": "max_output_tokens"},
         )
         self.terminal = True
-        return [events.response_incomplete(self.final_response)]
+        return [
+            events.response_incomplete(
+                self.final_response, sequence_number=self._next_sequence_number()
+            )
+        ]
 
     def _ensure_started(self) -> list[str]:
         if self._started:
             return []
         self._started = True
-        return [events.response_created(self.response_payload(status="in_progress"))]
+        return [
+            events.response_created(
+                self.response_payload(status="in_progress"),
+                sequence_number=self._next_sequence_number(),
+            )
+        ]
 
     def _handle_content_block_start(self, data: Mapping[str, Any]) -> list[str]:
         block = data.get("content_block")
@@ -267,8 +291,14 @@ class ResponsesStreamAssembler:
         }
         chunks.extend(
             [
-                events.output_item_added(output_index, item),
-                events.content_part_added(state.item_id, output_index),
+                events.output_item_added(
+                    output_index, item, sequence_number=self._next_sequence_number()
+                ),
+                events.content_part_added(
+                    state.item_id,
+                    output_index,
+                    sequence_number=self._next_sequence_number(),
+                ),
             ]
         )
         return chunks, state
@@ -291,6 +321,7 @@ class ResponsesStreamAssembler:
             events.output_item_added(
                 output_index,
                 reasoning_output_item(state, status="in_progress"),
+                sequence_number=self._next_sequence_number(),
             )
         )
         return chunks, state
@@ -322,6 +353,7 @@ class ResponsesStreamAssembler:
             events.output_item_added(
                 state.output_index,
                 tool_item(state, status="in_progress"),
+                sequence_number=self._next_sequence_number(),
             )
         )
         return chunks
@@ -330,13 +362,27 @@ class ResponsesStreamAssembler:
         if not text:
             return []
         state.text_parts.append(text)
-        return [events.output_text_delta(state.item_id, state.output_index, text)]
+        return [
+            events.output_text_delta(
+                state.item_id,
+                state.output_index,
+                text,
+                sequence_number=self._next_sequence_number(),
+            )
+        ]
 
     def _emit_reasoning_delta(self, state: ReasoningBlockState, text: str) -> list[str]:
         if not text:
             return []
         state.text_parts.append(text)
-        return [events.reasoning_text_delta(state.item_id, state.output_index, text)]
+        return [
+            events.reasoning_text_delta(
+                state.item_id,
+                state.output_index,
+                text,
+                sequence_number=self._next_sequence_number(),
+            )
+        ]
 
     def _complete_existing_block(self, index: int) -> list[str]:
         existing = self._ledger.pop_active_block(index)

@@ -179,6 +179,9 @@ async def test_anthropic_text_stream_converts_to_responses_sse() -> None:
         "response.content_part.added",
     ]
     assert "response.output_text.delta" in event_names
+    assert [event.data["sequence_number"] for event in events] == list(
+        range(len(events))
+    )
     assert events[-1].event == "response.completed"
     completed = events[-1].data["response"]
     assert completed["output"][0]["content"][0]["text"] == "Hello Codex"

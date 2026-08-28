@@ -24,10 +24,15 @@ class ResponseBlockCompleter:
         self,
         ledger: ResponsesOutputLedger,
         *,
+        next_sequence_number: Callable[[], int] | None = None,
         on_invalid_function_call: InvalidFunctionCallHandler,
     ) -> None:
         self._ledger = ledger
+        self._next_sequence_number = next_sequence_number or (lambda: 0)
         self._on_invalid_function_call = on_invalid_function_call
+
+    def _seq(self) -> int:
+        return self._next_sequence_number()
 
     def complete_block(self, state: BlockState) -> list[str]:
         if isinstance(state, TextBlockState):
@@ -41,9 +46,15 @@ class ResponseBlockCompleter:
         item = message_item(state.item_id, text, "completed")
         self._ledger.commit_output(state.output_index, item)
         return [
-            events.output_text_done(state.item_id, state.output_index, text),
-            events.content_part_done(state.item_id, state.output_index, text),
-            events.output_item_done(state.output_index, item),
+            events.output_text_done(
+                state.item_id, state.output_index, text, sequence_number=self._seq()
+            ),
+            events.content_part_done(
+                state.item_id, state.output_index, text, sequence_number=self._seq()
+            ),
+            events.output_item_done(
+                state.output_index, item, sequence_number=self._seq()
+            ),
         ]
 
     def _complete_reasoning_block(self, state: ReasoningBlockState) -> list[str]:
@@ -54,9 +65,15 @@ class ResponseBlockCompleter:
         if text:
             self._ledger.add_reasoning_text(text)
             chunks.append(
-                events.reasoning_text_done(state.item_id, state.output_index, text)
+                events.reasoning_text_done(
+                    state.item_id, state.output_index, text, sequence_number=self._seq()
+                )
             )
-        chunks.append(events.output_item_done(state.output_index, item))
+        chunks.append(
+            events.output_item_done(
+                state.output_index, item, sequence_number=self._seq()
+            )
+        )
         return chunks
 
     def _complete_tool_block(self, state: ToolBlockState) -> list[str]:
@@ -73,15 +90,23 @@ class ResponseBlockCompleter:
         if arguments:
             chunks.append(
                 events.function_call_arguments_delta(
-                    state.item_id, state.output_index, arguments
+                    state.item_id,
+                    state.output_index,
+                    arguments,
+                    sequence_number=self._seq(),
                 )
             )
         chunks.extend(
             [
                 events.function_call_arguments_done(
-                    state.item_id, state.output_index, arguments
+                    state.item_id,
+                    state.output_index,
+                    arguments,
+                    sequence_number=self._seq(),
                 ),
-                events.output_item_done(state.output_index, item),
+                events.output_item_done(
+                    state.output_index, item, sequence_number=self._seq()
+                ),
             ]
         )
         return chunks
@@ -96,15 +121,23 @@ class ResponseBlockCompleter:
         if input_text:
             chunks.append(
                 events.custom_tool_call_input_delta(
-                    state.item_id, state.output_index, input_text
+                    state.item_id,
+                    state.output_index,
+                    input_text,
+                    sequence_number=self._seq(),
                 )
             )
         chunks.extend(
             [
                 events.custom_tool_call_input_done(
-                    state.item_id, state.output_index, input_text
+                    state.item_id,
+                    state.output_index,
+                    input_text,
+                    sequence_number=self._seq(),
                 ),
-                events.output_item_done(state.output_index, item),
+                events.output_item_done(
+                    state.output_index, item, sequence_number=self._seq()
+                ),
             ]
         )
         return chunks
