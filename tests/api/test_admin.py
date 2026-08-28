@@ -394,10 +394,12 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
     assert "KIMI_API_KEY" in keys
     assert "GROQ_API_KEY" in keys
     assert "ZAI_API_KEY" in keys
+    assert "GEMINI_API_KEY" in keys
+    assert "AWS_BEARER_TOKEN_BEDROCK" in keys
+    assert "TOKENROUTER_API_KEY" in keys
+    assert "NARAROUTE_API_KEY" in keys
     assert "TELEGRAM_PROXY_URL" in keys
     assert "FCC_OPEN_BROWSER" in keys
-    assert "AWS_BEARER_TOKEN_BEDROCK" not in keys
-    assert "GEMINI_API_KEY" not in keys
     assert "MISTRAL_API_KEY" not in keys
     assert "ZAI_BASE_URL" not in keys
     assert "CLAUDE_WORKSPACE" not in keys

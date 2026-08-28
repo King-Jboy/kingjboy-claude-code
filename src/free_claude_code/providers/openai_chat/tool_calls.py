@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -189,9 +189,13 @@ class OpenAIToolCallAssembler:
     """Assemble OpenAI tool-call deltas into Anthropic SSE tool blocks."""
 
     def __init__(
-        self, *, record_extra_content: RecordToolExtraContent | None = None
+        self,
+        *,
+        reserved_tool_ids: Iterable[str] = (),
+        record_extra_content: RecordToolExtraContent | None = None,
     ) -> None:
         self._record_extra_content = record_extra_content
+        self._reserved_tool_ids = {tool_id for tool_id in reserved_tool_ids if tool_id}
 
     def process_tool_call(
         self,
@@ -244,7 +248,17 @@ class OpenAIToolCallAssembler:
         if not state or not state.started:
             name_ok = bool((resolved_name or "").strip())
             if name_ok:
-                tool_id = str(resolved_id) if resolved_id else f"tool_{uuid.uuid4()}"
+                candidate_id = str(resolved_id) if resolved_id else None
+                if (
+                    candidate_id is not None
+                    and candidate_id not in self._reserved_tool_ids
+                ):
+                    tool_id = candidate_id
+                else:
+                    tool_id = f"tool_{uuid.uuid4()}"
+                    while tool_id in self._reserved_tool_ids:
+                        tool_id = f"tool_{uuid.uuid4()}"
+                self._reserved_tool_ids.add(tool_id)
                 display_name = (resolved_name or "").strip() or "tool_call"
                 start_extra_content = state.extra_content if state else extra_content
                 if start_extra_content:

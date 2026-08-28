@@ -90,6 +90,11 @@ def _policy(
 
 
 OPENAI_CHAT_PROFILES: dict[str, OpenAIChatProfile] = {
+    "bedrock": OpenAIChatProfile(
+        _policy("BEDROCK", ReasoningReplayMode.THINK_TAGS),
+        NO_REASONING,
+        normalize_base_url=True,
+    ),
     "huggingface": OpenAIChatProfile(
         _policy(
             "HUGGINGFACE",
@@ -157,5 +162,23 @@ OPENAI_CHAT_PROFILES: dict[str, OpenAIChatProfile] = {
         ),
         normalize_base_url=True,
         reasoning_delta_field="reasoning",
+    ),
+    "nararoute": OpenAIChatProfile(
+        _policy(
+            "NARAROUTE",
+            ReasoningReplayMode.DISABLED,
+            default_max_tokens=ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
+        ),
+        NamedEffortReasoning(
+            _LOW_MEDIUM_HIGH,
+            enabled_value="medium",
+        ),
+    ),
+    "tokenrouter": OpenAIChatProfile(
+        _policy(
+            "TOKENROUTER",
+            ReasoningReplayMode.DISABLED,
+        ),
+        NO_REASONING,
     ),
 }

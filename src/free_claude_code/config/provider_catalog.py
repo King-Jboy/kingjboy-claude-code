@@ -25,6 +25,14 @@ HUGGINGFACE_DEFAULT_BASE = "https://router.huggingface.co/v1"
 ZAI_DEFAULT_BASE = "https://api.z.ai/api/coding/paas/v4"
 GROQ_DEFAULT_BASE = "https://api.groq.com/openai/v1"
 OPENAI_CODEX_DEFAULT_BASE = "https://chatgpt.com/backend-api/codex"
+# Amazon Bedrock Mantle OpenAI-compatible endpoint.
+BEDROCK_DEFAULT_BASE = "https://bedrock-mantle.us-east-1.api.aws/v1"
+# Google AI Studio Gemini API OpenAI-compat layer.
+GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+# TokenRouter OpenAI-compatible Chat Completions gateway.
+TOKENROUTER_DEFAULT_BASE = "https://api.tokenrouter.com/v1"
+# NaraRoute OpenAI-compatible Chat Completions gateway.
+NARAROUTE_DEFAULT_BASE = "https://router.bynara.id/v1"
 
 
 class ProviderAuthKind(StrEnum):
@@ -146,6 +154,45 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
         credential_attr="zai_api_key",
         default_base_url=ZAI_DEFAULT_BASE,
         proxy_attr="zai_proxy",
+    ),
+    "gemini": ProviderDescriptor(
+        provider_id="gemini",
+        display_name="Gemini",
+        credential_env="GEMINI_API_KEY",
+        credential_url="https://aistudio.google.com/apikey",
+        credential_attr="gemini_api_key",
+        default_base_url=GEMINI_DEFAULT_BASE,
+        proxy_attr="gemini_proxy",
+    ),
+    "bedrock": ProviderDescriptor(
+        provider_id="bedrock",
+        display_name="Amazon Bedrock",
+        credential_env="AWS_BEARER_TOKEN_BEDROCK",
+        credential_url="https://console.aws.amazon.com/bedrock/",
+        credential_attr="bedrock_api_key",
+        default_base_url=BEDROCK_DEFAULT_BASE,
+        base_url_attr="bedrock_base_url",
+        proxy_attr="bedrock_proxy",
+    ),
+    "tokenrouter": ProviderDescriptor(
+        provider_id="tokenrouter",
+        display_name="TokenRouter",
+        credential_env="TOKENROUTER_API_KEY",
+        credential_url="https://www.tokenrouter.com/",
+        credential_attr="tokenrouter_api_key",
+        default_base_url=TOKENROUTER_DEFAULT_BASE,
+        base_url_attr="tokenrouter_base_url",
+        proxy_attr="tokenrouter_proxy",
+    ),
+    "nararoute": ProviderDescriptor(
+        provider_id="nararoute",
+        display_name="NaraRoute",
+        credential_env="NARAROUTE_API_KEY",
+        credential_url="https://router.bynara.id/keys",
+        credential_attr="nararoute_api_key",
+        default_base_url=NARAROUTE_DEFAULT_BASE,
+        base_url_attr="nararoute_base_url",
+        proxy_attr="nararoute_proxy",
     ),
     "lmstudio": ProviderDescriptor(
         provider_id="lmstudio",

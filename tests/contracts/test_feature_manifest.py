@@ -5,6 +5,7 @@ from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
 from free_claude_code.messaging.platforms.factory import create_messaging_components
 from free_claude_code.providers.base import BaseProvider
 from free_claude_code.providers.deepseek import DeepSeekProvider
+from free_claude_code.providers.gemini import GeminiProvider
 from free_claude_code.providers.lmstudio import LMStudioProvider
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
 from free_claude_code.providers.open_router import OpenRouterProvider
@@ -92,6 +93,7 @@ def test_provider_and_platform_registries_include_advertised_builtins() -> None:
         "nvidia_nim": NvidiaNimProvider,
         "open_router": OpenRouterProvider,
         "deepseek": DeepSeekProvider,
+        "gemini": GeminiProvider,
         "lmstudio": LMStudioProvider,
     }
     assert set(OPENAI_CHAT_PROFILES).isdisjoint(specialized_provider_classes)

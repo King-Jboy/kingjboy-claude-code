@@ -335,11 +335,38 @@ class OpenAIChatProvider(BaseProvider):
         reasoning: ReasoningPolicy = DEFAULT_REASONING_POLICY,
     ) -> dict[str, Any]:
         """Build a provider request from the immutable profile."""
-        return build_openai_chat_request_body(
+        body = build_openai_chat_request_body(
             request,
             reasoning=reasoning,
             policy=self._profile.request_policy,
             postprocessors=self._profile.request_postprocessors,
+        )
+        return self._finalize_chat_body(body, reasoning=reasoning)
+
+    def _finalize_chat_body(
+        self,
+        body: dict[str, Any],
+        *,
+        reasoning: ReasoningPolicy,
+    ) -> dict[str, Any]:
+        """Hook for specialized provider adapters to finalize the chat request body."""
+        return body
+
+    def stream_messages(
+        self,
+        request: MessagesRequest,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+        response_model: str | None = None,
+        reasoning: ReasoningPolicy = DEFAULT_REASONING_POLICY,
+    ) -> AsyncIterator[str]:
+        return self.stream_response(
+            request,
+            input_tokens=input_tokens,
+            request_id=request_id,
+            response_model=response_model,
+            reasoning=reasoning,
         )
 
     def preflight_stream(
@@ -534,6 +561,26 @@ class OpenAIChatProvider(BaseProvider):
         return runner.run()
 
 
+def _reserved_anthropic_tool_ids(request: MessagesRequest) -> frozenset[str]:
+    """Return prior tool-use IDs that generated output must not reuse."""
+    ids: set[str] = set()
+    for message in request.messages:
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool_id = block.get("id")
+                    if isinstance(tool_id, str) and tool_id.strip():
+                        ids.add(tool_id)
+                elif (
+                    hasattr(block, "id") and getattr(block, "type", None) == "tool_use"
+                ):
+                    tool_id = getattr(block, "id", None)
+                    if isinstance(tool_id, str) and tool_id.strip():
+                        ids.add(tool_id)
+    return frozenset(ids)
+
+
 class _OpenAIChatStreamRunner:
     """Own one OpenAI-chat request's stream, parsing, and recovery state."""
 
@@ -558,7 +605,8 @@ class _OpenAIChatStreamRunner:
         self._tool_names = OpenAIToolNameCodec.from_request(request)
         self._message_id = f"msg_{uuid.uuid4()}"
         self._tool_calls = OpenAIToolCallAssembler(
-            record_extra_content=provider._record_tool_call_extra_content
+            reserved_tool_ids=_reserved_anthropic_tool_ids(request),
+            record_extra_content=provider._record_tool_call_extra_content,
         )
 
     async def run(self) -> AsyncIterator[str]:

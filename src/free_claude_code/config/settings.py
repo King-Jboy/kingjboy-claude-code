@@ -30,7 +30,12 @@ from .env_files import (
 )
 from .model_refs import ModelCatalogScope, parse_model_ref_list
 from .nim import NimSettings
-from .provider_catalog import SUPPORTED_PROVIDER_IDS
+from .provider_catalog import (
+    BEDROCK_DEFAULT_BASE,
+    NARAROUTE_DEFAULT_BASE,
+    SUPPORTED_PROVIDER_IDS,
+    TOKENROUTER_DEFAULT_BASE,
+)
 from .reasoning import ReasoningPreference
 
 
@@ -116,6 +121,29 @@ class Settings(BaseSettings):
     # ==================== Groq (OpenAI-compatible) ====================
     groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
 
+    # ==================== Google Gemini / Google AI Studio ====================
+    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+
+    # ==================== Amazon Bedrock Mantle ====================
+    bedrock_api_key: str = Field(
+        default="", validation_alias="AWS_BEARER_TOKEN_BEDROCK"
+    )
+    bedrock_base_url: str = Field(
+        default=BEDROCK_DEFAULT_BASE, validation_alias="BEDROCK_BASE_URL"
+    )
+
+    # ==================== TokenRouter Config ====================
+    tokenrouter_api_key: str = Field(default="", validation_alias="TOKENROUTER_API_KEY")
+    tokenrouter_base_url: str = Field(
+        default=TOKENROUTER_DEFAULT_BASE, validation_alias="TOKENROUTER_BASE_URL"
+    )
+
+    # ==================== NaraRoute Config ====================
+    nararoute_api_key: str = Field(default="", validation_alias="NARAROUTE_API_KEY")
+    nararoute_base_url: str = Field(
+        default=NARAROUTE_DEFAULT_BASE, validation_alias="NARAROUTE_BASE_URL"
+    )
+
     # ==================== Messaging Platform Selection ====================
     # Valid: "telegram" | "discord" | "none"
     messaging_platform: str = Field(
@@ -196,6 +224,10 @@ class Settings(BaseSettings):
     huggingface_proxy: str = Field(default="", validation_alias="HUGGINGFACE_PROXY")
     zai_proxy: str = Field(default="", validation_alias="ZAI_PROXY")
     groq_proxy: str = Field(default="", validation_alias="GROQ_PROXY")
+    gemini_proxy: str = Field(default="", validation_alias="GEMINI_PROXY")
+    bedrock_proxy: str = Field(default="", validation_alias="BEDROCK_PROXY")
+    tokenrouter_proxy: str = Field(default="", validation_alias="TOKENROUTER_PROXY")
+    nararoute_proxy: str = Field(default="", validation_alias="NARAROUTE_PROXY")
     # ==================== Provider Rate Limiting ====================
     provider_rate_limit: int = Field(default=40, validation_alias="PROVIDER_RATE_LIMIT")
     provider_rate_window: int = Field(

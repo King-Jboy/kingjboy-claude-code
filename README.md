@@ -52,7 +52,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 
 - Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, or Pi with `fcc-pi`.
 - Run FCC in the background from a desktop launcher on Windows or macOS.
-- Switch among 10 cloud and local providers from the Admin UI.
+- Switch among 14 cloud and local providers from the Admin UI.
 - Use each coding agent's native model picker.
 - Route Fable, Opus, Sonnet, Haiku, and fallback traffic to different models.
 - Pool many NVIDIA NIM or OpenRouter keys into one self-healing virtual key.
@@ -183,6 +183,10 @@ fcc-codex exec "hello"
 | [Kimi API](https://platform.moonshot.ai/console/api-keys) | `KIMI_API_KEY` | `kimi/kimi-k2.5` |
 | [Groq](https://console.groq.com/keys) | `GROQ_API_KEY` | `groq/llama-3.3-70b-versatile` |
 | [Z.ai](https://z.ai/manage-apikey/apikey-list) | `ZAI_API_KEY` | `zai/glm-5.2` |
+| [Gemini](https://aistudio.google.com/apikey) | `GEMINI_API_KEY` | `gemini/gemini-2.5-flash` |
+| [Amazon Bedrock](https://console.aws.amazon.com/bedrock/) | `AWS_BEARER_TOKEN_BEDROCK` | `bedrock/openai.gpt-oss-120b` |
+| [TokenRouter](https://www.tokenrouter.com/) | `TOKENROUTER_API_KEY` | `tokenrouter/openai/gpt-4o` |
+| [NaraRoute](https://router.bynara.id/keys) | `NARAROUTE_API_KEY` | `nararoute/openai/gpt-4o` |
 | [LM Studio](https://lmstudio.ai/) | `LM_STUDIO_BASE_URL` | `lmstudio/<model-id>` |
 | [Ollama](https://ollama.com/) | `OLLAMA_BASE_URL` | `ollama/<model-tag>` |
 

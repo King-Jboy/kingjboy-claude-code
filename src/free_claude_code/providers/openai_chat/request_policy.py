@@ -155,6 +155,11 @@ def _apply_common_openai_chat_policy(
     for key in policy.unsupported_body_keys:
         body.pop(key, None)
 
+    extra_body = body.get("extra_body")
+    if isinstance(extra_body, dict):
+        for key in policy.unsupported_body_keys:
+            extra_body.pop(key, None)
+
     if policy.max_tokens_field == "max_completion_tokens":
         _normalize_max_completion_tokens(body)
 

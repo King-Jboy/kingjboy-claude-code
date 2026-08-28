@@ -79,11 +79,22 @@ def _create_lmstudio(
     return LMStudioProvider(config, admission=admission)
 
 
+def _create_gemini(
+    config: ProviderConfig,
+    _settings: Settings,
+    admission: ProviderAdmissionController,
+) -> BaseProvider:
+    from free_claude_code.providers.gemini import GeminiProvider
+
+    return GeminiProvider(config, admission=admission)
+
+
 _SPECIAL_PROVIDER_FACTORIES: dict[str, ProviderFactory] = {
     "nvidia_nim": _create_nvidia_nim,
     "open_router": _create_open_router,
     "deepseek": _create_deepseek,
     "lmstudio": _create_lmstudio,
+    "gemini": _create_gemini,
 }
 _INJECTED_PROVIDER_IDS = {"openai"}
 

@@ -17,6 +17,7 @@ from free_claude_code.config.provider_catalog import (
 )
 from free_claude_code.providers.admission import ProviderAdmissionController
 from free_claude_code.providers.deepseek import DeepSeekProvider
+from free_claude_code.providers.gemini import GeminiProvider
 from free_claude_code.providers.lmstudio import LMStudioProvider
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
 from free_claude_code.providers.open_router import OpenRouterProvider
@@ -52,9 +53,19 @@ def _make_settings(**overrides):
     mock.kimi_proxy = ""
     mock.kimi_api_key = "test_kimi_key"
     mock.huggingface_proxy = ""
-    mock.zai_proxy = ""
     mock.groq_api_key = ""
     mock.groq_proxy = ""
+    mock.gemini_api_key = "test_gemini_key"
+    mock.gemini_proxy = ""
+    mock.bedrock_api_key = "test_bedrock_key"
+    mock.bedrock_base_url = "https://bedrock-mantle.us-east-1.api.aws/v1"
+    mock.bedrock_proxy = ""
+    mock.tokenrouter_api_key = "test_tokenrouter_key"
+    mock.tokenrouter_base_url = "https://api.tokenrouter.com/v1"
+    mock.tokenrouter_proxy = ""
+    mock.nararoute_api_key = "test_nararoute_key"
+    mock.nararoute_base_url = "https://router.bynara.id/v1"
+    mock.nararoute_proxy = ""
     mock.openai_proxy = ""
     mock.provider_rate_limit = 40
     mock.provider_rate_window = 60
@@ -189,6 +200,10 @@ def test_create_provider_instantiates_each_builtin():
         "kimi": OpenAIChatProvider,
         "groq": OpenAIChatProvider,
         "zai": OpenAIChatProvider,
+        "gemini": GeminiProvider,
+        "bedrock": OpenAIChatProvider,
+        "tokenrouter": OpenAIChatProvider,
+        "nararoute": OpenAIChatProvider,
         "lmstudio": LMStudioProvider,
         "ollama": OpenAIChatProvider,
     }

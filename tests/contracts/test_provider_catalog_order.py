@@ -14,6 +14,10 @@ _EXPECTED_PROVIDER_ORDER: tuple[str, ...] = (
     "kimi",
     "groq",
     "zai",
+    "gemini",
+    "bedrock",
+    "tokenrouter",
+    "nararoute",
     "lmstudio",
     "ollama",
 )
