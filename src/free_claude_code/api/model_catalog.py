@@ -8,7 +8,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from free_claude_code.application.ports import RequestRuntimePort
-from free_claude_code.config.model_refs import configured_chat_model_refs
+from free_claude_code.config.model_refs import (
+    ModelCatalogScope,
+    configured_chat_model_refs,
+    pinned_model_refs,
+)
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.gateway_model_ids import (
     gateway_model_id,
@@ -142,13 +146,25 @@ def _build_claude_models_response(
             supports_thinking=supports_thinking,
         )
 
-    for model_info in runtime.cached_prefixed_model_infos():
+    for pinned in pinned_model_refs(settings):
+        provider_id, _, model_id = pinned.partition("/")
         _append_provider_model_variants(
             models,
             seen,
-            model_info.model_id,
-            supports_thinking=model_info.supports_thinking,
+            pinned,
+            supports_thinking=runtime.cached_model_supports_thinking(
+                provider_id, model_id
+            ),
         )
+
+    if settings.model_catalog_scope is ModelCatalogScope.ALL:
+        for model_info in runtime.cached_prefixed_model_infos():
+            _append_provider_model_variants(
+                models,
+                seen,
+                model_info.model_id,
+                supports_thinking=model_info.supports_thinking,
+            )
 
     for model in SUPPORTED_CLAUDE_MODELS:
         _append_unique_model(models, seen, model)
@@ -235,16 +251,31 @@ def _collect_inventory(
             )
         )
 
-    for model_info in runtime.cached_prefixed_model_infos():
-        if model_info.model_id in seen:
+    for pinned in pinned_model_refs(settings):
+        if pinned in seen:
             continue
-        seen.add(model_info.model_id)
+        seen.add(pinned)
+        provider_id, _, model_id = pinned.partition("/")
         inventory.append(
             _InventoryModel(
-                provider_model_ref=model_info.model_id,
-                supports_thinking=model_info.supports_thinking,
+                provider_model_ref=pinned,
+                supports_thinking=runtime.cached_model_supports_thinking(
+                    provider_id, model_id
+                ),
             )
         )
+
+    if settings.model_catalog_scope is ModelCatalogScope.ALL:
+        for model_info in runtime.cached_prefixed_model_infos():
+            if model_info.model_id in seen:
+                continue
+            seen.add(model_info.model_id)
+            inventory.append(
+                _InventoryModel(
+                    provider_model_ref=model_info.model_id,
+                    supports_thinking=model_info.supports_thinking,
+                )
+            )
 
     return tuple(inventory)
 

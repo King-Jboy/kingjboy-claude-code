@@ -3,6 +3,7 @@ import math
 from fastapi.testclient import TestClient
 
 from free_claude_code.application.model_metadata import ProviderModelInfo
+from free_claude_code.config.model_refs import ModelCatalogScope
 from free_claude_code.config.settings import Settings
 from tests.api.support import create_test_app, provider_manager_for_app
 
@@ -15,6 +16,8 @@ def _settings(
     model_sonnet: str | None = None,
     model_haiku: str | None = "deepseek/deepseek-chat",
     model_fallbacks: tuple[str, ...] | None = None,
+    model_catalog_scope: ModelCatalogScope = ModelCatalogScope.ALL,
+    pinned_models: str = "",
 ) -> Settings:
     return Settings.model_construct(
         model=model,
@@ -23,6 +26,8 @@ def _settings(
         model_sonnet=model_sonnet,
         model_haiku=model_haiku,
         model_fallbacks=model_fallbacks,
+        model_catalog_scope=model_catalog_scope,
+        pinned_models=pinned_models,
         proxy_auth_enabled=False,
         proxy_auth_token="freecc",
         deepseek_api_key="deepseek-key",
@@ -283,3 +288,25 @@ def test_unknown_model_view_is_rejected():
     response = TestClient(create_test_app(_settings())).get("/v1/models?view=other")
 
     assert response.status_code == 422
+
+
+def test_direct_model_views_respect_configured_scope_and_pinned_models():
+    app = create_test_app(
+        _settings(
+            model="deepseek/deepseek-chat",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["nvidia_nim/meta/llama-3.3-70b-instruct"]',
+        )
+    )
+    _cache_models(app, "deepseek", "deepseek-chat", "unwanted-deepseek")
+    _cache_models(app, "nvidia_nim", "meta/llama-3.3-70b-instruct", "unwanted-nim")
+
+    responses = TestClient(app).get("/v1/models?view=responses").json()
+    model_ids = [item["id"] for item in responses["data"]]
+
+    assert model_ids == [
+        "deepseek/deepseek-chat",
+        "nvidia_nim/meta/llama-3.3-70b-instruct",
+    ]
