@@ -30,8 +30,9 @@ from .model_catalog import (
 
 _BINARY_NAME = "dsh"
 _DISPLAY_NAME = "DeepSeek Harness"
-_SUPPORTED_VERSION = "0.1.0-rc.8"
-_INSTALL_COMMAND = f"npm install -g @deepseek-ai/dsh@{_SUPPORTED_VERSION}"
+_SUPPORTED_VERSIONS = frozenset({"0.1.0-rc.8", "0.1.1-rc.2"})
+_DEFAULT_SUPPORTED_VERSION = "0.1.1-rc.2"
+_INSTALL_COMMAND = f"npm install -g @deepseek-ai/dsh@{_DEFAULT_SUPPORTED_VERSION}"
 _INSTALL_HINT = (
     f"Install the supported DeepSeek Harness release with: {_INSTALL_COMMAND}"
 )
@@ -121,15 +122,16 @@ def classify_dsh_invocation(argv: Sequence[str]) -> DshInvocation:
 
 
 def require_compatible_dsh(binary_path: str) -> None:
-    """Exit unless DSH exactly matches FCC's audited preview contract."""
+    """Exit unless DSH matches FCC's supported preview contracts."""
 
     version = dsh_binary_version(binary_path)
-    if version == _SUPPORTED_VERSION:
+    if version in _SUPPORTED_VERSIONS:
         return
 
     found = version or "an unrecognized version"
+    supported = " or ".join(sorted(_SUPPORTED_VERSIONS))
     print(
-        f"fcc-dsh requires DeepSeek Harness {_SUPPORTED_VERSION}; found {found}.",
+        f"fcc-dsh requires DeepSeek Harness {supported}; found {found}.",
         file=sys.stderr,
     )
     print(f"Install it with: {_INSTALL_COMMAND}", file=sys.stderr)

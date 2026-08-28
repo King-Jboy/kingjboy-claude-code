@@ -164,6 +164,8 @@ def test_dsh_unsupported_or_missing_profile_is_rejected(argv: list[str]) -> None
     [
         ("0.1.0-rc.8\n", 0, "0.1.0-rc.8"),
         ("dsh v0.1.0-rc.8\n", 0, "0.1.0-rc.8"),
+        ("0.1.1-rc.2\n", 0, "0.1.1-rc.2"),
+        ("dsh v0.1.1-rc.2\n", 0, "0.1.1-rc.2"),
         ("0.1.0-rc.7\n", 0, "0.1.0-rc.7"),
         ("0.1.0\n", 0, "0.1.0"),
         ("not a version\n", 0, None),
@@ -194,6 +196,25 @@ def test_dsh_version_timeout_is_incompatible() -> None:
         assert dsh.dsh_binary_version("resolved-dsh") is None
 
 
+@pytest.mark.parametrize("version", ["0.1.0-rc.8", "0.1.1-rc.2"])
+def test_dsh_accepts_supported_versions(version: str) -> None:
+    from free_claude_code.cli.launchers import dsh
+
+    with (
+        patch.object(dsh, "resolve_client_binary", return_value="resolved-dsh"),
+        patch.object(dsh, "dsh_binary_version", return_value=version),
+        patch.object(dsh, "get_settings", return_value=_settings()),
+        patch.object(dsh, "preflight_proxy", return_value=None),
+        patch.object(
+            dsh, "fetch_proxy_models_response", return_value=_models_payload()
+        ),
+        patch.object(dsh, "_run_with_dsh_config") as run_configured,
+    ):
+        dsh.launch(["--profile", "headless", "task"])
+
+    run_configured.assert_called_once()
+
+
 @pytest.mark.parametrize("version", ["0.1.0-rc.7", "0.1.0", "0.1.0-rc.9", None])
 def test_dsh_requires_exact_audited_version_before_proxy(
     version: str | None,
@@ -210,7 +231,7 @@ def test_dsh_requires_exact_audited_version_before_proxy(
         dsh.launch([])
 
     assert exc_info.value.code == 126
-    assert "0.1.0-rc.8" in capsys.readouterr().err
+    assert "0.1.1-rc.2" in capsys.readouterr().err
     get_settings.assert_not_called()
 
 
@@ -231,7 +252,7 @@ def test_dsh_native_passthrough_needs_no_proxy() -> None:
         binary_name="dsh",
         display_name="DeepSeek Harness",
         install_hint="Install the supported DeepSeek Harness release with: "
-        "npm install -g @deepseek-ai/dsh@0.1.0-rc.8",
+        "npm install -g @deepseek-ai/dsh@0.1.1-rc.2",
     )
     get_settings.assert_not_called()
     require_version.assert_not_called()
