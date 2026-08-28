@@ -104,6 +104,7 @@ def configured_chat_model_refs(
 ) -> tuple[ConfiguredChatModelRef, ...]:
     """Return unique configured chat provider/model refs."""
 
+    fallbacks = getattr(settings, "model_fallbacks", ()) or ()
     model_refs = dict.fromkeys(
         model_ref
         for model_ref in (
@@ -112,6 +113,7 @@ def configured_chat_model_refs(
             settings.model_opus,
             settings.model_sonnet,
             settings.model_haiku,
+            *fallbacks,
         )
         if model_ref is not None
     )

@@ -1,7 +1,8 @@
+import math
+
 from fastapi.testclient import TestClient
 
 from free_claude_code.application.model_metadata import ProviderModelInfo
-from free_claude_code.config.model_refs import ModelCatalogScope
 from free_claude_code.config.settings import Settings
 from tests.api.support import create_test_app, provider_manager_for_app
 
@@ -11,19 +12,19 @@ def _settings(
     model: str = "deepseek/deepseek-chat",
     model_fable: str | None = None,
     model_opus: str | None = "open_router/anthropic/claude-opus",
+    model_sonnet: str | None = None,
     model_haiku: str | None = "deepseek/deepseek-chat",
-    model_catalog_scope: ModelCatalogScope = ModelCatalogScope.ALL,
-    pinned_models: str = "",
+    model_fallbacks: tuple[str, ...] | None = None,
 ) -> Settings:
     return Settings.model_construct(
         model=model,
         model_fable=model_fable,
         model_opus=model_opus,
-        model_sonnet=None,
+        model_sonnet=model_sonnet,
         model_haiku=model_haiku,
-        model_catalog_scope=model_catalog_scope,
-        pinned_models=pinned_models,
-        anthropic_auth_token="",
+        model_fallbacks=model_fallbacks,
+        proxy_auth_enabled=False,
+        proxy_auth_token="freecc",
         deepseek_api_key="deepseek-key",
         open_router_api_key="open-router-key",
         zai_api_key="zai-key",
@@ -76,6 +77,10 @@ def test_models_list_includes_configured_refs_cached_provider_models_and_aliases
     assert data["first_id"] == ids[0]
     assert data["last_id"] == ids[-1]
     assert data["has_more"] is False
+    assert all(
+        "provider_model_ref" not in item and "apiBackend" not in item
+        for item in data["data"]
+    )
 
 
 def test_models_list_uses_thinking_metadata_for_cached_models():
@@ -139,102 +144,21 @@ def test_models_list_includes_cached_zai_models():
     assert "claude-3-freecc-no-thinking/zai/glm-4.7-air" in ids
 
 
-def test_configured_scope_drops_discovered_models_but_keeps_routes_and_aliases():
-    """A picker under the configured scope lists routes, not the whole catalog."""
-
-    app = create_test_app(_settings(model_catalog_scope=ModelCatalogScope.CONFIGURED))
-    _cache_models(app, "deepseek", "deepseek-chat")
-    _cache_models(app, "open_router", "meta/llama-3.3", "anthropic/claude-opus")
+def test_models_list_includes_fallback_refs_without_cached_discovery():
+    app = create_test_app(
+        _settings(
+            model_opus=None,
+            model_haiku=None,
+            model_sonnet="zai/glm-4.7",
+        )
+    )
 
     response = TestClient(app).get("/v1/models")
 
     assert response.status_code == 200
     ids = [item["id"] for item in response.json()["data"]]
-    assert "anthropic/open_router/meta/llama-3.3" not in ids
-    assert "claude-3-freecc-no-thinking/open_router/meta/llama-3.3" not in ids
-    # Configured routes survive, and so do the Claude aliases the client sends.
-    assert "anthropic/deepseek/deepseek-chat" in ids
-    assert "anthropic/open_router/anthropic/claude-opus" in ids
-    assert "claude-sonnet-4-20250514" in ids
-
-
-def test_configured_scope_still_honours_cached_thinking_metadata():
-    """Scoping changes which models are listed, never how a route is shaped."""
-
-    app = create_test_app(
-        _settings(
-            model="open_router/plain-model",
-            model_opus=None,
-            model_haiku=None,
-            model_catalog_scope=ModelCatalogScope.CONFIGURED,
-        )
-    )
-    provider_manager_for_app(app).cache_model_infos(
-        "open_router",
-        {ProviderModelInfo("plain-model", supports_thinking=False)},
-    )
-
-    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
-
-    assert "anthropic/open_router/plain-model" not in ids
-    assert ids[0] == "claude-3-freecc-no-thinking/open_router/plain-model"
-
-
-def test_pinned_models_extend_a_scoped_list_beyond_the_routing_slots():
-    """The five MODEL_* slots are not the ceiling on a personalised list."""
-
-    app = create_test_app(
-        _settings(
-            model_opus=None,
-            model_haiku=None,
-            model_catalog_scope=ModelCatalogScope.CONFIGURED,
-            pinned_models=(
-                '["open_router/meta/llama-3.3", "open_router/z-ai/glm-5.2:free"]'
-            ),
-        )
-    )
-    _cache_models(app, "open_router", "meta/llama-3.3", "unwanted/model")
-
-    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
-
-    assert "anthropic/open_router/meta/llama-3.3" in ids
-    assert "anthropic/open_router/z-ai/glm-5.2:free" in ids
-    assert "anthropic/deepseek/deepseek-chat" in ids
-    # Pinning is a shortlist, not a second way to list everything discovered.
-    assert "anthropic/open_router/unwanted/model" not in ids
-
-
-def test_a_pinned_model_is_listed_even_when_discovery_never_saw_it():
-    """A slug typed by hand must be selectable before any refresh finds it."""
-
-    app = create_test_app(
-        _settings(
-            model_opus=None,
-            model_haiku=None,
-            model_catalog_scope=ModelCatalogScope.CONFIGURED,
-            pinned_models='["nvidia_nim/brand-new/model"]',
-        )
-    )
-
-    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
-
-    assert "anthropic/nvidia_nim/brand-new/model" in ids
-
-
-def test_pinned_models_are_not_duplicated_by_the_configured_routes():
-    app = create_test_app(
-        _settings(
-            model="deepseek/deepseek-chat",
-            model_opus=None,
-            model_haiku=None,
-            model_catalog_scope=ModelCatalogScope.CONFIGURED,
-            pinned_models='["deepseek/deepseek-chat"]',
-        )
-    )
-
-    ids = [item["id"] for item in TestClient(app).get("/v1/models").json()["data"]]
-
-    assert ids.count("anthropic/deepseek/deepseek-chat") == 1
+    assert "anthropic/zai/glm-4.7" in ids
+    assert "claude-3-freecc-no-thinking/zai/glm-4.7" in ids
 
 
 def test_models_list_works_with_empty_discovery_catalog():
@@ -251,3 +175,111 @@ def test_models_list_works_with_empty_discovery_catalog():
         "claude-3-freecc-no-thinking/open_router/anthropic/claude-opus",
     ]
     assert "claude-sonnet-4-20250514" in ids
+
+
+def test_direct_model_views_exclude_claude_aliases_and_duplicate_variants():
+    app = create_test_app(_settings(model_opus=None, model_haiku=None))
+    manager = provider_manager_for_app(app)
+    manager.cache_model_infos(
+        "open_router",
+        {
+            ProviderModelInfo("reasoning-model", supports_thinking=True),
+            ProviderModelInfo("plain-model", supports_thinking=False),
+        },
+    )
+
+    messages = TestClient(app).get("/v1/models?view=messages").json()
+    responses = TestClient(app).get("/v1/models?view=responses").json()
+
+    assert [row["id"] for row in messages["data"]] == [
+        "deepseek/deepseek-chat",
+        "claude-3-freecc-no-thinking/open_router/plain-model",
+        "open_router/reasoning-model",
+    ]
+    assert "claude-sonnet-4-20250514" not in {row["id"] for row in messages["data"]}
+    assert all("apiBackend" not in row for row in messages["data"])
+    assert responses["data"][0] == {
+        "object": "model",
+        "created": 0,
+        "owned_by": "free-claude-code",
+        "created_at": "1970-01-01T00:00:00Z",
+        "display_name": "deepseek/deepseek-chat",
+        "id": "deepseek/deepseek-chat",
+        "type": "model",
+        "provider_model_ref": "deepseek/deepseek-chat",
+        "apiBackend": "responses",
+        "maxRetries": 0,
+        "supportsReasoningEffort": True,
+        "reasoningEfforts": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ],
+        "inferenceIdleTimeoutSecs": 660,
+    }
+    plain = responses["data"][1]
+    assert plain["supportsReasoningEffort"] is False
+    assert "reasoningEfforts" not in plain
+
+
+def test_muse_model_catalog_is_the_fixed_responses_projection():
+    app = create_test_app(_settings(model_opus=None, model_haiku=None))
+    manager = provider_manager_for_app(app)
+    manager.cache_model_infos(
+        "open_router",
+        {
+            ProviderModelInfo("reasoning-model", supports_thinking=True),
+            ProviderModelInfo("plain-model", supports_thinking=False),
+        },
+    )
+    client = TestClient(app)
+
+    responses = client.get("/v1/models?view=responses")
+    muse = client.get("/muse-code/models?view=claude")
+
+    assert responses.status_code == 200
+    assert muse.status_code == 200
+    assert muse.json() == responses.json()
+    assert [row["id"] for row in muse.json()["data"]] == [
+        "deepseek/deepseek-chat",
+        "claude-3-freecc-no-thinking/open_router/plain-model",
+        "open_router/reasoning-model",
+    ]
+
+
+def test_responses_model_view_rounds_timeout_up_before_margin():
+    app = create_test_app(
+        _settings().model_copy(update={"provider_progress_timeout": 1.1})
+    )
+
+    response = TestClient(app).get("/v1/models?view=responses")
+
+    assert response.status_code == 200
+    assert {row["inferenceIdleTimeoutSecs"] for row in response.json()["data"]} == {62}
+
+
+def test_responses_model_view_timeout_fits_unsigned_range():
+    largest_accepted_timeout = math.nextafter(float(1 << 64), 0.0)
+    app = create_test_app(
+        _settings().model_copy(
+            update={"provider_progress_timeout": largest_accepted_timeout}
+        )
+    )
+
+    response = TestClient(app).get("/v1/models?view=responses")
+
+    assert response.status_code == 200
+    assert all(
+        row["inferenceIdleTimeoutSecs"] <= (1 << 64) - 1
+        for row in response.json()["data"]
+    )
+
+
+def test_unknown_model_view_is_rejected():
+    response = TestClient(create_test_app(_settings())).get("/v1/models?view=other")
+
+    assert response.status_code == 422
