@@ -485,10 +485,9 @@ class TestNimSettingsValidBounds:
         s = NimSettings(temperature=temp)
         assert s.temperature == temp
 
-    @pytest.mark.parametrize("top_p", [0.0, 0.5, 1.0])
-    def test_top_p_valid(self, top_p):
-        s = NimSettings(top_p=top_p)
-        assert s.top_p == top_p
+    def test_top_p_valid(self):
+        s = NimSettings(top_p=0.95)
+        assert s.top_p == 0.95
 
     def test_max_tokens_valid(self):
         s = NimSettings(max_tokens=1)
@@ -526,7 +525,7 @@ class TestNimSettingsInvalidBounds:
         with pytest.raises(ValidationError):
             NimSettings(temperature=-0.1)
 
-    @pytest.mark.parametrize("top_p", [-0.1, 1.1])
+    @pytest.mark.parametrize("top_p", [-0.1, 0.0, 0.9, 1.0, 1.1])
     def test_top_p_out_of_range(self, top_p):
         with pytest.raises(ValidationError):
             NimSettings(top_p=top_p)
