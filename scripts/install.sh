@@ -563,4 +563,29 @@ else
         printf '\nFree Claude Code is installed and verified. Start the proxy with: fcc-server\n'
     fi
     printf 'Run Claude Code with: fcc-claude\n'
+    if command -v codex >/dev/null 2>&1; then
+        printf 'Run Codex with: fcc-codex\n'
+    else
+        printf 'The fcc-codex wrapper is ready after you install Codex.\n'
+    fi
+    if command -v pi >/dev/null 2>&1; then
+        printf 'Run Pi with: fcc-pi\n'
+    else
+        printf 'The fcc-pi wrapper is ready after you install Pi.\n'
+    fi
+    if command -v hermes >/dev/null 2>&1; then
+        printf 'Run Hermes Agent with: fcc-hermes\n'
+    else
+        printf 'The fcc-hermes wrapper is ready after you install Hermes Agent.\n'
+    fi
+    if command -v dsh >/dev/null 2>&1; then
+        printf 'Run DeepSeek Harness with: fcc-dsh\n'
+    else
+        printf 'The fcc-dsh wrapper is ready after you install DeepSeek Harness.\n'
+    fi
+    if command -v grok >/dev/null 2>&1; then
+        printf 'Run Grok Build with: fcc-grok\n'
+    else
+        printf 'The fcc-grok wrapper is ready after you install Grok Build.\n'
+    fi
 fi

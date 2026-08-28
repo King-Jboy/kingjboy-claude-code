@@ -739,4 +739,34 @@ else {
     Write-Host "Free Claude Code is installed and verified. Open the Free Claude Code desktop shortcut to run it in the background."
     Write-Host "For terminal use, start the proxy with: fcc-server"
     Write-Host "Run Claude Code with: fcc-claude"
+    if (Get-ApplicationCommand "codex") {
+        Write-Host "Run Codex with: fcc-codex"
+    }
+    else {
+        Write-Host "The fcc-codex wrapper is ready after you install Codex."
+    }
+    if (Get-ApplicationCommand "pi") {
+        Write-Host "Run Pi with: fcc-pi"
+    }
+    else {
+        Write-Host "The fcc-pi wrapper is ready after you install Pi."
+    }
+    if (Get-ApplicationCommand "hermes") {
+        Write-Host "Run Hermes Agent with: fcc-hermes"
+    }
+    else {
+        Write-Host "The fcc-hermes wrapper is ready after you install Hermes Agent."
+    }
+    if (Get-ApplicationCommand "dsh") {
+        Write-Host "Run DeepSeek Harness with: fcc-dsh"
+    }
+    else {
+        Write-Host "The fcc-dsh wrapper is ready after you install DeepSeek Harness."
+    }
+    if (Get-ApplicationCommand "grok") {
+        Write-Host "Run Grok Build with: fcc-grok"
+    }
+    else {
+        Write-Host "The fcc-grok wrapper is ready after you install Grok Build."
+    }
 }

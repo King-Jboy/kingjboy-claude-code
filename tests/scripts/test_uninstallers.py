@@ -12,6 +12,9 @@ FCC_COMMANDS = (
     "fcc-claude",
     "fcc-codex",
     "fcc-pi",
+    "fcc-hermes",
+    "fcc-dsh",
+    "fcc-grok",
     "fcc-init",
     "free-claude-code",
 )
