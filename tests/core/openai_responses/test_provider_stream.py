@@ -125,9 +125,44 @@ def test_responses_provider_stream_preserves_reasoning_tools_usage_and_ids() -> 
     assert argument_deltas == ['{"q":', '"x"}']
     message_delta = next(event for event in events if event.event == "message_delta")
     assert message_delta.data["usage"] == {
-        "input_tokens": 20,
+        "input_tokens": 5,
         "output_tokens": 8,
         "cache_read_input_tokens": 15,
+    }
+
+
+def test_responses_provider_stream_preserves_cache_write_tokens() -> None:
+    stream = ResponsesProviderStream(
+        message_id="msg_test",
+        model="openai/gpt-test",
+        input_tokens=12,
+    )
+    output = stream.start()
+    output.extend(
+        stream.feed(
+            "response.completed",
+            {
+                "response": {
+                    "usage": {
+                        "input_tokens": 20,
+                        "output_tokens": 8,
+                        "input_tokens_details": {
+                            "cached_tokens": 15,
+                            "cache_write_tokens": 3,
+                        },
+                    }
+                }
+            },
+        )
+    )
+    events = parse_sse_text("".join(output))
+    assert_anthropic_stream_contract(events)
+    message_delta = next(event for event in events if event.event == "message_delta")
+    assert message_delta.data["usage"] == {
+        "input_tokens": 2,
+        "output_tokens": 8,
+        "cache_read_input_tokens": 15,
+        "cache_creation_input_tokens": 3,
     }
 
 

@@ -33,6 +33,7 @@ from free_claude_code.core.anthropic.streaming import (
     parse_complete_tool_input,
     tool_schemas_by_name,
 )
+from free_claude_code.core.anthropic.usage import anthropic_input_usage_fields
 from free_claude_code.core.failures import ExecutionFailure
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
 from free_claude_code.core.trace import provider_chat_body_snapshot, trace_event
@@ -76,6 +77,7 @@ from .tool_calls import (
 from .usage import (
     clone_without_stream_usage,
     is_stream_usage_rejection,
+    nested_usage_int,
     request_stream_usage,
     usage_int,
 )
@@ -405,9 +407,29 @@ class OpenAIChatProvider(BaseProvider):
         """Return provider-specific per-tool argument aliases for this request."""
         return {}
 
+    def _cached_input_tokens(self, usage_info: object) -> int | None:
+        """Return the provider's cached-input count from final Chat usage."""
+        return nested_usage_int(
+            usage_info,
+            "prompt_tokens_details",
+            "cached_tokens",
+        )
+
+    def _cache_write_input_tokens(self, usage_info: object) -> int | None:
+        """Return the provider's cache-write count from final Chat usage."""
+        return nested_usage_int(
+            usage_info,
+            "prompt_tokens_details",
+            "cache_write_tokens",
+        )
+
     def _anthropic_usage_fields(self, usage_info: Any) -> dict[str, int]:
-        """Return provider-specific Anthropic usage fields for final SSE usage."""
-        return {}
+        """Split standard prompt cache counts for final Anthropic usage."""
+        return anthropic_input_usage_fields(
+            usage_int(usage_info, "prompt_tokens"),
+            cache_read_tokens=self._cached_input_tokens(usage_info),
+            cache_creation_tokens=self._cache_write_input_tokens(usage_info),
+        )
 
     async def _create_stream(
         self,

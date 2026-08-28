@@ -18,7 +18,7 @@ from .reasoning import (
 )
 from .reasoning_details import apply_reasoning_details_replay
 from .request_policy import OpenAIChatRequestPolicy, build_openai_chat_request_body
-from .usage import usage_int
+from .usage import nested_usage_int, usage_int
 
 
 def create_openai_chat_provider(
@@ -53,6 +53,7 @@ __all__ = [
     "apply_reasoning_details_replay",
     "build_openai_chat_request_body",
     "create_openai_chat_provider",
+    "nested_usage_int",
     "openai_v1_base_url",
     "usage_int",
     "validate_extra_body_does_not_override_canonical_fields",

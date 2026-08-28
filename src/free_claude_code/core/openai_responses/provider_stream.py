@@ -5,6 +5,7 @@ from typing import Any
 
 from free_claude_code.core.anthropic.openai_tool_names import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.streaming import AnthropicStreamLedger
+from free_claude_code.core.anthropic.usage import anthropic_input_usage_fields
 
 
 class ResponsesStreamFailure(RuntimeError):
@@ -208,6 +209,12 @@ class ResponsesProviderStream:
         details = usage.get("input_tokens_details")
         details = details if isinstance(details, dict) else {}
         cached_tokens = _integer(details.get("cached_tokens"))
+        cache_write_tokens = _integer(details.get("cache_write_tokens"))
+        usage_fields = anthropic_input_usage_fields(
+            input_tokens,
+            cache_read_tokens=cached_tokens,
+            cache_creation_tokens=cache_write_tokens,
+        )
         stop_reason = "max_tokens" if incomplete else "end_turn"
         events.append(
             self.ledger.message_delta(
@@ -216,11 +223,7 @@ class ResponsesProviderStream:
                 if output_tokens is not None
                 else self.ledger.estimate_output_tokens(),
                 input_tokens=input_tokens,
-                usage_fields=(
-                    {"cache_read_input_tokens": cached_tokens}
-                    if cached_tokens is not None
-                    else None
-                ),
+                usage_fields=usage_fields,
             )
         )
         events.append(self.ledger.message_stop())

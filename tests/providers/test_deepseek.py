@@ -1010,10 +1010,9 @@ async def test_stream_uses_chat_completions_and_maps_cache_usage(deepseek_provid
         event.data["usage"] for event in parsed if event.event == "message_delta"
     )
     assert usage == {
-        "input_tokens": 30,
+        "input_tokens": 20,
         "output_tokens": 3,
         "cache_read_input_tokens": 10,
-        "cache_creation_input_tokens": 20,
     }
 
 
@@ -1480,3 +1479,111 @@ def test_no_warning_when_no_attachments(deepseek_provider, caplog):
         for r in caplog.records
         if r.levelno == logging.WARNING
     )
+
+
+@pytest.mark.parametrize(
+    ("usage", "anthropic_expected", "responses_cached"),
+    [
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": 10,
+                "prompt_cache_miss_tokens": 20,
+            },
+            {"input_tokens": 20, "cache_read_input_tokens": 10},
+            10,
+        ),
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 30,
+            },
+            {"input_tokens": 30, "cache_read_input_tokens": 0},
+            0,
+        ),
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": 30,
+                "prompt_cache_miss_tokens": 0,
+            },
+            {"input_tokens": 0, "cache_read_input_tokens": 30},
+            30,
+        ),
+        (
+            {"prompt_cache_hit_tokens": 10, "prompt_cache_miss_tokens": 20},
+            {"input_tokens": 20, "cache_read_input_tokens": 10},
+            None,
+        ),
+        (
+            {"prompt_tokens": 30, "prompt_cache_miss_tokens": 20},
+            {},
+            None,
+        ),
+        (
+            {"prompt_tokens": 30, "prompt_cache_hit_tokens": 10},
+            {},
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": "10",
+                "prompt_cache_miss_tokens": 20,
+            },
+            {},
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": 10,
+                "prompt_cache_miss_tokens": 20.0,
+            },
+            {},
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": 10,
+                "prompt_cache_miss_tokens": 31,
+            },
+            {},
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": 10,
+                "prompt_cache_miss_tokens": -1,
+            },
+            {},
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": -1,
+                "prompt_cache_hit_tokens": 10,
+                "prompt_cache_miss_tokens": 20,
+            },
+            {"input_tokens": 20, "cache_read_input_tokens": 10},
+            None,
+        ),
+        (
+            {
+                "prompt_tokens": 30,
+                "prompt_cache_hit_tokens": 10,
+                "prompt_cache_miss_tokens": 19,
+            },
+            {},
+            None,
+        ),
+    ],
+)
+def test_deepseek_maps_only_complete_consistent_cache_usage(
+    deepseek_provider, usage, anthropic_expected, responses_cached
+) -> None:
+    assert deepseek_provider._anthropic_usage_fields(usage) == anthropic_expected
+    assert deepseek_provider._cached_input_tokens(usage) == responses_cached
