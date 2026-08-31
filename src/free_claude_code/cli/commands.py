@@ -168,6 +168,14 @@ class ServerSupervisor:
             ),
             timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_SECONDS,
         )
+        if sys.platform == "win32":
+            try:
+                import winloop
+
+                winloop.install()
+            except ImportError:
+                pass
+
         server = uvicorn.Server(config)
         with self._lock:
             self._server = server
