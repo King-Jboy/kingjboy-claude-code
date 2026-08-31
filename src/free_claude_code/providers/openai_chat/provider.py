@@ -265,6 +265,7 @@ class OpenAIChatProvider(BaseProvider):
             proxy=config.proxy or None,
             timeout=timeout,
             limits=limits,
+            http2=True,
         )
         return AsyncOpenAI(
             api_key=credential,
