@@ -1,7 +1,6 @@
 """Anthropic stream state ledger."""
 
 import hashlib
-import json
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import suppress
@@ -9,6 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from loguru import logger
+
+from free_claude_code.core.json_utils import (
+    fast_json_dumps,
+    fast_json_loads,
+    repair_json_loads,
+)
 
 from .emitter import AnthropicSseEmitter
 from .recovery import (
@@ -116,7 +121,7 @@ class StreamBlockLedger:
 
         state.task_arg_buffer += args
         try:
-            args_json = json.loads(state.task_arg_buffer)
+            args_json = fast_json_loads(state.task_arg_buffer)
         except Exception:
             return None
         if not isinstance(args_json, dict):
@@ -135,11 +140,13 @@ class StreamBlockLedger:
 
             out = "{}"
             try:
-                args_json = json.loads(state.task_arg_buffer)
+                args_json = repair_json_loads(state.task_arg_buffer)
                 if isinstance(args_json, dict):
                     _normalize_task_run_in_background(args_json)
-                    out = json.dumps(args_json)
-            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    out = fast_json_dumps(args_json)
+                else:
+                    raise ValueError("Task args did not decode to an object")
+            except Exception as exc:
                 digest = hashlib.sha256(
                     state.task_arg_buffer.encode("utf-8", errors="replace")
                 ).hexdigest()[:16]

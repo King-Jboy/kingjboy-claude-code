@@ -7,10 +7,11 @@ shape the real Anthropic API returns for a non-streaming ``messages.create()``
 call.
 """
 
-import json
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
+
+from free_claude_code.core.json_utils import safe_parse_tool_arguments
 
 from .stream_contracts import parse_sse_text
 
@@ -110,10 +111,7 @@ async def aggregate_anthropic_sse_to_message(
             block.setdefault("signature", "")
         elif btype == "tool_use":
             if accumulated.strip():
-                try:
-                    block["input"] = json.loads(accumulated)
-                except json.JSONDecodeError:
-                    block["input"] = block.get("input") or {}
+                block["input"] = safe_parse_tool_arguments(accumulated)
             elif not isinstance(block.get("input"), dict):
                 block["input"] = {}
         content.append(block)

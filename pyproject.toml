@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "6.17.1"
+version = "6.18.0"
 description = "Local proxy connecting coding agents to OpenAI-compatible AI providers"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -29,6 +29,8 @@ dependencies = [
     "pystray>=0.19.5; sys_platform == 'win32' or sys_platform == 'darwin'",
     "Pillow>=12.0.0; sys_platform == 'win32' or sys_platform == 'darwin'",
     "pywebview>=6.2.1; sys_platform == 'win32' or sys_platform == 'darwin'",
+    "json-repair>=0.63.4",
+    "orjson>=3.12.0",
 ]
 
 [project.scripts]
