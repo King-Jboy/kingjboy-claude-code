@@ -1109,3 +1109,33 @@ async def test_cleanup_releases_the_pool() -> None:
 
     closed.assert_awaited_once()
     await pool.aclose()
+
+
+@pytest.mark.asyncio
+async def test_acquire_balances_in_flight_active_requests() -> None:
+    pool = KeyPool(
+        ["key_1", "key_2", "key_3"],
+        provider_name="test",
+        client_factory=lambda k: _RecordingClient(k),
+    )
+
+    lease1 = await pool.acquire()
+    assert lease1.index == 0
+
+    # Next acquire picks key 1 because key 0 has 1 active request
+    lease2 = await pool.acquire()
+    assert lease2.index == 1
+
+    # Next acquire picks key 2 because keys 0 and 1 have 1 active request
+    lease3 = await pool.acquire()
+    assert lease3.index == 2
+
+    # Releasing lease1 makes key 0 have 0 active requests again
+    pool.release(lease1)
+    lease4 = await pool.acquire()
+    assert lease4.index == 0
+
+    pool.release(lease2)
+    pool.release(lease3)
+    pool.release(lease4)
+    await pool.aclose()

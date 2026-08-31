@@ -163,6 +163,7 @@ class _PooledKey:
     # walks the keys in configured order (key[0] first, then key[1], ...)
     # without needing a separate rotation index.
     last_used: float = 0.0
+    active_requests: int = 0
 
     def cooling(self, now: float) -> bool:
         """Return whether a refusal still holds this key out."""
@@ -286,12 +287,26 @@ class KeyPool:
             self._roll_usage_window(key, now)
             if not key.ready(now):
                 continue
-            if best is None or key.last_used < best.last_used:
+            if (
+                best is None
+                or key.active_requests < best.active_requests
+                or (
+                    key.active_requests == best.active_requests
+                    and key.last_used < best.last_used
+                )
+            ):
                 best = key
         if best is None:
             raise self._no_available_key_failure(skip, now)
+        best.active_requests += 1
         best.last_used = now
         return PooledKeyLease(index=best.index, client=best.client)
+
+    def release(self, lease: PooledKeyLease) -> None:
+        """Release an in-flight lease for a key."""
+        key = self._keys[lease.index]
+        if key.active_requests > 0:
+            key.active_requests -= 1
 
     def record_failure(
         self, lease: PooledKeyLease, error: BaseException
@@ -445,34 +460,37 @@ class KeyPool:
             previous_cooling_reason = key.cooling_reason
             attempts += 1
             try:
-                result = await operation(lease.client)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                last_error = error
-                action, applied = self._record_failure(lease, error)
-                if action is KeyFailureAction.ESCALATE:
+                try:
+                    result = await operation(lease.client)
+                except asyncio.CancelledError:
                     raise
-                if action is KeyFailureAction.HOP_AMBIGUOUS:
-                    # When this refusal extended nothing (a longer concurrent
-                    # cooldown stood), the rollback is inert: the refusal still
-                    # counts toward the every-key-refused tally, but restoring
-                    # it must not undo the other request's cooldown.
-                    if applied is None:
-                        applied = previous_cooling_until
-                        applied_reason = previous_cooling_reason
-                    else:
-                        applied_reason = key.cooling_reason
-                    refused[lease.index] = _HealthRollback(
-                        previous_cooling_until=previous_cooling_until,
-                        previous_cooling_reason=previous_cooling_reason,
-                        applied_cooling_until=applied,
-                        applied_cooling_reason=applied_reason,
-                    )
-                    last_refusal = error
-            else:
-                self.record_success(lease, proves_credential=proves_credential)
-                return result
+                except Exception as error:
+                    last_error = error
+                    action, applied = self._record_failure(lease, error)
+                    if action is KeyFailureAction.ESCALATE:
+                        raise
+                    if action is KeyFailureAction.HOP_AMBIGUOUS:
+                        # When this refusal extended nothing (a longer concurrent
+                        # cooldown stood), the rollback is inert: the refusal still
+                        # counts toward the every-key-refused tally, but restoring
+                        # it must not undo the other request's cooldown.
+                        if applied is None:
+                            applied = previous_cooling_until
+                            applied_reason = previous_cooling_reason
+                        else:
+                            applied_reason = key.cooling_reason
+                        refused[lease.index] = _HealthRollback(
+                            previous_cooling_until=previous_cooling_until,
+                            previous_cooling_reason=previous_cooling_reason,
+                            applied_cooling_until=applied,
+                            applied_cooling_reason=applied_reason,
+                        )
+                        last_refusal = error
+                else:
+                    self.record_success(lease, proves_credential=proves_credential)
+                    return result
+            finally:
+                self.release(lease)
 
     async def aclose(self) -> None:
         """Close every pooled client, so one failure cannot strand the others."""

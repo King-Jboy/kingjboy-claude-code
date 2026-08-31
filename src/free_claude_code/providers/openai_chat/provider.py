@@ -256,10 +256,15 @@ class OpenAIChatProvider(BaseProvider):
             read=config.http_read_timeout,
             write=config.http_write_timeout,
         )
-        http_client = (
-            DefaultAsyncHttpx2Client(proxy=config.proxy, timeout=timeout)
-            if config.proxy
-            else None
+        limits = httpx2.Limits(
+            max_keepalive_connections=64,
+            max_connections=128,
+            keepalive_expiry=600.0,
+        )
+        http_client = DefaultAsyncHttpx2Client(
+            proxy=config.proxy or None,
+            timeout=timeout,
+            limits=limits,
         )
         return AsyncOpenAI(
             api_key=credential,
