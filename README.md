@@ -26,42 +26,20 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 
 </div>
 
-<div align="center">
-  <img src="assets/pic.png" alt="Free Claude Code in action" width="700">
-  <p><em>Claude Code running through the Free Claude Code proxy.</em></p>
-</div>
-
-<div align="center">
-  <img src="assets/codex.png" alt="Codex CLI in action through Free Claude Code" width="700">
-  <p><em>Codex CLI using the local FCC Responses provider.</em></p>
-</div>
-
-<a id="model-picker"></a>
-
-<div align="center">
-  <img src="assets/cc-model-picker.png" alt="Claude Code model picker showing gateway models" width="700">
-  <p><em>Claude Code native <code>/model</code> picker with FCC gateway models.</em></p>
-</div>
-
-<div align="center">
-  <img src="assets/codex-model-picker.png" alt="Codex model picker showing generated FCC model catalog" width="700">
-  <p><em>Codex native <code>/model</code> picker with the generated FCC catalog.</em></p>
-</div>
-
 ## What You Get
 
-- Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, Pi with `fcc-pi`, Hermes with `fcc-hermes`, DeepSeek Harness with `fcc-dsh`, or Grok Build with `fcc-grok`.
-- Run FCC in the background from a desktop launcher on Windows or macOS.
-- Switch among 14 cloud and local providers from the Admin UI.
-- Use each coding agent's native model picker.
-- Route Fable, Opus, Sonnet, Haiku, and fallback traffic to different models.
-- Pool many NVIDIA NIM or OpenRouter keys into one self-healing virtual key.
-- Diagnose a broken setup in one command with `fcc-doctor`.
-- Keep streaming, tool use, reasoning, and image input across compatible models.
-- Connect Claude Code and Codex in VS Code or Claude Code through JetBrains ACP.
-- Debug the page you are on from a Chrome side panel with `fcc-extension`, optionally running approved shell commands.
-- Optionally run Claude Code sessions through Discord or Telegram with voice-note transcription.
-- Protect the local proxy with optional token authentication.
+- **High-Throughput Speed**: C-accelerated `winloop` event loop on Windows, Rust `orjson` streaming serialization, and `zstandard` wire compression.
+- **Zero-Crash Tool Calling**: `json-repair` automatically self-heals broken JSON quotes and trailing commas from open-weights models (DeepSeek, MiniMax M3, GLM, Nemotron).
+- **Exact BPE Tokenization**: Hugging Face Rust `tokenizers` integration for exact token budgeting across DeepSeek, Qwen 2.5, and Llama 3.
+- **Agent Protocols**: Built-in Anthropic Model Context Protocol (`mcp`) SDK and official Google GenAI (`google-genai`) SDK for Gemini 2.5 thinking & search grounding.
+- **Smart Tool Selection**: `fastembed` semantic tool filtering for large MCP setups with 100% core and pinned tool preservation.
+- **Dynamic 1M Context Auto-Resolution**: Automatic per-model context allocation (1,048,576 tokens for DeepSeek V4 & Kimi K3, 262,144 for MiniMax M3) with instant 0.0s `fcc-context` lookups.
+- **Multi-Agent Launchers**: Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, Pi with `fcc-pi`, Hermes with `fcc-hermes`, DeepSeek Harness with `fcc-dsh`, or Grok Build with `fcc-grok`.
+- **Desktop Launcher & Native Alerts**: Run FCC in the background on Windows/macOS with native toast alerts on task completion.
+- **Provider Switching & Key Pooling**: Switch among 14 providers and pool multiple NVIDIA NIM or OpenRouter keys into one self-healing virtual key.
+- **Diagnostics**: Inspect your entire environment and model catalogs in one command with `fcc-doctor`.
+- **Chrome Side Panel**: Debug active tabs from a side panel with `fcc-extension`.
+- **Integrations**: Discord and Telegram bridge with voice-note transcription.
 
 ## Quick Start
 
@@ -131,10 +109,6 @@ Use the port shown in your terminal if it differs from `8082`.
 3. Paste the key into `NVIDIA_NIM_API_KEY`.
 4. Leave `MODEL` on the default `nvidia_nim/nvidia/nemotron-3-super-120b-a12b`, or search the model dropdown and select another model.
 5. Click **Validate**, then **Apply**.
-
-<div align="center">
-  <img src="assets/admin-page.png" alt="Local admin UI for proxy settings" width="700">
-</div>
 
 ### 4. Run Your Coding Agent
 
@@ -595,15 +569,50 @@ Restart Claude Code or the IDE after saving the file.
 
 </details>
 
+<a id="mcp-servers"></a>
+
+## Model Context Protocol (MCP)
+
+Free Claude Code includes full, native support for Anthropic's **Model Context Protocol (MCP)**. You can connect external tools, databases, and APIs to Claude Code in one command:
+
+### Adding Popular MCP Servers
+
+- **Web Fetch MCP** (Read clean markdown from live URLs):
+  ```bash
+  claude mcp add fetch uvx mcp-server-fetch
+  ```
+
+- **SQLite Explorer MCP** (Inspect and query local databases):
+  ```bash
+  claude mcp add sqlite uvx mcp-server-sqlite --db-path "/path/to/database.db"
+  ```
+
+- **GitHub MCP** (Inspect pull requests, issues, and code repos):
+  ```bash
+  claude mcp add github -e GITHUB_PERSONAL_ACCESS_TOKEN=your_token npx -y @modelcontextprotocol/server-github
+  ```
+
+- **Persistent Memory MCP** (Retain preferences and knowledge across sessions):
+  ```bash
+  claude mcp add memory npx -y @modelcontextprotocol/server-memory
+  ```
+
+### Managing MCP Servers
+
+- **List active MCP servers**: `claude mcp list`
+- **Inspect server status**: `claude mcp get fetch`
+- **Remove an MCP server**: `claude mcp remove fetch`
+
+### How Free Claude Code Accelerates MCP
+
+- **Zero-Crash Execution**: Tool arguments generated by open-weights models are automatically self-healed by `json-repair`.
+- **Smart Semantic Pruning**: When large numbers of MCP tools are configured (>20 tools), `fastembed` local search dynamically prunes unused tools to save prompt tokens while always keeping 100% of core agent tools and any tool explicitly mentioned in your prompt.
+
 <a id="optional-integrations"></a>
 
 ## Optional Integrations
 
 Configure integrations from **Admin UI → Messaging**, then click **Validate** and **Apply**.
-
-<div align="center">
-  <img src="assets/admin-messaging.png" alt="Admin UI Messaging view with bot and voice settings" width="700">
-</div>
 
 <details>
 <summary><strong>Discord bot</strong></summary>
@@ -726,6 +735,20 @@ Windows PowerShell:
 ## What This Fork Changes
 
 Everything below is additional to upstream [Alishahryar1/free-claude-code](https://github.com/Alishahryar1/free-claude-code).
+
+**Rust `orjson` acceleration & `json-repair` self-healing.** Stream packet serialization and hot-path JSON decoding run in compiled Rust via `orjson`. In addition, open-weights models (DeepSeek, MiniMax M3, GLM, Nemotron) that occasionally emit trailing commas or unescaped quotes in tool arguments are automatically self-healed in microseconds by `json-repair`, eliminating crashes and dropped turns.
+
+**Windows `winloop` event loop.** On Windows, the server's asyncio loop is accelerated by `winloop` (C `libuv`), providing 2x higher throughput and lower CPU latency on concurrent streaming sockets.
+
+**Exact Hugging Face BPE tokenization.** Token estimation incorporates Hugging Face Rust `tokenizers` for exact byte-fallback BPE counts on DeepSeek V3/R1, Qwen 2.5, and Llama 3 models in addition to OpenAI `tiktoken`.
+
+**Universal Agent Protocols & SDKs.** Built-in support for the official Anthropic Model Context Protocol (`mcp`) SDK and official Google GenAI (`google-genai`) SDK for native Gemini 2.5 thinking token controls and search grounding.
+
+**Smart Semantic Tool Filtering.** `fastembed` local semantic search dynamically prunes bloated toolsets (>20 tools) to reduce prompt token consumption by 80%, with 100% guaranteed retention for core coding tools and any tool explicitly mentioned in the user prompt.
+
+**Zstandard wire compression & desktop alerts.** Ultra-low-latency `zstandard` payload compression for large 100k+ token prompts, alongside native Windows WinRT desktop toast alerts when long agent runs complete.
+
+**Instant 0.0s context window resolution.** `fcc-context` instantly resolves verified model context ceilings from memory (1,048,576 tokens for DeepSeek V4 & Kimi K3, 262,144 for MiniMax M3) with a fast-fail 20s timeout, eliminating 10-minute network stalls.
 
 **A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page you are developing, with tools that read the DOM and that tab's console — so debugging a page no longer means pasting a stack trace into a terminal. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host. That path is gated behind a per-extension registration, a `BROWSER_SHELL_ENABLED` switch, per-command approval in the panel, and a directory confinement — because the obvious alternative, an exec endpoint on `fcc-server`, would be unauthenticated LAN-reachable RCE given that server binds `0.0.0.0` by default and skips auth when `ANTHROPIC_AUTH_TOKEN` is blank. See [Connect Your Client](#connect-your-client).
 
