@@ -36,7 +36,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 - **Dynamic 1M Context Auto-Resolution**: Automatic per-model context allocation (1,048,576 tokens for DeepSeek V4 & Kimi K3, 262,144 for MiniMax M3) with instant 0.0s `fcc-context` lookups.
 - **Multi-Agent Launchers**: Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, Pi with `fcc-pi`, Hermes with `fcc-hermes`, DeepSeek Harness with `fcc-dsh`, or Grok Build with `fcc-grok`.
 - **Desktop Launcher & Native Alerts**: Run FCC in the background on Windows/macOS with native toast alerts on task completion.
-- **Provider Switching & Key Pooling**: Switch among 14 providers and pool multiple NVIDIA NIM or OpenRouter keys into one self-healing virtual key.
+- **Provider Switching & Key Pooling**: Switch among 14 cloud and local providers from the Admin UI, and pool multiple NVIDIA NIM or OpenRouter keys into one self-healing virtual key.
 - **Diagnostics**: Inspect your entire environment and model catalogs in one command with `fcc-doctor`.
 - **Chrome Side Panel**: Debug active tabs from a side panel with `fcc-extension`.
 - **Integrations**: Discord and Telegram bridge with voice-note transcription.
