@@ -26,10 +26,10 @@ CURATED_CONTEXT_WINDOWS: dict[str, dict[str, int]] = {
     "nvidia_nim": {
         "deepseek-ai/deepseek-v4-pro-0813": 1_048_576,
         "deepseek-ai/deepseek-v4-flash-0731": 1_048_576,
-        "minimaxai/minimax-m3": 1_048_576,
-        "nvidia/nemotron-3-ultra-550b-a55b": 262_144,
-        "nvidia/nemotron-3-super-120b-a12b": 262_144,
-        "moonshotai/kimi-k3": 200_000,
+        "minimaxai/minimax-m3": 262_144,
+        "nvidia/nemotron-3-ultra-550b-a55b": 1_048_576,
+        "nvidia/nemotron-3-super-120b-a12b": 1_048_576,
+        "moonshotai/kimi-k3": 1_048_576,
         "meta/muse-glimmer-30b": 131_072,
     },
     # Fallback for when no GROQ_API_KEY is set to read the live catalog, which
