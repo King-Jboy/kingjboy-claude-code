@@ -572,13 +572,15 @@ def nim_rows(
         if not models:
             print("  no nvidia_nim models routed or pinned", file=sys.stderr)
             return []
-    reused = [
-        known[("nvidia_nim", model)]
-        for model in models
-        if not args.refresh
-        and ("nvidia_nim", model) in known
-        and known[("nvidia_nim", model)].context
-    ]
+    reused: list[ModelContext] = []
+    for model in models:
+        key = ("nvidia_nim", model)
+        if not args.refresh and key in known and known[key].context:
+            reused.append(known[key])
+        elif not args.refresh and (
+            curated := curated_context_window("nvidia_nim", model)
+        ):
+            reused.append(ModelContext("nvidia_nim", model, curated, "curated"))
     reused_ids = {row.model for row in reused}
     todo = [model for model in models if model not in reused_ids]
     print(f"  {len(reused)} already known, probing {len(todo)}", file=sys.stderr)
