@@ -28,7 +28,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 
 ## What You Get
 
-- **High-Throughput Speed**: C-accelerated `winloop` event loop on Windows, Rust `orjson` streaming serialization, and `zstandard` wire compression.
+- **High-Throughput Speed**: Compiled Rust `orjson` streaming serialization, zero-copy buffers, and `zstandard` wire compression.
 - **Zero-Crash Tool Calling**: `json-repair` automatically self-heals broken JSON quotes and trailing commas from open-weights models (DeepSeek, MiniMax M3, GLM, Nemotron).
 - **Exact BPE Tokenization**: Hugging Face Rust `tokenizers` integration for exact token budgeting across DeepSeek, Qwen 2.5, and Llama 3.
 - **Agent Protocols**: Built-in Anthropic Model Context Protocol (`mcp`) SDK and official Google GenAI (`google-genai`) SDK for Gemini 2.5 thinking & search grounding.
@@ -737,8 +737,6 @@ Windows PowerShell:
 Everything below is additional to upstream [Alishahryar1/free-claude-code](https://github.com/Alishahryar1/free-claude-code).
 
 **Rust `orjson` acceleration & `json-repair` self-healing.** Stream packet serialization and hot-path JSON decoding run in compiled Rust via `orjson`. In addition, open-weights models (DeepSeek, MiniMax M3, GLM, Nemotron) that occasionally emit trailing commas or unescaped quotes in tool arguments are automatically self-healed in microseconds by `json-repair`, eliminating crashes and dropped turns.
-
-**Windows `winloop` event loop.** On Windows, the server's asyncio loop is accelerated by `winloop` (C `libuv`), providing 2x higher throughput and lower CPU latency on concurrent streaming sockets.
 
 **Exact Hugging Face BPE tokenization.** Token estimation incorporates Hugging Face Rust `tokenizers` for exact byte-fallback BPE counts on DeepSeek V3/R1, Qwen 2.5, and Llama 3 models in addition to OpenAI `tiktoken`.
 
