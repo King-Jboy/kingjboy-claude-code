@@ -148,6 +148,12 @@ class ProviderRuntimeManager:
         self._synchronize_model_cache_scope()
         return self._model_cache.cached_model_ids()
 
+    def cached_model_info(
+        self, provider_id: str, model_id: str
+    ) -> ProviderModelInfo | None:
+        self._synchronize_model_cache_scope()
+        return self._model_cache.cached_model_info(provider_id, model_id)
+
     def cached_model_supports_thinking(
         self, provider_id: str, model_id: str
     ) -> bool | None:

@@ -8,6 +8,7 @@ from free_claude_code.cli.launchers.hermes_config import (
     build_hermes_managed_config,
 )
 from free_claude_code.cli.launchers.model_catalog import ClientModel
+from free_claude_code.core.model_capabilities import ModelInputModality
 
 
 def _models() -> tuple[ClientModel, ...]:
@@ -16,13 +17,26 @@ def _models() -> tuple[ClientModel, ...]:
             wire_slug="nvidia_nim/vendor/model",
             provider_model_ref="nvidia_nim/vendor/model",
             display_name="Nested model",
-            allows_reasoning=True,
+            supports_reasoning=True,
+            input_modalities=frozenset(
+                {ModelInputModality.TEXT, ModelInputModality.IMAGE}
+            ),
+            context_window_tokens=131072,
+            max_output_tokens=8192,
         ),
         ClientModel(
             wire_slug="claude-3-freecc-no-thinking/open_router/plain-model",
             provider_model_ref="open_router/plain-model",
             display_name="No-thinking model",
-            allows_reasoning=False,
+            supports_reasoning=False,
+            input_modalities=frozenset({ModelInputModality.TEXT}),
+            max_output_tokens=4096,
+        ),
+        ClientModel(
+            wire_slug="future_provider/unknown-model",
+            provider_model_ref="future_provider/unknown-model",
+            display_name="Unknown model",
+            supports_reasoning=None,
         ),
     )
 
@@ -51,6 +65,7 @@ def test_hermes_config_pins_responses_catalog_and_fallbacks() -> None:
             "models": {
                 "nvidia_nim/vendor/model": {},
                 "claude-3-freecc-no-thinking/open_router/plain-model": {},
+                "future_provider/unknown-model": {},
             },
             "discover_models": False,
         }
@@ -64,6 +79,21 @@ def test_hermes_config_pins_responses_catalog_and_fallbacks() -> None:
     }
     assert managed.config["fallback_providers"] == []
     assert managed.config["fallback_model"] == []
+    assert managed.config["model_overrides"] == {
+        "custom": {
+            "nvidia_nim/vendor/model": {
+                "supports_reasoning": True,
+                "supports_vision": True,
+                "context_window": 131072,
+                "max_output_tokens": 8192,
+            },
+            "claude-3-freecc-no-thinking/open_router/plain-model": {
+                "supports_reasoning": False,
+                "supports_vision": False,
+                "max_output_tokens": 4096,
+            },
+        }
+    }
 
     auxiliary = managed.config["auxiliary"]
     assert isinstance(auxiliary, dict)

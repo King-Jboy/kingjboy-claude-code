@@ -590,12 +590,9 @@ def test_launch_codex_passes_responses_config_and_child_env(
             {
                 "data": [
                     {
-                        "id": "anthropic/nvidia_nim/provider-model",
+                        "id": "nvidia_nim/provider-model",
+                        "provider_model_ref": "nvidia_nim/provider-model",
                         "display_name": "NVIDIA model",
-                    },
-                    {
-                        "id": ("claude-3-freecc-no-thinking/nvidia_nim/provider-model"),
-                        "display_name": "NVIDIA model (no thinking)",
                     },
                     {
                         "id": "claude-opus-4-20250514",

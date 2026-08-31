@@ -58,6 +58,10 @@ class RequestRuntimePort(Protocol):
 
     def current_settings(self) -> Settings: ...
 
+    def cached_model_info(
+        self, provider_id: str, model_id: str
+    ) -> ProviderModelInfo | None: ...
+
     def cached_model_supports_thinking(
         self, provider_id: str, model_id: str
     ) -> bool | None: ...
