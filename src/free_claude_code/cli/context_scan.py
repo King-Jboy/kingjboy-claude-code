@@ -537,9 +537,9 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=180.0,
+        default=20.0,
         help=(
-            "Seconds to wait per probe (default 180). A rejection is fast; only "
+            "Seconds to wait per probe (default 20). A rejection is fast; only "
             "a model that accepts the probe is slow, and that answer is not "
             "worth waiting many minutes for."
         ),
