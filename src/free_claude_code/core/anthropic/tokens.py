@@ -1,9 +1,7 @@
-"""Token estimation for Anthropic-compatible requests."""
-
-import json
-
 import tiktoken
 from loguru import logger
+
+from free_claude_code.core.json_utils import fast_json_dumps
 
 from .content import get_block_attr
 from .models import Message, SystemContent, Tool
@@ -53,7 +51,7 @@ def get_token_count(
                     inp = get_block_attr(block, "input", {})
                     block_id = get_block_attr(block, "id", "")
                     total_tokens += _count_text_tokens(str(name))
-                    total_tokens += _count_text_tokens(json.dumps(inp))
+                    total_tokens += _count_text_tokens(fast_json_dumps(inp))
                     total_tokens += _count_text_tokens(str(block_id))
                     total_tokens += 15
                 elif b_type == "image":
@@ -72,7 +70,7 @@ def get_token_count(
                     if isinstance(content, str):
                         total_tokens += _count_text_tokens(content)
                     else:
-                        total_tokens += _count_text_tokens(json.dumps(content))
+                        total_tokens += _count_text_tokens(fast_json_dumps(content))
                     total_tokens += _count_text_tokens(str(tool_use_id))
                     total_tokens += 8
                 elif b_type in (
@@ -85,9 +83,7 @@ def get_token_count(
                     else:
                         blob = block
                     try:
-                        total_tokens += _count_text_tokens(
-                            json.dumps(blob, default=str, ensure_ascii=False)
-                        )
+                        total_tokens += _count_text_tokens(fast_json_dumps(blob))
                     except (TypeError, ValueError, OverflowError) as e:
                         logger.debug(
                             "Block encode fallback b_type={} err={}", b_type, e
@@ -100,14 +96,16 @@ def get_token_count(
                         b_type,
                     )
                     try:
-                        total_tokens += _count_text_tokens(json.dumps(block))
+                        total_tokens += _count_text_tokens(fast_json_dumps(block))
                     except TypeError, ValueError:
                         total_tokens += _count_text_tokens(str(block))
 
     if tools:
         for tool in tools:
             tool_str = (
-                tool.name + (tool.description or "") + json.dumps(tool.input_schema)
+                tool.name
+                + (tool.description or "")
+                + fast_json_dumps(tool.input_schema)
             )
             total_tokens += _count_text_tokens(tool_str)
 
