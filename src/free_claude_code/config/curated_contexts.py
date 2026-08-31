@@ -22,6 +22,16 @@ CURATED_CONTEXT_WINDOWS: dict[str, dict[str, int]] = {
         "deepseek-chat": 128_000,
         "deepseek-reasoner": 128_000,
     },
+    # NVIDIA NIM published documentation & model cards specifications
+    "nvidia_nim": {
+        "deepseek-ai/deepseek-v4-pro-0813": 1_048_576,
+        "deepseek-ai/deepseek-v4-flash-0731": 1_048_576,
+        "minimaxai/minimax-m3": 1_048_576,
+        "nvidia/nemotron-3-ultra-550b-a55b": 262_144,
+        "nvidia/nemotron-3-super-120b-a12b": 262_144,
+        "moonshotai/kimi-k3": 200_000,
+        "meta/muse-glimmer-30b": 131_072,
+    },
     # Fallback for when no GROQ_API_KEY is set to read the live catalog, which
     # also states these. Only families whose figure is stable are recorded.
     "groq": {
