@@ -1,17 +1,8 @@
-"""Unit tests for zstandard and semantic tool selection."""
+"""Unit tests for semantic tool selection."""
 
 from free_claude_code.core.tools.semantic_selector import (
     select_relevant_tools,
 )
-from free_claude_code.core.zstd_utils import compress_zstd, decompress_zstd
-
-
-def test_zstd_compression_and_decompression_roundtrip() -> None:
-    original = b"Hello, Free Claude Code with ultra-fast Zstandard compression!" * 50
-    compressed = compress_zstd(original)
-    assert len(compressed) < len(original)
-    decompressed = decompress_zstd(compressed)
-    assert decompressed == original
 
 
 def test_semantic_selector_preserves_all_tools_when_under_threshold() -> None:

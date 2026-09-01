@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Free Claude Code Desktop Companion",
-  "version": "6.20.5",
+  "version": "6.20.6",
   "description": "Chat with your Free Claude Code proxy in a side panel, with tools that read and act on the watched tab.",
   "minimum_chrome_version": "116",
   "permissions": ["sidePanel", "storage", "scripting", "tabs", "nativeMessaging"],
