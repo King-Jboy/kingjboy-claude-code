@@ -31,11 +31,7 @@ class ProviderRuntime:
         return provider_id in self._providers
 
     def key_pool_status(self) -> dict[str, KeyPoolStatus]:
-        """Return pool health per already-constructed provider.
-
-        Only constructed providers are reported: building one just to inspect
-        it would spend real credentials on a status read.
-        """
+        """Return pool health per already-constructed provider."""
         statuses: dict[str, KeyPoolStatus] = {}
         for provider_id, provider in self._providers.items():
             status = provider.key_pool_status()

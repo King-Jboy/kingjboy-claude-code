@@ -635,14 +635,14 @@ The union of those construction owners must exactly equal the neutral provider
 catalog.
 `ProviderRuntime` directly guarantees one provider and admission controller per
 provider ID within a generation; there is no pass-through cache object, process
-singleton, or second admission registry. A provider whose catalog entry declares
-a credential pool additionally owns one
-[providers/key_pool.py](src/free_claude_code/providers/key_pool.py) `KeyPool`
-holding a per-key health record and an optional usage budget. That pool is
-credential selection, not a second admission authority: every attempt still
-passes the single provider-wide controller, whose rate and concurrency budgets
-are scaled by pool size so the shared gate does not cap the pool at one key's
-rate.
+singleton, or second admission registry.
+
+[providers/key_pool.py](src/free_claude_code/providers/key_pool.py) owns
+credential pools for providers with multiple API keys configured. Selection is
+least-recently-used (LRU), spreading request load evenly across all keys.
+Failures trigger temporary cooldowns (5 minutes for early hiccups, 20 minutes
+after 3 consecutive failures), and requests automatically hop to the next
+available key on 401, 403, or 429 status codes.
 
 [providers/admission.py](src/free_claude_code/providers/admission.py) owns the
 complete shared upstream-admission lifecycle for that provider generation. A
@@ -663,37 +663,6 @@ to every coalesced logical execution, even if a later recovery generation starts
 New work fails fast during the provider-directed cooldown; once it expires,
 exactly one new caller becomes the next probe. There is no background retry
 worker, copied request queue, or second scheduling system.
-
-[providers/key_pool.py](src/free_claude_code/providers/key_pool.py) owns
-credential pools for providers whose `ProviderDescriptor` declares a
-`credential_pool_attr`. A pool exists only when two or more keys are configured,
-so single-credential setups keep the exact prior admission behavior. Selection is
-least-recently-used: each request takes the key idle longest, so load spreads
-across the pool by itself and the provider is the only judge of a key's health -
-the pool never throttles on its own and never parks a caller. Ownership is split
-by what the failure actually means. Key-local outcomes settle inside the pool:
-`401` cools a key on an authentication ladder (five minutes, hardening to twenty
-once refusals repeat - never a tombstone, because providers also answer 401
-during their own outages), `429` cools it until the reset the provider itself
-reported through `Retry-After` or `X-RateLimit-Reset` (sixty seconds when it
-reported nothing), and either way the caller hops to another key. `403` is
-ambiguous - NVIDIA NIM sends it for a dead key, other providers to refuse the
-request - so it cools the key briefly and escalates only once every key has
-refused the same request alike, undoing cooldowns that proved wrong. A hop
-consumes no `ProviderRetrySession` attempt, so a large pool is never bounded by
-the shared five-attempt budget. Everything that is not key-specific - `5xx`,
-timeouts, connection errors - escalates unchanged to the provider-wide recovery
-episode, so a genuinely failing backend is not hammered once per key.
-
-When every eligible key is cooling or spent, `acquire` reports a retryable
-failure immediately instead of parking the client connection; the recovery
-episode owns the backoff. When every key refused authentication, the failure is
-terminal instead, telling the operator to check the configured keys. Keys can
-carry a usage budget with a rolling window (OpenRouter's daily cap): each served
-request counts against its key, and a spent key sits out until the window rolls
-over. Pool state is in-memory and resets on restart, which is self-correcting: a
-key still cooling upstream costs one wasted attempt before its fresh `429`
-re-establishes the cooldown.
 
 Retired generations retain their own synchronization state until request leases
 drain, while new generations and separate server instances never reuse it. Hot

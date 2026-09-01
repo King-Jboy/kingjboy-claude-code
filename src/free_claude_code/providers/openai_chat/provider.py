@@ -239,16 +239,14 @@ class OpenAIChatProvider(BaseProvider):
         self._client = self._build_client(api_key_provider or self._api_key)
         self._key_pool = self._build_key_pool(config.api_keys)
 
+    def _client_for_key(self, key: str) -> AsyncOpenAI:
+        """Return a client view bound to ``key`` reusing the underlying connection pool."""
+        return self._client.with_options(api_key=key)
+
     def _build_client(
         self, credential: str | OpenAIAsyncCredentialProvider
     ) -> AsyncOpenAI:
-        """Build one client bound to a single credential.
-
-        Each client owns its proxy transport, so closing one pooled client never
-        strands the others. The SDK's 3.x line speaks httpx2, so the timeout and
-        any proxy transport must be httpx2 objects; a plain httpx client is
-        silently ignored here.
-        """
+        """Build one client bound to a single credential."""
         config = self._config
         timeout = httpx2.Timeout(
             config.http_read_timeout,
@@ -283,7 +281,7 @@ class OpenAIChatProvider(BaseProvider):
         return KeyPool(
             api_keys,
             provider_name=self._provider_name,
-            client_factory=self._build_client,
+            client_factory=self._client_for_key,
             usage_limit=config.key_usage_limit,
             usage_window_seconds=config.key_usage_window_seconds,
         )
@@ -294,7 +292,7 @@ class OpenAIChatProvider(BaseProvider):
         return None if pool is None else pool.status()
 
     async def cleanup(self) -> None:
-        """Release HTTP client resources, including every pooled client."""
+        """Release HTTP client resources."""
         try:
             client = getattr(self, "_client", None)
             if client is not None:
@@ -312,15 +310,7 @@ class OpenAIChatProvider(BaseProvider):
         return extract_openai_model_infos(payload, provider_name=self._provider_name)
 
     async def _list_models_payload(self) -> Any:
-        """Fetch one OpenAI-compatible model-list payload with shared retries.
-
-        Routed through the pool because most providers do reject an invalid key
-        here, so hopping is what keeps discovery working when the first key is
-        dead. Success is not treated as proof of the credential: the providers
-        that pool keys - NVIDIA NIM and OpenRouter - both serve this endpoint
-        unauthenticated, so a dead key "succeeds" and would otherwise have its
-        backoff reset every refresh.
-        """
+        """Fetch one OpenAI-compatible model-list payload with shared retries."""
         pool = self._key_pool
         operation = (
             self._client.models.list
@@ -483,13 +473,7 @@ class OpenAIChatProvider(BaseProvider):
         raise RuntimeError("provider retry session exhausted without a final error")
 
     async def _open_chat_stream(self, create_body: dict[str, Any]) -> Any:
-        """Open one upstream stream, hopping past key-local failures when pooled.
-
-        A pooled ``401``/``403``/``429`` is settled inside the pool and costs no
-        provider retry attempt, so a large pool is never limited by the shared
-        five-attempt budget. Everything else propagates to the caller's attempt
-        so genuine backend failures keep their provider-wide recovery episode.
-        """
+        """Open one upstream stream, hopping past key-local failures when pooled."""
         pool = self._key_pool
         if pool is None:
             return await self._client.chat.completions.create(

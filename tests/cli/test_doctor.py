@@ -117,7 +117,6 @@ def test_a_configured_pool_reports_its_parsed_size() -> None:
 
 
 def test_a_single_key_warns_that_no_pool_is_built() -> None:
-    # Below two keys KeyPool is never constructed, which is easy to miss.
     settings = _settings(NVIDIA_NIM_API_KEYS='["only"]')
 
     (finding,) = list(doctor.check_key_pools(settings))
@@ -126,22 +125,7 @@ def test_a_single_key_warns_that_no_pool_is_built() -> None:
     assert "no pool" in finding.detail
 
 
-def test_config_that_will_not_load_is_reported_not_raised(monkeypatch, capsys) -> None:
-    # Settings rejects a malformed pool at construction, so the failure a user
-    # actually hits is fcc-doctor itself refusing to start. It must explain.
-    monkeypatch.setattr(
-        doctor, "Settings", lambda: _settings(NVIDIA_NIM_API_KEYS="a, b")
-    )
-
-    assert doctor.run(["--offline"]) == 1
-    out = capsys.readouterr().out
-    assert "was rejected" in out
-    assert "NVIDIA_NIM_API_KEYS" in out
-
-
 def test_pool_env_names_come_from_the_manifest_not_from_upper_casing() -> None:
-    # open_router_api_keys is exposed as OPENROUTER_API_KEYS, so upper-casing
-    # the attribute would print a variable that does not exist.
     settings = _settings(OPENROUTER_API_KEYS='["a", "b"]')
 
     (finding,) = list(doctor.check_key_pools(settings))

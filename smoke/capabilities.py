@@ -287,10 +287,13 @@ CAPABILITY_CONTRACTS: tuple[CapabilityContract, ...] = (
         "credential_key_pool",
         "provider_key_pool",
         "free_claude_code.providers.key_pool.KeyPool",
-        "a JSON list of interchangeable provider keys and per-attempt outcomes",
-        "per-key rate windows, retirement on 401/403, cooldown on 429, key hops",
-        "terminal non-retryable failure when every key is retired or long-cooling",
-        ("tests/providers/test_key_pool.py", "tests/config/test_api_keys.py"),
+        "a list of interchangeable provider keys and per-attempt outcomes",
+        "LRU distribution across all keys, failure cooldowns, and automatic key hopping",
+        "failover across keys within request, 429 when all keys exhausted",
+        (
+            "tests/providers/test_key_pool.py",
+            "tests/providers/test_openai_chat_key_pool.py",
+        ),
     ),
     CapabilityContract(
         "provider_runtime",

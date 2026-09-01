@@ -199,13 +199,9 @@ def check_key_pools(settings: Settings) -> Iterator[Finding]:
         if attr is None:
             continue
         raw = getattr(settings, attr, "") or ""
-        # Upper-casing the attribute is not the env name; OPENROUTER_API_KEYS
-        # is backed by open_router_api_keys. The manifest owns the mapping.
         env_name = env_names.get(attr, attr.upper())
         if not raw.strip():
             continue
-        # Settings already rejected malformed pools at construction, so this
-        # parse cannot fail here; run() reports that case instead.
         keys = parse_api_key_list(raw, env_name=env_name)
         if len(keys) == 1:
             yield Finding(

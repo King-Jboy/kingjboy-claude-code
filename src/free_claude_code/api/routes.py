@@ -236,13 +236,7 @@ async def pool_status(
     services: ApiServices = Depends(get_services),
     _auth=Depends(require_proxy_auth),
 ):
-    """Report pooled-credential health, counts only, for API clients.
-
-    The side panel cannot read the Admin API's copy of this: admin routes
-    reject non-loopback Origins, and a chrome-extension origin is not one.
-    This is the same read-only payload behind the proxy's own auth, with no
-    config-mutation surface to widen.
-    """
+    """Report pooled-credential health, counts only, for API clients."""
     return {"key_pools": services.admin.key_pool_status()}
 
 
