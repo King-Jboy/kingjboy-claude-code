@@ -166,7 +166,10 @@ class ServerSupervisor:
             log_config=(
                 uvicorn.config.LOGGING_CONFIG if self._console_logging else None
             ),
+            timeout_keep_alive=600,
             timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_SECONDS,
+            loop="auto",
+            http="auto",
         )
         server = uvicorn.Server(config)
         with self._lock:
