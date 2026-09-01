@@ -1,7 +1,6 @@
 """FastAPI streaming response wrappers for public API wire formats."""
 
 import asyncio
-import time
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -24,7 +23,6 @@ from free_claude_code.core.anthropic.streaming import (
 from free_claude_code.core.async_iterators import try_close_async_iterator
 from free_claude_code.core.diagnostics import safe_exception_message
 from free_claude_code.core.failures import find_execution_failure
-from free_claude_code.core.notifications import send_task_notification
 from free_claude_code.core.trace import close_stream_input, trace_event
 
 TERMINAL_EXECUTION_ERROR_HEADERS = {"x-should-retry": "false"}
@@ -285,7 +283,6 @@ class _PrefetchedStream(AsyncIterator[str]):
         self._body = body
         self._terminal_frame = terminal_frame
         self._terminal_failure_observer = terminal_failure_observer
-        self._start_time = time.perf_counter()
         self._done = False
         self._closed = False
 
@@ -303,16 +300,6 @@ class _PrefetchedStream(AsyncIterator[str]):
             return await anext(self._body)
         except StopAsyncIteration:
             self._done = True
-            if self._start_time is not None:
-                duration = time.perf_counter() - self._start_time
-                if duration >= 5.0:
-                    asyncio.create_task(
-                        asyncio.to_thread(
-                            send_task_notification,
-                            "Free Claude Code",
-                            f"Claude Code task completed ({int(duration)}s)",
-                        )
-                    )
             raise
         except BaseExceptionGroup as exc:
             # Cancellation is control flow, not a stream outcome: a group

@@ -1,6 +1,5 @@
-"""Unit tests for zstandard, notifications, and semantic tool selection."""
+"""Unit tests for zstandard and semantic tool selection."""
 
-from free_claude_code.core.notifications import send_task_notification
 from free_claude_code.core.tools.semantic_selector import (
     select_relevant_tools,
 )
@@ -62,9 +61,3 @@ def test_semantic_selector_always_preserves_core_and_explicit_tools() -> None:
 
     # Explicitly requested / matched tool MUST be preserved
     assert "mcp_sqlite_query" in names
-
-
-def test_notifications_headless_safely_returns_false() -> None:
-    # When FCC_HEADLESS or CI is set, it safely returns False without error
-    result = send_task_notification("Test", "Completed")
-    assert isinstance(result, bool)
