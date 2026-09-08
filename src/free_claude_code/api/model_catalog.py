@@ -152,9 +152,19 @@ def _build_claude_models_response(
     """Preserve the established Claude-compatible catalog exactly."""
     models: list[ModelResponse] = []
     seen: set[str] = set()
+    recorded_windows = load_context_windows()
 
     for ref in configured_chat_model_refs(settings):
         model_info = runtime.cached_model_info(ref.provider_id, ref.model_id)
+        ctx = _resolve_inventory_context_window(
+            ref.provider_id,
+            ref.model_id,
+            model_info_tokens=(
+                model_info.context_window_tokens if model_info is not None else None
+            ),
+            recorded_windows=recorded_windows,
+            settings=settings,
+        )
         _append_provider_model_variants(
             models,
             seen,
@@ -162,11 +172,21 @@ def _build_claude_models_response(
             supports_thinking=(
                 model_info.supports_thinking if model_info is not None else None
             ),
+            context_window_tokens=ctx,
         )
 
     for pinned in pinned_model_refs(settings):
         provider_id, _, model_id = pinned.partition("/")
         model_info = runtime.cached_model_info(provider_id, model_id)
+        ctx = _resolve_inventory_context_window(
+            provider_id,
+            model_id,
+            model_info_tokens=(
+                model_info.context_window_tokens if model_info is not None else None
+            ),
+            recorded_windows=recorded_windows,
+            settings=settings,
+        )
         _append_provider_model_variants(
             models,
             seen,
@@ -174,15 +194,25 @@ def _build_claude_models_response(
             supports_thinking=(
                 model_info.supports_thinking if model_info is not None else None
             ),
+            context_window_tokens=ctx,
         )
 
     if settings.model_catalog_scope is ModelCatalogScope.ALL:
         for model_info in runtime.cached_prefixed_model_infos():
+            provider_id, _, model_id = model_info.model_id.partition("/")
+            ctx = _resolve_inventory_context_window(
+                provider_id,
+                model_id,
+                model_info_tokens=model_info.context_window_tokens,
+                recorded_windows=recorded_windows,
+                settings=settings,
+            )
             _append_provider_model_variants(
                 models,
                 seen,
                 model_info.model_id,
                 supports_thinking=model_info.supports_thinking,
+                context_window_tokens=ctx,
             )
 
     for model in SUPPORTED_CLAUDE_MODELS:
@@ -385,11 +415,17 @@ def _responses_inference_idle_timeout_seconds(provider_progress_timeout: float) 
     return math.ceil(provider_progress_timeout) + _INFERENCE_IDLE_TIMEOUT_MARGIN_SECONDS
 
 
-def _discovered_model_response(model_id: str, *, display_name: str) -> ModelResponse:
+def _discovered_model_response(
+    model_id: str,
+    *,
+    display_name: str,
+    context_window_tokens: int | None = None,
+) -> ModelResponse:
     return ModelResponse(
         id=model_id,
         display_name=display_name,
         created_at=DISCOVERED_MODEL_CREATED_AT,
+        context_window_tokens=context_window_tokens,
     )
 
 
@@ -408,6 +444,7 @@ def _append_provider_model_variants(
     provider_model_ref: str,
     *,
     supports_thinking: bool | None = None,
+    context_window_tokens: int | None = None,
 ) -> None:
     if supports_thinking is not False:
         _append_unique_model(
@@ -416,6 +453,7 @@ def _append_provider_model_variants(
             _discovered_model_response(
                 gateway_model_id(provider_model_ref),
                 display_name=provider_model_ref,
+                context_window_tokens=context_window_tokens,
             ),
         )
     _append_unique_model(
@@ -424,5 +462,6 @@ def _append_provider_model_variants(
         _discovered_model_response(
             no_thinking_gateway_model_id(provider_model_ref),
             display_name=f"{provider_model_ref} (no thinking)",
+            context_window_tokens=context_window_tokens,
         ),
     )

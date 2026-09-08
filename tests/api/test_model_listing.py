@@ -86,6 +86,8 @@ def test_models_list_includes_configured_refs_cached_provider_models_and_aliases
         "provider_model_ref" not in item and "apiBackend" not in item
         for item in data["data"]
     )
+    windows = {item["id"]: item.get("contextWindow") for item in data["data"]}
+    assert windows["anthropic/deepseek/deepseek-chat"] == 128000
 
 
 def test_models_list_uses_thinking_metadata_for_cached_models():
