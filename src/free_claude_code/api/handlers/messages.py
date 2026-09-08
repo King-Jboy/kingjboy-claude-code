@@ -503,9 +503,7 @@ async def _messages_response_to_sse_stream(
             )
             raw_input = block_dict.get("input", {})
             input_str = (
-                json.dumps(raw_input)
-                if not isinstance(raw_input, str)
-                else raw_input
+                json.dumps(raw_input) if not isinstance(raw_input, str) else raw_input
             )
             if input_str:
                 yield format_sse_event(

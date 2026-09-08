@@ -822,8 +822,12 @@ class _OpenAIChatStreamRunner:
                                 "index": tool_call.index,
                                 "id": tool_call.id,
                                 "function": {
-                                    "name": getattr(fn, "name", None) if fn is not None else None,
-                                    "arguments": (getattr(fn, "arguments", "") or "") if fn is not None else "",
+                                    "name": getattr(fn, "name", None)
+                                    if fn is not None
+                                    else None,
+                                    "arguments": (getattr(fn, "arguments", "") or "")
+                                    if fn is not None
+                                    else "",
                                 },
                             }
                             if extra_content:
