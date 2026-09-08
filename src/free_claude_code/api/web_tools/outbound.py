@@ -209,9 +209,14 @@ async def _run_web_fetch(url: str, egress: WebFetchEgressPolicy) -> dict[str, st
     """Fetch URL with manual redirects; each hop is DNS-pinned to validated addresses."""
     current_url = url
     redirect_hops = 0
-    timeout = ClientTimeout(total=_REQUEST_TIMEOUT_S)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _REQUEST_TIMEOUT_S
 
     while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError("web_fetch cumulative timeout exceeded")
+        timeout = ClientTimeout(total=remaining)
         addr_infos = await asyncio.to_thread(
             get_validated_stream_addrinfos_for_egress, current_url, egress
         )
@@ -260,7 +265,10 @@ async def _run_web_fetch(url: str, egress: WebFetchEgressPolicy) -> dict[str, st
 
         break
 
-    text = body_bytes.decode(encoding, errors="replace")
+    try:
+        text = body_bytes.decode(encoding, errors="replace")
+    except LookupError:
+        text = body_bytes.decode("utf-8", errors="replace")
     title = final_url
     data = text
     if "html" in content_type.lower():

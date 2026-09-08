@@ -23,8 +23,18 @@ def resolve_reasoning_policy(
     if preference is ReasoningPreference.OFF:
         return ReasoningPolicy.off()
     if preference is not ReasoningPreference.CLIENT:
-        return ReasoningPolicy.on(effort=ReasoningEffort(preference.value))
-    return client_reasoning_policy(request)
+        policy = ReasoningPolicy.on(effort=ReasoningEffort(preference.value))
+    else:
+        policy = client_reasoning_policy(request)
+
+    if request.max_tokens is not None and request.max_tokens > 1:
+        budget = policy.numeric_budget_tokens
+        if budget is not None and budget >= request.max_tokens:
+            return ReasoningPolicy.on(
+                effort=policy.effort,
+                budget_tokens=request.max_tokens - 1,
+            )
+    return policy
 
 
 def client_reasoning_policy(request: MessagesRequest) -> ReasoningPolicy:

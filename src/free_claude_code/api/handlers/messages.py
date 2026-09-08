@@ -1,11 +1,14 @@
 """Claude Messages API product flow."""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
+from pydantic import BaseModel
 
 from free_claude_code.api.detection import is_safety_classifier_request
 from free_claude_code.api.optimization_handlers import try_optimizations
@@ -42,6 +45,7 @@ from free_claude_code.application.routing import ModelRouter, RoutedMessagesRequ
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic import (
     MessagesRequest,
+    MessagesResponse,
     aggregate_anthropic_sse_to_message,
     anthropic_error_payload,
     anthropic_error_type_for_failure,
@@ -49,6 +53,7 @@ from free_claude_code.core.anthropic import (
     anthropic_status_for_error_type,
     get_token_count,
 )
+from free_claude_code.core.anthropic.streaming.emitter import format_sse_event
 from free_claude_code.core.async_iterators import try_close_async_iterator
 from free_claude_code.core.diagnostics import safe_exception_message
 from free_claude_code.core.failures import ExecutionFailure, find_execution_failure
@@ -166,7 +171,15 @@ class MessagesHandler:
         request_id: str,
     ) -> object:
         if isinstance(result, _MessagesCompleteResult):
-            return result.response
+            if not stream or not isinstance(result.response, MessagesResponse):
+                return result.response
+            return await anthropic_sse_streaming_response(
+                _messages_response_to_sse_stream(result.response),
+                pre_start_error_response=lambda exc: self._pre_start_error_response(
+                    exc, request_id=request_id
+                ),
+                request_id=request_id,
+            )
         if not stream:
             # Non-streaming clients (e.g. Claude Code utility calls) need a
             # complete JSON Message; the internal pipeline is always SSE, so
@@ -183,6 +196,8 @@ class MessagesHandler:
                 except ExecutionFailure as exc:
                     return self._execution_failure_response(exc, request_id=request_id)
                 except BaseExceptionGroup as exc:
+                    if exc.subgroup(asyncio.CancelledError) is not None:
+                        raise
                     failure = find_execution_failure(exc)
                     if failure is not None:
                         return self._execution_failure_response(
@@ -395,3 +410,143 @@ def _stream_error_fields(error: dict[str, object]) -> tuple[str, str]:
         else "Provider request failed unexpectedly."
     )
     return error_type, message
+
+
+async def _messages_response_to_sse_stream(
+    response: MessagesResponse,
+) -> AsyncIterator[str]:
+    yield format_sse_event(
+        "message_start",
+        {
+            "type": "message_start",
+            "message": {
+                "id": response.id,
+                "type": "message",
+                "role": response.role,
+                "content": [],
+                "model": response.model,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": 1,
+                },
+            },
+        },
+    )
+    for idx, block in enumerate(response.content):
+        block_dict: dict[str, Any] = (
+            block.model_dump()
+            if isinstance(block, BaseModel)
+            else (dict(block) if isinstance(block, dict) else {})
+        )
+        block_type = block_dict.get("type", "text")
+        if block_type == "text":
+            yield format_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": {"type": "text", "text": ""},
+                },
+            )
+            text = block_dict.get("text", "")
+            if text:
+                yield format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {"type": "text_delta", "text": text},
+                    },
+                )
+            yield format_sse_event(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": idx},
+            )
+        elif block_type == "thinking":
+            yield format_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                },
+            )
+            thinking = block_dict.get("thinking", "")
+            if thinking:
+                yield format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {"type": "thinking_delta", "thinking": thinking},
+                    },
+                )
+            yield format_sse_event(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": idx},
+            )
+        elif block_type == "tool_use":
+            yield format_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": block_dict.get("id", ""),
+                        "name": block_dict.get("name", ""),
+                        "input": {},
+                    },
+                },
+            )
+            raw_input = block_dict.get("input", {})
+            input_str = (
+                json.dumps(raw_input)
+                if not isinstance(raw_input, str)
+                else raw_input
+            )
+            if input_str:
+                yield format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": input_str,
+                        },
+                    },
+                )
+            yield format_sse_event(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": idx},
+            )
+        else:
+            yield format_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": idx,
+                    "content_block": block_dict,
+                },
+            )
+            yield format_sse_event(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": idx},
+            )
+    yield format_sse_event(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": response.stop_reason or "end_turn",
+                "stop_sequence": response.stop_sequence,
+            },
+            "usage": {
+                "output_tokens": response.usage.output_tokens,
+            },
+        },
+    )
+    yield format_sse_event("message_stop", {"type": "message_stop"})

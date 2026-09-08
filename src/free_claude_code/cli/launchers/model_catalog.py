@@ -142,7 +142,7 @@ def _input_modalities(value: object) -> frozenset[ModelInputModality] | None:
         return None
     try:
         modalities = frozenset(ModelInputModality(item) for item in value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     if ModelInputModality.TEXT not in modalities:
         return None

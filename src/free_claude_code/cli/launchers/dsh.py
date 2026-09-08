@@ -150,7 +150,7 @@ def dsh_binary_version(binary_path: str) -> str | None:
             text=True,
             timeout=_VERSION_TIMEOUT_SECONDS,
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None

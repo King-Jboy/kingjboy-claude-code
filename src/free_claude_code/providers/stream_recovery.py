@@ -181,7 +181,12 @@ def is_retryable_stream_error(exc: BaseException) -> bool:
         return True
     if isinstance(exc, ExecutionFailure):
         return exc.retryable
-    if isinstance(exc, openai.AuthenticationError | openai.BadRequestError):
+    if isinstance(
+        exc,
+        openai.AuthenticationError
+        | openai.PermissionDeniedError
+        | openai.BadRequestError,
+    ):
         return False
     if retryable_transient_status(exc) is not None:
         return True

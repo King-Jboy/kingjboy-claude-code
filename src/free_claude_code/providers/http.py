@@ -9,8 +9,10 @@ from free_claude_code.core.trace import trace_event
 
 
 async def maybe_await_aclose(response: Any) -> None:
-    """Call ``aclose`` on httpx-like responses; ignore sync test doubles."""
+    """Call ``aclose`` or async ``close`` on responses/streams; ignore sync test doubles."""
     close = getattr(response, "aclose", None)
+    if not callable(close):
+        close = getattr(response, "close", None)
     if not callable(close):
         return
     result = close()

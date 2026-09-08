@@ -91,7 +91,7 @@ def content_text(content: Any) -> str:
 
 
 def extract_query(text: str) -> str:
-    match = re.search(r"query:\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+    match = re.search(r"query:\s*([^\r\n]+)", text, flags=re.IGNORECASE)
     if match:
         return match.group(1).strip().strip("\"'")
     return text.strip()
@@ -99,4 +99,6 @@ def extract_query(text: str) -> str:
 
 def extract_url(text: str) -> str:
     match = re.search(r"https?://\S+", text)
-    return match.group(0).rstrip(").,]") if match else text.strip()
+    if match:
+        return match.group(0).rstrip(").,]>\"'")
+    return text.strip().strip("\"'<>")

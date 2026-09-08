@@ -115,7 +115,7 @@ def configured_chat_model_refs(
             settings.model_haiku,
             *fallbacks,
         )
-        if model_ref is not None
+        if model_ref is not None and model_ref.strip() and "/" in model_ref
     )
 
     return tuple(

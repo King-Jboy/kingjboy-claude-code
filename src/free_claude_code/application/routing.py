@@ -131,8 +131,8 @@ class ModelRouter:
         route = self._matched_route(claude_model_name)
         if route is not None:
             model = getattr(self._settings, route[1])
-            if isinstance(model, str):
-                return model
+            if isinstance(model, str) and model.strip():
+                return model.strip()
         return self._settings.model
 
     def _resolve_reasoning_preference(

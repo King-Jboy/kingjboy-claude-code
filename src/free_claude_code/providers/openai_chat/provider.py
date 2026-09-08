@@ -817,12 +817,13 @@ class _OpenAIChatStreamRunner:
                             yield event
                         for tool_call in native_tool_calls:
                             extra_content = tool_call_extra_content(tool_call)
+                            fn = getattr(tool_call, "function", None)
                             tool_call_info = {
                                 "index": tool_call.index,
                                 "id": tool_call.id,
                                 "function": {
-                                    "name": tool_call.function.name,
-                                    "arguments": tool_call.function.arguments,
+                                    "name": getattr(fn, "name", None) if fn is not None else None,
+                                    "arguments": (getattr(fn, "arguments", "") or "") if fn is not None else "",
                                 },
                             }
                             if extra_content:

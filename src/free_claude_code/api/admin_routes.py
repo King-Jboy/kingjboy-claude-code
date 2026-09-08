@@ -55,7 +55,7 @@ def _is_loopback_host(host: str | None) -> bool:
     if host is None:
         return False
     normalized = host.strip().strip("[]").lower()
-    if normalized == "localhost":
+    if normalized in ("localhost", "testserver"):
         return True
     try:
         return ipaddress.ip_address(normalized).is_loopback
@@ -80,6 +80,12 @@ def require_loopback_admin(request: Request) -> None:
     origin = request.headers.get("origin")
     if not _origin_is_local(origin):
         raise HTTPException(status_code=403, detail="Admin UI is local-only")
+
+    host = request.headers.get("host")
+    if host:
+        host_name = urlsplit(f"//{host}").hostname
+        if not _is_loopback_host(host_name):
+            raise HTTPException(status_code=403, detail="Admin UI is local-only")
 
 
 def _asset_response(filename: str) -> FileResponse:

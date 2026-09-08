@@ -43,20 +43,27 @@ def _stream_getaddrinfo_or_raise(host: str, port: int) -> list[tuple]:
         ) from exc
 
 
+def _is_ip_global(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped.is_global
+    return ip.is_global
+
+
 def get_validated_stream_addrinfos_for_egress(
     url: str, policy: WebFetchEgressPolicy
 ) -> list[tuple]:
     """Resolve and validate a URL for web_fetch, returning getaddrinfo rows for pinning.
 
-    Each HTTP connect pins to only these `getaddrinfo` results so a malicious DNS
-    server cannot rebind to a disallowed address between resolution and the TCP
-    connect (used by :func:`api.web_tools.outbound._run_web_fetch`).
+    Returns the raw ``socket.getaddrinfo`` tuples so callers can pin the exact
+    resolved addresses rather than re-resolving and exposing themselves to DNS
+    rebinding / time-of-check-time-of-use attacks.
     """
     parsed = urlparse(url)
     scheme = (parsed.scheme or "").lower()
     if scheme not in policy.allowed_schemes:
         raise WebFetchEgressViolation(
-            f"URL scheme {scheme!r} is not allowed for web_fetch"
+            f"Scheme {scheme!r} is not allowed for web_fetch "
+            f"(allowed: {sorted(policy.allowed_schemes)})"
         )
 
     host = parsed.hostname
@@ -80,7 +87,7 @@ def get_validated_stream_addrinfos_for_egress(
         parsed_ip = None
 
     if parsed_ip is not None:
-        if not parsed_ip.is_global:
+        if not _is_ip_global(parsed_ip):
             raise WebFetchEgressViolation(
                 f"Non-public IP host {host!r} is not allowed for web_fetch"
             )
@@ -93,7 +100,7 @@ def get_validated_stream_addrinfos_for_egress(
             resolved = ipaddress.ip_address(addr)
         except ValueError:
             continue
-        if not resolved.is_global:
+        if not _is_ip_global(resolved):
             raise WebFetchEgressViolation(
                 f"Host {host!r} resolves to a non-public address ({resolved})"
             )

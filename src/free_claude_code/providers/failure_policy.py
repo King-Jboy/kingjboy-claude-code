@@ -412,8 +412,22 @@ def _reported_status(exc: BaseException) -> int | None:
     return _status_from_body(getattr(exc, "body", None))
 
 
+_CONTEXT_WINDOW_MESSAGE_MARKERS: tuple[str, ...] = (
+    "maximum context length",
+    "prompt is too long",
+    "context window",
+    "too many tokens",
+    "exceeds model context",
+    "context_length_exceeded",
+)
+
+
 def _reports_context_window_exceeded(exc: BaseException) -> bool:
     if is_context_window_error_code(getattr(exc, "code", None)):
+        return True
+
+    exc_msg = str(getattr(exc, "message", "") or str(exc)).casefold()
+    if any(marker in exc_msg for marker in _CONTEXT_WINDOW_MESSAGE_MARKERS):
         return True
 
     bodies = [attached_upstream_error_body(exc), getattr(exc, "body", None)]
@@ -428,6 +442,9 @@ def _reports_context_window_exceeded(exc: BaseException) -> bool:
             if any(
                 is_context_window_error_code(item.get(key)) for key in ("code", "type")
             ):
+                return True
+            msg = str(item.get("message") or "").casefold()
+            if any(marker in msg for marker in _CONTEXT_WINDOW_MESSAGE_MARKERS):
                 return True
     return False
 

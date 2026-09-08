@@ -204,6 +204,12 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
             ),
             encoding="utf-8",
         )
+        if os.name != "nt":
+            try:
+                path.parent.chmod(0o700)
+                temp_path.chmod(0o600)
+            except OSError:
+                pass
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)

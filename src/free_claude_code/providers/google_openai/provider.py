@@ -1,5 +1,6 @@
 """Shared Google behavior for OpenAI-compatible Gemini endpoints."""
 
+from collections import OrderedDict
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
@@ -37,19 +38,21 @@ class GoogleOpenAIProvider(OpenAIChatProvider):
             api_key_provider=api_key_provider,
             default_headers=default_headers,
         )
-        self._tool_call_extra_content_by_id: dict[str, dict[str, Any]] = {}
+        self._tool_call_extra_content_by_id: OrderedDict[str, dict[str, Any]] = (
+            OrderedDict()
+        )
 
     def _record_tool_call_extra_content(
         self, tool_call_id: str, extra_content: dict[str, Any]
     ) -> None:
-        if (
-            tool_call_id not in self._tool_call_extra_content_by_id
-            and len(self._tool_call_extra_content_by_id)
-            >= _MAX_TOOL_CALL_EXTRA_CONTENT_CACHE
-        ):
-            self._tool_call_extra_content_by_id.pop(
-                next(iter(self._tool_call_extra_content_by_id))
-            )
+        if tool_call_id in self._tool_call_extra_content_by_id:
+            self._tool_call_extra_content_by_id.move_to_end(tool_call_id)
+        else:
+            if (
+                len(self._tool_call_extra_content_by_id)
+                >= _MAX_TOOL_CALL_EXTRA_CONTENT_CACHE
+            ):
+                self._tool_call_extra_content_by_id.popitem(last=False)
         self._tool_call_extra_content_by_id[tool_call_id] = deepcopy(extra_content)
 
     def _finalize_chat_body(

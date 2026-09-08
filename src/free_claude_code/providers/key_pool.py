@@ -235,7 +235,13 @@ class KeyPool:
                 if ki.is_available():
                     ready += 1
                 else:
-                    if ki.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    is_permanently_exhausted = (
+                        ki.exhausted and not ki.usage_window_seconds
+                    )
+                    if (
+                        ki.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES
+                        or is_permanently_exhausted
+                    ):
                         retired += 1
                     else:
                         cooling += 1
@@ -360,8 +366,14 @@ def _rate_limit_reset_seconds(error: BaseException) -> float | None:
     raw = headers.get("x-ratelimit-reset")
     if not isinstance(raw, str) or not raw.strip():
         return None
+    raw_str = raw.strip().lower()
     try:
-        value = float(raw.strip())
+        if raw_str.endswith("ms"):
+            value = float(raw_str[:-2].strip()) / 1000.0
+        elif raw_str.endswith("s"):
+            value = float(raw_str[:-1].strip())
+        else:
+            value = float(raw_str)
     except ValueError:
         return None
     if not math.isfinite(value) or value < 0:
