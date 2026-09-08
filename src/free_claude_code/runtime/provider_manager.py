@@ -1,9 +1,9 @@
 """Single-owner provider generations and application model catalog."""
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-import inspect
 from typing import Protocol
 
 from loguru import logger

@@ -16,7 +16,6 @@ from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.providers.failure_policy import (
     ProviderRecoveryExhausted,
     classify_provider_failure,
-    context_window_exceeded_provider_failure,
     is_context_window_finish_reason,
     is_retryable_provider_error,
     reports_context_window_incomplete,
@@ -491,4 +490,3 @@ def test_context_window_finish_reasons() -> None:
     }
     assert reports_context_window_incomplete("response.incomplete", incomplete_event)
     assert not reports_context_window_incomplete("response.done", incomplete_event)
-
