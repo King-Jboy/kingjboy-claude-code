@@ -1,5 +1,6 @@
 """Raw provider failure classification into the canonical neutral model."""
 
+import ssl
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -21,6 +22,7 @@ from free_claude_code.providers.failure_policy import (
     reports_context_window_incomplete,
     retryable_upstream_status,
 )
+from free_claude_code.providers.stream_recovery import is_retryable_stream_error
 
 
 def _openai_status_error(
@@ -490,3 +492,21 @@ def test_context_window_finish_reasons() -> None:
     }
     assert reports_context_window_incomplete("response.incomplete", incomplete_event)
     assert not reports_context_window_incomplete("response.done", incomplete_event)
+
+
+@pytest.mark.parametrize("read_timeout_s", [None, 120])
+def test_ssl_want_read_error_uses_stream_failure_policy(
+    read_timeout_s: float | None,
+) -> None:
+    error = ssl.SSLWantReadError("the operation did not complete")
+
+    assert is_retryable_stream_error(error)
+    assert is_retryable_provider_error(error)
+    failure = classify_provider_failure(
+        error, provider_name="NIM", read_timeout_s=read_timeout_s, request_id="request"
+    )
+    assert failure.kind is FailureKind.UNAVAILABLE
+    assert failure.status_code == 502
+    assert failure.retryable
+    assert "Could not read the provider response." in failure.message
+    assert "timed out" not in failure.message

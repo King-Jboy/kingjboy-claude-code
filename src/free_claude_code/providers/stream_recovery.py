@@ -1,5 +1,6 @@
 """Provider-owned stream holdback and recovery decisions."""
 
+import ssl
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -194,6 +195,7 @@ def is_retryable_stream_error(exc: BaseException) -> bool:
         exc,
         (
             TimeoutError,
+            ssl.SSLWantReadError,
             httpx.ReadTimeout,
             httpx.ReadError,
             httpx.RemoteProtocolError,

@@ -2,6 +2,7 @@
 
 import json
 import math
+import ssl
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import replace
@@ -221,6 +222,7 @@ def is_retryable_provider_error(exc: BaseException) -> bool:
         exc,
         (
             TimeoutError,
+            ssl.SSLWantReadError,
             httpx.TimeoutException,
             httpx.ConnectError,
             httpx.ReadError,
@@ -258,6 +260,8 @@ def provider_error_message(
         return "Could not connect to provider."
     if isinstance(exc, httpx.RemoteProtocolError):
         return "Provider connection was interrupted before a response was received."
+    if isinstance(exc, ssl.SSLWantReadError):
+        return "Could not read the provider response."
     if isinstance(exc, TimeoutError):
         if read_timeout_s is not None:
             return f"Provider request timed out after {read_timeout_s:g}s."
@@ -366,7 +370,9 @@ def _classify_provider_failure(
     kind = FailureKind.UPSTREAM
     if isinstance(exc, TimeoutError | httpx.TimeoutException):
         kind = FailureKind.TIMEOUT
-    elif isinstance(exc, httpx.ConnectError | httpx.NetworkError):
+    elif isinstance(
+        exc, ssl.SSLWantReadError | httpx.ConnectError | httpx.NetworkError
+    ):
         kind = FailureKind.UNAVAILABLE
     return _failure(
         kind,
