@@ -79,9 +79,7 @@ class ResponsesOutputLedger:
                 "reasoning_tokens": capped_reasoning_tokens
             }
         if self._cached_tokens:
-            usage["input_tokens_details"] = {
-                "cached_tokens": self._cached_tokens
-            }
+            usage["input_tokens_details"] = {"cached_tokens": self._cached_tokens}
         return usage
 
     def safe_text_index(self, index: int | None) -> int:

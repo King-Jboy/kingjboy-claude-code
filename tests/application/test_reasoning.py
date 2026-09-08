@@ -188,7 +188,9 @@ def test_resolve_reasoning_policy_disables_budget_when_max_tokens_under_1024() -
     assert policy.control is ReasoningControl.OFF
 
 
-def test_resolve_reasoning_policy_preserves_effort_without_inventing_numeric_budget() -> None:
+def test_resolve_reasoning_policy_preserves_effort_without_inventing_numeric_budget() -> (
+    None
+):
     req = _request(
         output_config={"effort": "low"},
         max_tokens=300,
@@ -196,4 +198,3 @@ def test_resolve_reasoning_policy_preserves_effort_without_inventing_numeric_bud
     policy = resolve_reasoning_policy(req, ReasoningPreference.CLIENT)
     assert policy.effort == ReasoningEffort.LOW
     assert policy.budget_tokens is None
-

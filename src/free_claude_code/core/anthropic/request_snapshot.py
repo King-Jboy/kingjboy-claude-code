@@ -31,18 +31,10 @@ def anthropic_request_snapshot(
         if request.stream:
             snapshot["stream"] = request.stream
         if request.tool_choice is not None:
-            snapshot["tool_choice"] = (
-                request.tool_choice.model_dump(exclude_none=True)
-                if hasattr(request.tool_choice, "model_dump")
-                else request.tool_choice
-            )
+            snapshot["tool_choice"] = request.tool_choice
     if request.tools:
         snapshot["tool_count"] = len(request.tools)
     if request.thinking is not None:
-        snapshot["thinking"] = (
-            request.thinking.model_dump(exclude_none=True)
-            if hasattr(request.thinking, "model_dump")
-            else str(request.thinking)
-        )
+        snapshot["thinking"] = request.thinking.model_dump(exclude_none=True)
     sanitized = sanitize_trace_value(snapshot)
     return sanitized if isinstance(sanitized, dict) else {}

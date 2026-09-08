@@ -800,7 +800,6 @@ def test_convert_tool_turn_with_deferred_blocks_does_not_duplicate_reasoning():
     assert "reasoning_content" not in deferred_msg
 
 
-
 def test_convert_assistant_message_thinking_removed_when_disabled():
     content = [
         MockBlock(type="thinking", thinking="I need to calculate this."),

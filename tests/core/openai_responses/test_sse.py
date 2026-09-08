@@ -646,7 +646,6 @@ async def test_message_start_usage_and_caching_are_recorded() -> None:
     assert response["usage"]["input_tokens_details"]["cached_tokens"] == 40
 
 
-
 @pytest.mark.asyncio
 async def test_reasoning_stream_reports_reasoning_usage_detail() -> None:
     response = await _completed_response_from_sse(

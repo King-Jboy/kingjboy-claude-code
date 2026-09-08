@@ -334,9 +334,10 @@ def test_direct_model_views_resolve_curated_context_window():
     )
 
     responses = TestClient(app).get("/v1/models?view=responses").json()
-    model_contexts = {item["id"]: item.get("contextWindow") for item in responses["data"]}
+    model_contexts = {
+        item["id"]: item.get("contextWindow") for item in responses["data"]
+    }
 
     assert model_contexts["nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"] == 1_048_576
     assert model_contexts["nvidia_nim/moonshotai/kimi-k3"] == 1_048_576
     assert model_contexts["nvidia_nim/minimaxai/minimax-m3"] == 262_144
-

@@ -93,7 +93,11 @@ class ThinkTagParser:
                     return None
 
             # Buffer leading whitespace at the start of generation to see if <think> follows
-            if not self._has_emitted_content and self._buffer.strip() == "" and len(self._buffer) < 64:
+            if (
+                not self._has_emitted_content
+                and self._buffer.strip() == ""
+                and len(self._buffer) < 64
+            ):
                 return None
 
             emit = self._buffer

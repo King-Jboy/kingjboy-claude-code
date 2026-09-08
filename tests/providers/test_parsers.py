@@ -544,4 +544,3 @@ def test_think_tag_parser_preserves_whitespace_when_no_think_tag():
     assert len(chunks2) == 1
     assert chunks2[0].type == ContentType.TEXT
     assert chunks2[0].content == "\n\nHello world"
-
