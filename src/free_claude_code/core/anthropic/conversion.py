@@ -677,7 +677,7 @@ class AnthropicToOpenAIConverter:
             return []
         return AnthropicToOpenAIConverter._convert_assistant_message(
             pending.deferred_blocks,
-            reasoning_content=pending.top_level_reasoning,
+            reasoning_content=None,
             reasoning_replay=pending.reasoning_replay,
         )
 

@@ -33,6 +33,7 @@ class ThinkTagParser:
     def __init__(self):
         self._buffer: str = ""
         self._in_think_tag: bool = False
+        self._has_emitted_content: bool = False
 
     @property
     def in_think_mode(self) -> bool:
@@ -51,6 +52,8 @@ class ThinkTagParser:
                 chunk = self._parse_inside_think()
 
             if chunk:
+                if chunk.content:
+                    self._has_emitted_content = True
                 yield chunk
             elif len(self._buffer) == prev_len:
                 break
@@ -63,6 +66,8 @@ class ThinkTagParser:
         if orphan_close != -1 and (think_start == -1 or orphan_close < think_start):
             pre_orphan = self._buffer[:orphan_close]
             self._buffer = self._buffer[orphan_close + len(self.CLOSE_TAG) :]
+            if not self._has_emitted_content and pre_orphan.strip() == "":
+                pre_orphan = ""
             if pre_orphan:
                 return ContentChunk(ContentType.TEXT, pre_orphan)
             return None
@@ -81,9 +86,15 @@ class ThinkTagParser:
                 ):
                     emit = self._buffer[:last_bracket]
                     self._buffer = self._buffer[last_bracket:]
+                    if not self._has_emitted_content and emit.strip() == "":
+                        return None
                     if emit:
                         return ContentChunk(ContentType.TEXT, emit)
                     return None
+
+            # Buffer leading whitespace at the start of generation to see if <think> follows
+            if not self._has_emitted_content and self._buffer.strip() == "" and len(self._buffer) < 64:
+                return None
 
             emit = self._buffer
             self._buffer = ""
@@ -94,6 +105,9 @@ class ThinkTagParser:
         pre_think = self._buffer[:think_start]
         self._buffer = self._buffer[think_start + len(self.OPEN_TAG) :]
         self._in_think_tag = True
+        # Suppress leading whitespace before <think> at stream start so thinking block opens at index 0
+        if not self._has_emitted_content and pre_think.strip() == "":
+            pre_think = ""
         if pre_think:
             return ContentChunk(ContentType.TEXT, pre_think)
         return None

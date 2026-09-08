@@ -124,3 +124,15 @@ def test_output_token_estimate_uses_encoder_when_available() -> None:
 
     with patch("free_claude_code.core.anthropic.streaming.ledger.ENCODER", Encoder()):
         assert ledger.estimate_output_tokens() == 8
+
+
+def test_ensure_thinking_block_does_not_start_at_nonzero_index() -> None:
+    ledger = AnthropicStreamLedger("msg_1", "model")
+    ledger.start_text_block()
+    ledger.emit_text_delta("Hello")
+    events = list(ledger.ensure_thinking_block())
+    assert events == []
+    assert not ledger.blocks.thinking_started
+    delta = ledger.emit_thinking_delta("thought")
+    assert "text_delta" in delta
+

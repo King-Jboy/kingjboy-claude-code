@@ -27,13 +27,14 @@ def resolve_reasoning_policy(
     else:
         policy = client_reasoning_policy(request)
 
-    if request.max_tokens is not None and request.max_tokens > 1:
-        budget = policy.numeric_budget_tokens
-        if budget is not None and budget >= request.max_tokens:
-            return ReasoningPolicy.on(
-                effort=policy.effort,
-                budget_tokens=request.max_tokens - 1,
-            )
+    if request.max_tokens is not None:
+        if policy.budget_tokens is not None and policy.budget_tokens >= request.max_tokens:
+            if request.max_tokens > 1024:
+                return ReasoningPolicy.on(
+                    effort=policy.effort,
+                    budget_tokens=request.max_tokens - 1,
+                )
+            return ReasoningPolicy.off()
     return policy
 
 

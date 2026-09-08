@@ -590,6 +590,64 @@ async def test_split_usage_deltas_are_accumulated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_message_start_usage_and_caching_are_recorded() -> None:
+    response = await _completed_response_from_sse(
+        _aiter(
+            [
+                format_sse_event(
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "usage": {
+                                "input_tokens": 100,
+                                "cache_read_input_tokens": 40,
+                            }
+                        },
+                    },
+                ),
+                format_sse_event(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Hello"},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": 0},
+                ),
+                format_sse_event(
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 5},
+                    },
+                ),
+                format_sse_event("message_stop", {"type": "message_stop"}),
+            ]
+        ),
+        {"model": "nvidia_nim/test-model", "stream": True},
+    )
+
+    assert response["usage"]["input_tokens"] == 100
+    assert response["usage"]["output_tokens"] == 5
+    assert response["usage"]["total_tokens"] == 105
+    assert response["usage"]["input_tokens_details"]["cached_tokens"] == 40
+
+
+
+@pytest.mark.asyncio
 async def test_reasoning_stream_reports_reasoning_usage_detail() -> None:
     response = await _completed_response_from_sse(
         _aiter(_anthropic_reasoning_stream("inspect the code before answering")),

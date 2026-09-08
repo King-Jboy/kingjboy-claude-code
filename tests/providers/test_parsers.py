@@ -512,3 +512,36 @@ def test_heuristic_tool_parser_malformed_function_tag(malformed_text):
     _filtered, tools = parser.feed(malformed_text)
     tools.extend(parser.flush())
     # Should not crash; may or may not detect a tool depending on regex match
+
+
+def test_think_tag_parser_suppresses_leading_whitespace_before_think():
+    parser = ThinkTagParser()
+    chunks = list(parser.feed("\n\n<think>first step</think>final answer"))
+    assert len(chunks) == 2
+    assert chunks[0].type == ContentType.THINKING
+    assert chunks[0].content == "first step"
+    assert chunks[1].type == ContentType.TEXT
+    assert chunks[1].content == "final answer"
+
+
+def test_think_tag_parser_buffers_whitespace_across_chunks():
+    parser = ThinkTagParser()
+    chunks1 = list(parser.feed("\n\n"))
+    assert chunks1 == []
+    chunks2 = list(parser.feed("<think>reasoning</think>output"))
+    assert len(chunks2) == 2
+    assert chunks2[0].type == ContentType.THINKING
+    assert chunks2[0].content == "reasoning"
+    assert chunks2[1].type == ContentType.TEXT
+    assert chunks2[1].content == "output"
+
+
+def test_think_tag_parser_preserves_whitespace_when_no_think_tag():
+    parser = ThinkTagParser()
+    chunks1 = list(parser.feed("\n\n"))
+    assert chunks1 == []
+    chunks2 = list(parser.feed("Hello world"))
+    assert len(chunks2) == 1
+    assert chunks2[0].type == ContentType.TEXT
+    assert chunks2[0].content == "\n\nHello world"
+

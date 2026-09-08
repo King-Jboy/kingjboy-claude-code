@@ -774,6 +774,33 @@ def test_convert_tool_use_without_thinking_does_not_change_other_replay_modes(
     assert "reasoning_content" not in result[0]
 
 
+def test_convert_tool_turn_with_deferred_blocks_does_not_duplicate_reasoning():
+    result = AnthropicToOpenAIConverter.convert_messages(
+        [
+            MockMessage(
+                "assistant",
+                [
+                    MockBlock(type="thinking", thinking="Thinking first"),
+                    MockBlock(type="tool_use", id="call_1", name="Read", input={}),
+                    MockBlock(type="text", text="Deferred after tool"),
+                ],
+            ),
+            MockMessage(
+                "user",
+                [MockBlock(type="tool_result", tool_use_id="call_1", content="ok")],
+            ),
+        ],
+        reasoning_replay=ReasoningReplayMode.REASONING_CONTENT,
+    )
+    assert result[0]["tool_calls"][0]["id"] == "call_1"
+    assert result[0]["reasoning_content"] == "Thinking first"
+    deferred_msg = result[2]
+    assert deferred_msg["role"] == "assistant"
+    assert deferred_msg["content"] == "Deferred after tool"
+    assert "reasoning_content" not in deferred_msg
+
+
+
 def test_convert_assistant_message_thinking_removed_when_disabled():
     content = [
         MockBlock(type="thinking", thinking="I need to calculate this."),

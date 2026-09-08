@@ -59,7 +59,9 @@ class ResponsesStreamAssembler:
             return []
 
         chunks = self._ensure_started()
-        if event.event == "content_block_start":
+        if event.event == "message_start":
+            self._record_message_start(event.data)
+        elif event.event == "content_block_start":
             chunks.extend(self._handle_content_block_start(event.data))
         elif event.event == "content_block_delta":
             chunks.extend(self._handle_content_block_delta(event.data))
@@ -261,6 +263,13 @@ class ResponsesStreamAssembler:
         if state is None:
             return []
         return self._completer.complete_block(state)
+
+    def _record_message_start(self, data: Mapping[str, Any]) -> None:
+        message = data.get("message")
+        if isinstance(message, Mapping):
+            self._ledger.record_usage_delta(message)
+        else:
+            self._ledger.record_usage_delta(data)
 
     def _record_message_delta(self, data: Mapping[str, Any]) -> None:
         self._ledger.record_usage_delta(data)

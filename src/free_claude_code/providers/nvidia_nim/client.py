@@ -27,6 +27,7 @@ from free_claude_code.providers.openai_chat import (
 from .native_tool_stream import normalize_nim_native_tool_stream
 from .request_options import NIM_REQUEST_POLICY, build_nim_request_body
 from .retry import (
+    _strip_message_reasoning_content,
     clone_body_without_chat_template,
     clone_body_without_reasoning_budget,
     clone_body_without_reasoning_content,
@@ -63,6 +64,8 @@ class NvidiaNimProvider(OpenAIChatProvider):
             admission=admission,
         )
         self._nim_settings = nim_settings
+        self._supports_reasoning_content: bool = True
+        self._supports_chat_template: bool = True
 
     def _build_request_body(
         self,
@@ -79,7 +82,16 @@ class NvidiaNimProvider(OpenAIChatProvider):
 
     def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """Strip private request metadata before calling NVIDIA NIM."""
-        return body_without_nim_tool_argument_aliases(body)
+        body = body_without_nim_tool_argument_aliases(body)
+        if not self._supports_reasoning_content:
+            _strip_message_reasoning_content(body)
+        if not self._supports_chat_template:
+            extra = body.get("extra_body")
+            if isinstance(extra, dict):
+                extra.pop("chat_template", None)
+                if not extra:
+                    body.pop("extra_body", None)
+        return body
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Repair model-native MiniMax tool markup leaked by NVIDIA NIM."""
@@ -117,6 +129,7 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return None
 
         if "chat_template" in error_text:
+            self._supports_chat_template = False
             retry_body = clone_body_without_chat_template(body)
             if retry_body is None:
                 return None
@@ -124,6 +137,7 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return retry_body
 
         if "reasoning_content" in error_text:
+            self._supports_reasoning_content = False
             retry_body = clone_body_without_reasoning_content(body)
             if retry_body is None:
                 return None

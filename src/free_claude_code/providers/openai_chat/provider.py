@@ -1157,6 +1157,7 @@ class _OpenAIChatStreamRunner:
                 thinking_parts: list[str] = []
                 tool_calls = OpenAIToolCallCollector()
                 terminal_seen = False
+                recovery_think_parser = ThinkTagParser()
                 async for chunk in stream:
                     if not attempt.accepted:
                         await attempt.succeeded()
@@ -1177,11 +1178,24 @@ class _OpenAIChatStreamRunner:
                             thinking_parts.append(reasoning)
                     content = getattr(delta, "content", None)
                     if isinstance(content, str) and content:
-                        text_parts.append(content)
+                        for part in recovery_think_parser.feed(content):
+                            if part.type == ContentType.THINKING:
+                                if include_reasoning:
+                                    thinking_parts.append(part.content)
+                            else:
+                                text_parts.append(part.content)
                     native_tool_calls = getattr(delta, "tool_calls", None)
                     if isinstance(native_tool_calls, list | tuple):
                         for tool_call in native_tool_calls:
                             tool_calls.add(tool_call)
+
+                remaining = recovery_think_parser.flush()
+                if remaining:
+                    if remaining.type == ContentType.THINKING:
+                        if include_reasoning:
+                            thinking_parts.append(remaining.content)
+                    else:
+                        text_parts.append(remaining.content)
 
                 completed_tool_calls = tool_calls.completed_calls(
                     self._request,

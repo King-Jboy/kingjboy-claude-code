@@ -167,3 +167,33 @@ def test_reasoning_without_numeric_intensity_has_no_budget(
     policy: ReasoningPolicy,
 ) -> None:
     assert policy.numeric_budget_tokens is None
+
+
+def test_resolve_reasoning_policy_caps_excessive_explicit_budget() -> None:
+    req = _request(
+        thinking={"type": "enabled", "budget_tokens": 4000},
+        max_tokens=2000,
+    )
+    policy = resolve_reasoning_policy(req, ReasoningPreference.CLIENT)
+    assert policy.control is ReasoningControl.ON
+    assert policy.budget_tokens == 1999
+
+
+def test_resolve_reasoning_policy_disables_budget_when_max_tokens_under_1024() -> None:
+    req = _request(
+        thinking={"type": "enabled", "budget_tokens": 2000},
+        max_tokens=1000,
+    )
+    policy = resolve_reasoning_policy(req, ReasoningPreference.CLIENT)
+    assert policy.control is ReasoningControl.OFF
+
+
+def test_resolve_reasoning_policy_preserves_effort_without_inventing_numeric_budget() -> None:
+    req = _request(
+        output_config={"effort": "low"},
+        max_tokens=300,
+    )
+    policy = resolve_reasoning_policy(req, ReasoningPreference.CLIENT)
+    assert policy.effort == ReasoningEffort.LOW
+    assert policy.budget_tokens is None
+
