@@ -1,5 +1,6 @@
 """Implementations for installed Free Claude Code commands."""
 
+import errno
 import os
 import shutil
 import sys
@@ -26,6 +27,13 @@ from free_claude_code.config.settings import Settings, get_settings
 from free_claude_code.runtime.bootstrap import build_asgi_app
 
 SERVER_GRACEFUL_SHUTDOWN_SECONDS = 5
+MAX_BIND_RETRIES = 10
+BIND_RETRY_DELAY_SECONDS = 0.2
+
+
+def _is_address_in_use(exc: OSError) -> bool:
+    target_errnos = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)}
+    return exc.errno in target_errnos
 
 
 def serve() -> None:
@@ -90,6 +98,7 @@ class ServerSupervisor:
             self._running = True
 
         opened_admin_browser = False
+        bind_retries = 0
         try:
             try:
                 while not self._is_stop_requested():
@@ -101,11 +110,24 @@ class ServerSupervisor:
                         if open_admin_browser is None
                         else open_admin_browser
                     ) and not opened_admin_browser
-                    if not self._run_once(
-                        settings,
-                        open_admin_browser=should_open_admin,
-                        restart_generation=restart_generation,
-                    ):
+                    try:
+                        ran_ok = self._run_once(
+                            settings,
+                            open_admin_browser=should_open_admin,
+                            restart_generation=restart_generation,
+                        )
+                        bind_retries = 0
+                    except OSError as exc:
+                        if (
+                            not self._is_stop_requested()
+                            and _is_address_in_use(exc)
+                            and bind_retries < MAX_BIND_RETRIES
+                        ):
+                            bind_retries += 1
+                            time.sleep(BIND_RETRY_DELAY_SECONDS)
+                            continue
+                        raise
+                    if not ran_ok:
                         return
                     opened_admin_browser = opened_admin_browser or should_open_admin
                     get_settings.cache_clear()
@@ -162,7 +184,7 @@ class ServerSupervisor:
             asgi_app,
             host=settings.host,
             port=settings.port,
-            log_level="debug",
+            log_level=settings.log_level.lower(),
             log_config=(
                 uvicorn.config.LOGGING_CONFIG if self._console_logging else None
             ),
