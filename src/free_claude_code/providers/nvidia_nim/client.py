@@ -27,7 +27,9 @@ from free_claude_code.providers.openai_chat import (
 from .native_tool_stream import normalize_nim_native_tool_stream
 from .request_options import NIM_REQUEST_POLICY, build_nim_request_body
 from .retry import (
+    _strip_chat_template_fields,
     _strip_message_reasoning_content,
+    _strip_reasoning_budget_fields,
     clone_body_without_chat_template,
     clone_body_without_reasoning_budget,
     clone_body_without_reasoning_content,
@@ -66,6 +68,7 @@ class NvidiaNimProvider(OpenAIChatProvider):
         self._nim_settings = nim_settings
         self._supports_reasoning_content: bool = True
         self._supports_chat_template: bool = True
+        self._supports_reasoning_budget: bool = True
 
     def _build_request_body(
         self,
@@ -85,10 +88,16 @@ class NvidiaNimProvider(OpenAIChatProvider):
         body = body_without_nim_tool_argument_aliases(body)
         if not self._supports_reasoning_content:
             _strip_message_reasoning_content(body)
+        if not self._supports_reasoning_budget:
+            extra = body.get("extra_body")
+            if isinstance(extra, dict):
+                _strip_reasoning_budget_fields(extra)
+                if not extra:
+                    body.pop("extra_body", None)
         if not self._supports_chat_template:
             extra = body.get("extra_body")
             if isinstance(extra, dict):
-                extra.pop("chat_template", None)
+                _strip_chat_template_fields(extra)
                 if not extra:
                     body.pop("extra_body", None)
         return body
@@ -117,6 +126,7 @@ class NvidiaNimProvider(OpenAIChatProvider):
         if _is_reasoning_budget_rejection(error_text) and (
             bad_request_like or status_code == 500
         ):
+            self._supports_reasoning_budget = False
             retry_body = clone_body_without_reasoning_budget(body)
             if retry_body is None:
                 return None
