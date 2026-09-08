@@ -135,15 +135,15 @@ class ProviderExecutor:
         if self._log_raw_payloads:
             logger.debug(f"{raw_log_label} [{{}}]: {{}}", request_id, raw_log_payload)
 
-        input_tokens = self._token_counter(
-            routed.request.messages,
-            routed.request.system,
-            routed.request.tools,
-        )
-
         async def provider_body() -> AsyncIterator[str]:
             provider_stream: AsyncIterator[str] | None = None
             try:
+                input_tokens = await asyncio.to_thread(
+                    self._token_counter,
+                    routed.request.messages,
+                    routed.request.system,
+                    routed.request.tools,
+                )
                 provider_stream = provider.stream_response(
                     routed.request,
                     input_tokens=input_tokens,

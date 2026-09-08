@@ -13,7 +13,7 @@ from free_claude_code.core.failures import ExecutionFailure
 
 from .failure_policy import RetryableProviderProtocolError, retryable_transient_status
 
-EARLY_HOLDBACK_SECONDS = 0.75
+EARLY_HOLDBACK_SECONDS = 0.15
 RECOVERY_BUFFER_MAX_BYTES = 65_536
 
 

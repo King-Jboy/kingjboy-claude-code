@@ -98,8 +98,16 @@ def apply_nim_request_options(
             enabled = reasoning.control is not ReasoningControl.OFF
             chat_template_kwargs["thinking"] = enabled
             chat_template_kwargs["enable_thinking"] = enabled
-            if enabled and (budget := reasoning.numeric_budget_tokens) is not None:
-                chat_template_kwargs["reasoning_budget"] = budget
+            if enabled:
+                budget = reasoning.numeric_budget_tokens
+                if (
+                    budget is None
+                    and request_data.thinking is not None
+                    and request_data.thinking.type == "adaptive"
+                ):
+                    budget = 2048
+                if budget is not None:
+                    chat_template_kwargs["reasoning_budget"] = budget
 
     req_top_k = request_data.top_k
     top_k = req_top_k if req_top_k is not None else nim.top_k

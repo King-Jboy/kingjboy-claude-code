@@ -142,7 +142,11 @@ class MessagesHandler:
                         routed,
                         wire_api="messages",
                         raw_log_label="FULL_PAYLOAD",
-                        raw_log_payload=routed.request.model_dump(),
+                        raw_log_payload=(
+                            routed.request.model_dump()
+                            if self._settings.log_raw_api_payloads
+                            else None
+                        ),
                         request_id=request_id,
                     )
                 )
@@ -481,6 +485,15 @@ async def _messages_response_to_sse_stream(
                         "type": "content_block_delta",
                         "index": idx,
                         "delta": {"type": "thinking_delta", "thinking": thinking},
+                    },
+                )
+            if signature := block_dict.get("signature"):
+                yield format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {"type": "signature_delta", "signature": signature},
                     },
                 )
             yield format_sse_event(
