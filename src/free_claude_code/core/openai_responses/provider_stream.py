@@ -235,7 +235,8 @@ def _stream_failure(data: dict[str, Any]) -> ResponsesStreamFailure:
     response = data.get("response")
     response = response if isinstance(response, dict) else {}
     error = response.get("error", data.get("error"))
-    error = error if isinstance(error, dict) else {}
+    if not isinstance(error, dict):
+        error = data if data.get("type") == "error" else {}
     message = error.get("message")
     code = error.get("code", error.get("type"))
     return ResponsesStreamFailure(

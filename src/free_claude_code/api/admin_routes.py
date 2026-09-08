@@ -16,8 +16,6 @@ from free_claude_code.application.connected_accounts import (
 )
 from free_claude_code.application.model_metadata import ProviderModelRefreshResult
 from free_claude_code.config.admin.manifest import FIELD_BY_KEY
-from free_claude_code.config.admin.persistence import validate_updates
-from free_claude_code.config.admin.values import load_config_response
 from free_claude_code.config.model_refs import (
     ModelCatalogScope,
     configured_chat_model_refs,
@@ -106,15 +104,22 @@ async def admin_asset(filename: str, request: Request):
 
 
 @router.get("/admin/api/config")
-async def get_admin_config(request: Request):
+async def get_admin_config(
+    request: Request,
+    services: ApiServices = Depends(get_services),
+):
     require_loopback_admin(request)
-    return load_config_response()
+    return await services.admin.admin_config()
 
 
 @router.post("/admin/api/config/validate")
-async def validate_admin_config(payload: AdminConfigPayload, request: Request):
+async def validate_admin_config(
+    payload: AdminConfigPayload,
+    request: Request,
+    services: ApiServices = Depends(get_services),
+):
     require_loopback_admin(request)
-    return validate_updates(_filtered_values(payload.values))
+    return await services.admin.validate_admin_config(_filtered_values(payload.values))
 
 
 @router.post("/admin/api/config/apply")
@@ -138,7 +143,7 @@ async def admin_status(
     services: ApiServices = Depends(get_services),
 ):
     require_loopback_admin(request)
-    return services.admin.admin_status()
+    return await services.admin.admin_status()
 
 
 @router.post("/admin/api/server/restart")
@@ -177,9 +182,12 @@ async def stop_server(
 
 
 @router.get("/admin/api/providers/local-status")
-async def local_provider_status(request: Request):
+async def local_provider_status(
+    request: Request,
+    services: ApiServices = Depends(get_services),
+):
     require_loopback_admin(request)
-    config = load_config_response()
+    config = await services.admin.admin_config()
     values = {field["key"]: field["value"] for field in config["fields"]}
     # Probe every local provider at once and over one connection pool. Serial
     # probes made an all-offline check cost the sum of every timeout.

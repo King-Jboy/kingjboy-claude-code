@@ -10,6 +10,7 @@ from free_claude_code.application.connected_accounts import (
 )
 from free_claude_code.application.model_metadata import ProviderModelRefreshResult
 from free_claude_code.application.ports import RequestRuntimePort, TaskController
+from free_claude_code.config.admin.values import ValueState
 
 
 class AdminRuntimePort(Protocol):
@@ -19,7 +20,15 @@ class AdminRuntimePort(Protocol):
         self, updates: Mapping[str, Any]
     ) -> dict[str, Any]: ...
 
-    def admin_status(self) -> dict[str, Any]: ...
+    async def admin_config(self) -> dict[str, Any]: ...
+
+    async def admin_values(self) -> ValueState: ...
+
+    async def validate_admin_config(
+        self, updates: Mapping[str, Any]
+    ) -> dict[str, Any]: ...
+
+    async def admin_status(self) -> dict[str, Any]: ...
 
     def key_pool_status(self) -> dict[str, dict[str, Any]]: ...
 

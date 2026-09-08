@@ -15,6 +15,7 @@ from loguru import logger
 import free_claude_code.cli.managed as cli_managed
 import free_claude_code.messaging.session as messaging_session
 import free_claude_code.messaging.workflow as messaging_workflow_module
+from anyio import CapacityLimiter, to_thread
 from free_claude_code.application.connected_accounts import (
     ConnectedAccountLoginMode,
     ConnectedAccountPort,
@@ -27,9 +28,14 @@ from free_claude_code.config.admin.persistence import (
     PreparedAdminUpdate,
     commit_prepared_admin_update,
     prepare_admin_update,
+    validate_updates,
 )
 from free_claude_code.config.admin.status import provider_config_status
-from free_claude_code.config.admin.values import load_value_state
+from free_claude_code.config.admin.values import (
+    ValueState,
+    load_config_response,
+    load_value_state,
+)
 from free_claude_code.config.context_windows import resolve_client_context_window
 from free_claude_code.config.env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
@@ -134,6 +140,7 @@ class ApplicationRuntime:
             for provider_id, manager in self._connected_accounts.items()
         }
         self._config_lock = asyncio.Lock()
+        self._config_worker_limiter = CapacityLimiter(1)
         self._pending_fields: list[str] = []
         self._messaging_runtime: MessagingRuntime | None = None
         self._messaging_workflow: messaging_workflow_module.MessagingWorkflow | None = (
@@ -201,13 +208,21 @@ class ApplicationRuntime:
     ) -> dict[str, Any]:
         """Apply one validated config update without splitting runtime ownership."""
         async with self._config_lock:
-            prepared = prepare_admin_update(updates)
+            prepared = await to_thread.run_sync(
+                prepare_admin_update,
+                updates,
+                limiter=self._config_worker_limiter,
+            )
             if not prepared.valid:
                 return prepared.applied_response()
             assert prepared.settings is not None
 
             if prepared.pending_fields:
-                result = self._commit_admin_update(prepared)
+                result = await to_thread.run_sync(
+                    self._commit_admin_update,
+                    prepared,
+                    limiter=self._config_worker_limiter,
+                )
                 restart = self._restart_metadata(
                     prepared.pending_fields,
                     prepared.settings,
@@ -220,8 +235,13 @@ class ApplicationRuntime:
 
             result: dict[str, Any] = {}
 
-            def commit() -> None:
-                result.update(self._commit_admin_update(prepared))
+            async def commit() -> None:
+                committed = await to_thread.run_sync(
+                    self._commit_admin_update,
+                    prepared,
+                    limiter=self._config_worker_limiter,
+                )
+                result.update(committed)
 
             await self.provider_manager.replace(
                 prepared.settings,
@@ -232,8 +252,34 @@ class ApplicationRuntime:
             result["restart"] = self._restart_metadata((), prepared.settings)
             return result
 
-    def admin_status(self) -> dict[str, Any]:
+    async def admin_config(self) -> dict[str, Any]:
+        """Read fresh admin configuration snapshot off the event loop."""
+        return await to_thread.run_sync(
+            load_config_response,
+            limiter=self._config_worker_limiter,
+        )
+
+    async def admin_values(self) -> ValueState:
+        """Read fresh admin configuration values off the event loop."""
+        return await to_thread.run_sync(
+            load_value_state,
+            limiter=self._config_worker_limiter,
+        )
+
+    async def validate_admin_config(
+        self,
+        updates: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Validate partial admin updates off the event loop."""
+        return await to_thread.run_sync(
+            validate_updates,
+            updates,
+            limiter=self._config_worker_limiter,
+        )
+
+    async def admin_status(self) -> dict[str, Any]:
         settings = self.settings
+        value_state = await self.admin_values()
         return {
             "status": "running",
             "instance": self._instance_id,
@@ -242,7 +288,7 @@ class ApplicationRuntime:
             "model": settings.model,
             "provider": parse_provider_type(settings.model),
             "pending_fields": list(self._pending_fields),
-            "provider_status": provider_config_status(load_value_state()),
+            "provider_status": provider_config_status(value_state),
             "cached_models": {
                 provider_id: sorted(model_ids)
                 for provider_id, model_ids in self.provider_manager.cached_model_ids().items()

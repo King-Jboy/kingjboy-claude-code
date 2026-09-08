@@ -16,7 +16,10 @@ from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.providers.failure_policy import (
     ProviderRecoveryExhausted,
     classify_provider_failure,
+    context_window_exceeded_provider_failure,
+    is_context_window_finish_reason,
     is_retryable_provider_error,
+    reports_context_window_incomplete,
     retryable_upstream_status,
 )
 
@@ -454,3 +457,38 @@ def test_shared_recovery_exhaustion_preserves_last_provider_failure() -> None:
     assert "Request ID: req_exhausted" in failure.message
     assert retryable_upstream_status(exhausted) is None
     assert not is_retryable_provider_error(exhausted)
+
+
+def test_context_window_exceeded_classification() -> None:
+    error = _statusless_openai_error(
+        "maximum context length exceeded",
+        {"error": {"code": "context_length_exceeded"}},
+    )
+    failure = classify_provider_failure(
+        error,
+        provider_name="OPENAI",
+        read_timeout_s=30.0,
+        request_id="req_ctx",
+    )
+    assert failure.kind is FailureKind.CONTEXT_WINDOW_EXCEEDED
+    assert failure.status_code == 400
+    assert not failure.retryable
+    assert retryable_upstream_status(error) is None
+    assert not is_retryable_provider_error(error)
+
+
+def test_context_window_finish_reasons() -> None:
+    assert is_context_window_finish_reason("model_context_window_exceeded")
+    assert not is_context_window_finish_reason("stop")
+    assert not is_context_window_finish_reason("length")
+
+    incomplete_event = {
+        "response": {
+            "incomplete_details": {
+                "reason": "model_context_window_exceeded",
+            }
+        }
+    }
+    assert reports_context_window_incomplete("response.incomplete", incomplete_event)
+    assert not reports_context_window_incomplete("response.done", incomplete_event)
+

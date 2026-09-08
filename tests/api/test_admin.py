@@ -132,7 +132,7 @@ def test_admin_unexpected_errors_are_never_cached(monkeypatch, tmp_path):
     )
 
     with patch(
-        "free_claude_code.api.admin_routes.load_config_response",
+        "free_claude_code.runtime.application.ApplicationRuntime.admin_config",
         side_effect=RuntimeError("test error"),
     ):
         response = client.get("/admin/api/config")
