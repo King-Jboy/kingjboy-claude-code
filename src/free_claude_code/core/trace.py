@@ -34,18 +34,39 @@ _SECRET_VALUE_KEYS = frozenset(
 )
 
 
-def sanitize_trace_value(obj: Any) -> Any:
+def sanitize_trace_value(
+    obj: Any, *, _depth: int = 0, _visited: set[int] | None = None
+) -> Any:
     """Recursively copy JSON-like structures redacting credential-shaped keys."""
+    if _depth > 16:
+        return "<truncated>"
     if isinstance(obj, Mapping):
+        visited = set() if _visited is None else _visited
+        obj_id = id(obj)
+        if obj_id in visited:
+            return "<cycle>"
+        visited.add(obj_id)
         out: dict[str, Any] = {}
         for k, v in obj.items():
             if str(k).lower() in _SECRET_VALUE_KEYS:
                 out[str(k)] = "<redacted>"
             else:
-                out[str(k)] = sanitize_trace_value(v)
+                out[str(k)] = sanitize_trace_value(
+                    v, _depth=_depth + 1, _visited=visited
+                )
+        visited.remove(obj_id)
         return out
     if isinstance(obj, tuple | list):
-        return [sanitize_trace_value(x) for x in obj]
+        visited = set() if _visited is None else _visited
+        obj_id = id(obj)
+        if obj_id in visited:
+            return "<cycle>"
+        visited.add(obj_id)
+        res = [
+            sanitize_trace_value(x, _depth=_depth + 1, _visited=visited) for x in obj
+        ]
+        visited.remove(obj_id)
+        return res
     return obj
 
 

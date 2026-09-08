@@ -31,6 +31,7 @@ class ToolBlockState:
     name: str
     namespace: str | None = None
     argument_parts: list[str] = field(default_factory=list)
+    streamed_arguments: bool = False
 
 
 BlockState = TextBlockState | ReasoningBlockState | ToolBlockState

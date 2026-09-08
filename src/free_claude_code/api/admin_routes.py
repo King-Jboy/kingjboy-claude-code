@@ -82,10 +82,8 @@ def require_loopback_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin UI is local-only")
 
     host = request.headers.get("host")
-    if host:
-        host_name = urlsplit(f"//{host}").hostname
-        if not _is_loopback_host(host_name):
-            raise HTTPException(status_code=403, detail="Admin UI is local-only")
+    if not host or not _is_loopback_host(urlsplit(f"//{host}").hostname):
+        raise HTTPException(status_code=403, detail="Admin UI is local-only")
 
 
 def _asset_response(filename: str) -> FileResponse:

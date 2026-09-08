@@ -187,12 +187,16 @@ def parse_arguments(value: Any) -> dict[str, Any]:
         return value
     if not isinstance(value, str):
         raise ResponsesConversionError("Responses function_call arguments must be JSON")
+    if value.strip() == "null":
+        return {}
     try:
         parsed = json.loads(value)
     except json.JSONDecodeError as exc:
         raise ResponsesConversionError(
             f"Responses function_call arguments are invalid JSON: {exc.msg}"
         ) from exc
+    if parsed is None:
+        return {}
     if not isinstance(parsed, dict):
         raise ResponsesConversionError(
             "Responses function_call arguments must decode to an object"

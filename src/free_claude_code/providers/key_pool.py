@@ -139,7 +139,9 @@ class ApiKeyInfo:
 
     def mark_rate_limited(self, cooldown_seconds: float = 60.0) -> None:
         with self.lock:
-            self.rate_limited_until = time.monotonic() + cooldown_seconds
+            self.rate_limited_until = max(
+                self.rate_limited_until, time.monotonic() + cooldown_seconds
+            )
             logger.warning(
                 "key_pool: key {} is rate limited for {}s. Rotating to next key.",
                 self._key_suffix(),

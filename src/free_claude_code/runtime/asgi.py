@@ -1,5 +1,6 @@
 """ASGI lifespan adapter for the application runtime owner."""
 
+import asyncio
 from typing import Any
 
 from loguru import logger
@@ -50,6 +51,10 @@ class RuntimeASGIApp:
                 if started:
                     try:
                         closed = await self.runtime.close()
+                    except asyncio.CancelledError:
+                        logger.info("Lifespan shutdown cancelled.")
+                        await send({"type": "lifespan.shutdown.complete"})
+                        return
                     except Exception as exc:
                         logger.error(
                             "Shutdown failed: exc_type={}",

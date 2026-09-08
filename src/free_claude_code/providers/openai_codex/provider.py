@@ -346,6 +346,9 @@ async def _iter_sse(
                 continue
             raw_data = "\n".join(data_lines)
             data_lines = []
+            if not raw_data.strip():
+                event_type = ""
+                continue
             if raw_data == "[DONE]":
                 return
             try:
@@ -366,7 +369,10 @@ async def _iter_sse(
         if line.startswith("event:"):
             event_type = line[6:].strip()
         elif line.startswith("data:"):
-            data_lines.append(line[5:].lstrip())
+            val = line[5:]
+            if val.startswith(" "):
+                val = val[1:]
+            data_lines.append(val)
     if data_lines:
         raise _TruncatedResponsesStream(
             "OpenAI Responses stream ended during an SSE event."

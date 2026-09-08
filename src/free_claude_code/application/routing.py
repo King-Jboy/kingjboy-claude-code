@@ -119,11 +119,13 @@ class ModelRouter:
         provider_id, separator, provider_model = model_name.partition("/")
         if not separator:
             return None, None, False
-        if provider_id not in SUPPORTED_PROVIDER_IDS:
+        norm_provider = provider_id.strip().lower()
+        if norm_provider not in SUPPORTED_PROVIDER_IDS:
             return None, None, False
-        if not provider_model:
+        clean_model = provider_model.split("?")[0].split("#")[0].strip()
+        if not clean_model:
             return None, None, False
-        return provider_id, provider_model, False
+        return norm_provider, clean_model, False
 
     def _resolve_model_ref(self, claude_model_name: str) -> str:
         """Resolve a Claude model name to the configured provider/model ref."""

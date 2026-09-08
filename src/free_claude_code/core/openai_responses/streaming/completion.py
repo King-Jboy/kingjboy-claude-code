@@ -87,7 +87,7 @@ class ResponseBlockCompleter:
         item = tool_item(state, status="completed", arguments=arguments)
         self._ledger.commit_output(state.output_index, item)
         chunks: list[str] = []
-        if arguments:
+        if arguments and not state.streamed_arguments:
             chunks.append(
                 events.function_call_arguments_delta(
                     state.item_id,

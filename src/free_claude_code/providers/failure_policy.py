@@ -420,6 +420,8 @@ def _reported_status(exc: BaseException) -> int | None:
 
 _CONTEXT_WINDOW_MESSAGE_MARKERS: tuple[str, ...] = (
     "maximum context length",
+    "maximum context",
+    "context length",
     "prompt is too long",
     "context window",
     "too many tokens",

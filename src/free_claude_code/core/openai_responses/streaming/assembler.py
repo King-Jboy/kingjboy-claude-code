@@ -252,7 +252,18 @@ class ResponsesStreamAssembler:
         if delta_type == "input_json_delta":
             state = self._ledger.active_block(index) if index is not None else None
             if isinstance(state, ToolBlockState):
-                state.argument_parts.append(_string_value(delta.get("partial_json")))
+                part = _string_value(delta.get("partial_json"))
+                state.argument_parts.append(part)
+                if part and state.kind == "function":
+                    state.streamed_arguments = True
+                    return [
+                        events.function_call_arguments_delta(
+                            state.item_id,
+                            state.output_index,
+                            part,
+                            sequence_number=self._next_sequence_number(),
+                        )
+                    ]
         return []
 
     def _handle_content_block_stop(self, data: Mapping[str, Any]) -> list[str]:

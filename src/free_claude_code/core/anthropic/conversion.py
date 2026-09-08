@@ -243,11 +243,16 @@ def _openai_chat_tool_result(block: Any) -> _OpenAIChatToolResult:
 
     if not decomposed.has_images:
         serialized = serialize_tool_result_content(tool_content)
+        content_str = serialized if serialized else ""
+        if bool(
+            get_block_attr(block, "is_error", False)
+        ) and not content_str.lower().startswith("error"):
+            content_str = f"Error: {content_str}" if content_str else "Error"
         return _OpenAIChatToolResult(
             tool_message={
                 "role": "tool",
                 "tool_call_id": tool_id,
-                "content": serialized if serialized else "",
+                "content": content_str,
             }
         )
 

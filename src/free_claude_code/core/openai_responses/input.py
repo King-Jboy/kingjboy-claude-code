@@ -311,15 +311,10 @@ def _last_assistant_tool_use_message(
     if message.get("role") != "assistant":
         return None
     content = message.get("content")
-    if not isinstance(content, list) or not content:
-        return None
-    block_types = [
-        block.get("type") if isinstance(block, dict) else None for block in content
-    ]
-    if "tool_use" in block_types and all(
-        block_type in {"redacted_thinking", "thinking", "tool_use"}
-        for block_type in block_types
-    ):
+    if isinstance(content, str):
+        message["content"] = [{"type": "text", "text": content}] if content else []
+        return message
+    if isinstance(content, list):
         return message
     return None
 
