@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from free_claude_code.config.curated_contexts import curated_context_window
 from free_claude_code.core.json_types import JsonObject
 from free_claude_code.core.model_capabilities import ModelInputModality
 
@@ -121,8 +122,12 @@ def _model_profile(model: ClientModel) -> JsonObject:
             for modality in ModelInputModality
             if modality in model.input_modalities
         ]
-    if model.context_window_tokens is not None:
-        profile["contextWindow"] = model.context_window_tokens
+    context_window = model.context_window_tokens
+    if context_window is None:
+        provider_id, _, model_id = model.provider_model_ref.partition("/")
+        context_window = curated_context_window(provider_id, model_id)
+    if context_window is not None:
+        profile["contextWindow"] = context_window
     if model.max_output_tokens is not None:
         profile["maxTokens"] = model.max_output_tokens
     return profile

@@ -306,17 +306,11 @@ class AnthropicStreamLedger:
         return self.content_block_start(self.blocks.thinking_index, "thinking")
 
     def emit_thinking_delta(self, content: str) -> str:
-        if not self.blocks.thinking_started:
-            if self.blocks.text_started:
-                return self.emit_text_delta(content)
-            return ""
         return self.content_block_delta(
             self.blocks.thinking_index, "thinking_delta", content
         )
 
     def stop_thinking_block(self) -> str:
-        if not self.blocks.thinking_started:
-            return ""
         self.blocks.thinking_started = False
         return self.content_block_stop(self.blocks.thinking_index)
 
@@ -375,11 +369,10 @@ class AnthropicStreamLedger:
         return self.content_block_stop(self.blocks.tool_states[tool_index].block_index)
 
     def ensure_thinking_block(self) -> Iterator[str]:
-        if self.blocks.thinking_started:
-            return
-        if self.blocks.next_index > 0 or self.blocks.text_started:
-            return
-        yield self.start_thinking_block()
+        if self.blocks.text_started:
+            yield self.stop_text_block()
+        if not self.blocks.thinking_started:
+            yield self.start_thinking_block()
 
     def ensure_text_block(self) -> Iterator[str]:
         if self.blocks.thinking_started:

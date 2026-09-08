@@ -225,6 +225,7 @@ def test_direct_model_views_exclude_claude_aliases_and_duplicate_variants():
             "max",
         ],
         "inferenceIdleTimeoutSecs": 660,
+        "contextWindow": 128000,
     }
     plain = responses["data"][1]
     assert plain["supportsReasoningEffort"] is False
@@ -310,3 +311,30 @@ def test_direct_model_views_respect_configured_scope_and_pinned_models():
         "deepseek/deepseek-chat",
         "nvidia_nim/meta/llama-3.3-70b-instruct",
     ]
+
+
+def test_direct_model_views_resolve_curated_context_window():
+    app = create_test_app(
+        _settings(
+            model="nvidia_nim/deepseek-ai/deepseek-v4-pro-0813",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["nvidia_nim/moonshotai/kimi-k3", "nvidia_nim/minimaxai/minimax-m3"]',
+        )
+    )
+    _cache_models(
+        app,
+        "nvidia_nim",
+        "deepseek-ai/deepseek-v4-pro-0813",
+        "moonshotai/kimi-k3",
+        "minimaxai/minimax-m3",
+    )
+
+    responses = TestClient(app).get("/v1/models?view=responses").json()
+    model_contexts = {item["id"]: item.get("contextWindow") for item in responses["data"]}
+
+    assert model_contexts["nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"] == 1_048_576
+    assert model_contexts["nvidia_nim/moonshotai/kimi-k3"] == 1_048_576
+    assert model_contexts["nvidia_nim/minimaxai/minimax-m3"] == 262_144
+

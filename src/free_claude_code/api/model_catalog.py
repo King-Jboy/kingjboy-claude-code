@@ -8,6 +8,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from free_claude_code.application.ports import RequestRuntimePort
+from free_claude_code.config.context_windows import load_context_windows
+from free_claude_code.config.curated_contexts import curated_context_window
 from free_claude_code.config.model_refs import (
     ModelCatalogScope,
     configured_chat_model_refs,
@@ -255,11 +257,33 @@ def _build_direct_models_response(
     )
 
 
+def _resolve_inventory_context_window(
+    provider_id: str,
+    model_id: str,
+    *,
+    model_info_tokens: int | None,
+    recorded_windows: dict[str, int],
+    settings: Settings,
+) -> int | None:
+    if model_info_tokens is not None and model_info_tokens > 0:
+        return model_info_tokens
+    model_ref = f"{provider_id}/{model_id}"
+    if model_ref in recorded_windows:
+        return recorded_windows[model_ref]
+    curated = curated_context_window(provider_id, model_id)
+    if curated is not None:
+        return curated
+    if settings.client_context_window is not None:
+        return settings.client_context_window
+    return None
+
+
 def _collect_inventory(
     settings: Settings, runtime: RequestRuntimePort
 ) -> tuple[_InventoryModel, ...]:
     inventory: list[_InventoryModel] = []
     seen: set[str] = set()
+    recorded_windows = load_context_windows()
 
     for ref in configured_chat_model_refs(settings):
         if ref.model_ref in seen:
@@ -275,8 +299,16 @@ def _collect_inventory(
                 input_modalities=(
                     model_info.input_modalities if model_info is not None else None
                 ),
-                context_window_tokens=(
-                    model_info.context_window_tokens if model_info is not None else None
+                context_window_tokens=_resolve_inventory_context_window(
+                    ref.provider_id,
+                    ref.model_id,
+                    model_info_tokens=(
+                        model_info.context_window_tokens
+                        if model_info is not None
+                        else None
+                    ),
+                    recorded_windows=recorded_windows,
+                    settings=settings,
                 ),
                 max_output_tokens=(
                     model_info.max_output_tokens if model_info is not None else None
@@ -299,8 +331,16 @@ def _collect_inventory(
                 input_modalities=(
                     model_info.input_modalities if model_info is not None else None
                 ),
-                context_window_tokens=(
-                    model_info.context_window_tokens if model_info is not None else None
+                context_window_tokens=_resolve_inventory_context_window(
+                    provider_id,
+                    model_id,
+                    model_info_tokens=(
+                        model_info.context_window_tokens
+                        if model_info is not None
+                        else None
+                    ),
+                    recorded_windows=recorded_windows,
+                    settings=settings,
                 ),
                 max_output_tokens=(
                     model_info.max_output_tokens if model_info is not None else None
@@ -313,12 +353,19 @@ def _collect_inventory(
             if model_info.model_id in seen:
                 continue
             seen.add(model_info.model_id)
+            provider_id, _, model_id = model_info.model_id.partition("/")
             inventory.append(
                 _InventoryModel(
                     provider_model_ref=model_info.model_id,
                     supports_thinking=model_info.supports_thinking,
                     input_modalities=model_info.input_modalities,
-                    context_window_tokens=model_info.context_window_tokens,
+                    context_window_tokens=_resolve_inventory_context_window(
+                        provider_id,
+                        model_id,
+                        model_info_tokens=model_info.context_window_tokens,
+                        recorded_windows=recorded_windows,
+                        settings=settings,
+                    ),
                     max_output_tokens=model_info.max_output_tokens,
                 )
             )

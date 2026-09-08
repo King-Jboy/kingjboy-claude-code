@@ -41,3 +41,14 @@ def test_a_specific_entry_would_beat_a_family_prefix() -> None:
         assert curated_context_window("groq", "model-classic") == 64_000
     finally:
         curated_contexts.CURATED_CONTEXT_WINDOWS = original
+
+
+def test_supported_providers_and_gateways_curated_windows() -> None:
+    assert curated_context_window("kimi", "kimi-k3") == 1_048_576
+    assert curated_context_window("kimi", "moonshot-v1-128k") == 128_000
+    assert curated_context_window("deepseek", "deepseek-v4-pro-0813") == 1_048_576
+    assert curated_context_window("nvidia_nim", "deepseek-ai/deepseek-v4-pro-0813") == 1_048_576
+    assert curated_context_window("nvidia_nim", "moonshotai/kimi-k3") == 1_048_576
+    assert curated_context_window("nararoute", "deepseek-v4-flash") == 1_048_576
+    assert curated_context_window("nararoute", "glm-5.3-flash-free") == 128_000
+
