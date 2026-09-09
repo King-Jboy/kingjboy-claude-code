@@ -289,6 +289,10 @@ class Settings(BaseSettings):
         default=HTTP_CONNECT_TIMEOUT_DEFAULT,
         validation_alias="HTTP_CONNECT_TIMEOUT",
     )
+    key_hedge_delay_seconds: float = Field(
+        default=0.0,
+        validation_alias="KEY_HEDGE_DELAY_SECONDS",
+    )
 
     # ==================== Fast Prefix Detection ====================
     fast_prefix_detection: bool = True

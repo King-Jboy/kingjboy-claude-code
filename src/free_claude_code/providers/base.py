@@ -46,6 +46,7 @@ class ProviderConfig:
     # set a positive limit, optionally rolling over on a window.
     key_usage_limit: int = 0
     key_usage_window_seconds: float | None = None
+    key_hedge_delay_seconds: float = 0.0
 
 
 class BaseProvider(ABC):

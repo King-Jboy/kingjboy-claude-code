@@ -216,4 +216,5 @@ def build_provider_config(
         proxy=proxy,
         log_raw_sse_events=settings.log_raw_sse_events,
         log_api_error_tracebacks=settings.log_api_error_tracebacks,
+        key_hedge_delay_seconds=settings.key_hedge_delay_seconds,
     )

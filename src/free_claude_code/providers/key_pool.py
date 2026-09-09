@@ -5,10 +5,12 @@ Selection is least-recently-used (LRU): every request takes the key that has
 been idle the longest, so load spreads evenly across all configured keys.
 """
 
+import asyncio
 import math
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -195,11 +197,13 @@ class KeyPool:
         client_factory: KeyClientFactory | None = None,
         usage_limit: int = 0,
         usage_window_seconds: float | None = None,
+        hedge_delay_seconds: float = 0.0,
     ) -> None:
         if not keys:
             raise ValueError("A key pool requires at least one API key")
         self._provider_name = provider_name
         self._client_factory = client_factory
+        self._hedge_delay_seconds = max(0.0, hedge_delay_seconds)
         self.keys = [
             ApiKeyInfo(
                 key,
@@ -289,6 +293,39 @@ class KeyPool:
         if key_info is not None:
             key_info.mark_rate_limited(cooldown_seconds)
 
+    def _handle_key_error(self, key: str, error: Exception) -> bool:
+        if isinstance(error, openai.AuthenticationError):
+            logger.warning(
+                "{} key rotation: AuthenticationError for key ...{}",
+                self._provider_name,
+                key[-8:] if len(key) >= 8 else "...",
+            )
+            self.mark_key_failed(key)
+            return True
+        if isinstance(error, openai.PermissionDeniedError):
+            logger.warning(
+                "{} key rotation: PermissionDeniedError for key ...{}",
+                self._provider_name,
+                key[-8:] if len(key) >= 8 else "...",
+            )
+            self.mark_key_failed(key)
+            return True
+        if isinstance(error, openai.RateLimitError):
+            cooldown = (
+                _rate_limit_reset_seconds(error)
+                or retry_after_seconds(error)
+                or _RATE_LIMIT_COOLDOWN_S
+            )
+            logger.warning(
+                "{} key rotation: RateLimitError for key ...{}, cooling for {}s",
+                self._provider_name,
+                key[-8:] if len(key) >= 8 else "...",
+                int(cooldown),
+            )
+            self.mark_key_rate_limited(key, cooldown)
+            return True
+        return False
+
     async def run_key_local(
         self,
         operation: Callable[[AsyncOpenAI], Awaitable[T]],
@@ -301,6 +338,21 @@ class KeyPool:
                 "KeyPool requires a client_factory to execute run_key_local"
             )
 
+        if self._hedge_delay_seconds <= 0.0 or len(self.keys) < 2:
+            return await self._run_key_sequential(
+                operation, proves_credential=proves_credential
+            )
+        return await self._run_key_hedged(
+            operation, proves_credential=proves_credential
+        )
+
+    async def _run_key_sequential(
+        self,
+        operation: Callable[[AsyncOpenAI], Awaitable[T]],
+        *,
+        proves_credential: bool = True,
+    ) -> T:
+        assert self._client_factory is not None
         last_error: Exception | None = None
         for _ in range(len(self.keys)):
             current_key = self.get_next_key()
@@ -312,37 +364,10 @@ class KeyPool:
                 result = await operation(client)
                 self.mark_key_used(current_key, proves_credential=proves_credential)
                 return result
-            except openai.AuthenticationError as error:
-                logger.warning(
-                    "{} key rotation: AuthenticationError for key ...{}",
-                    self._provider_name,
-                    current_key[-8:] if len(current_key) >= 8 else "...",
-                )
-                self.mark_key_failed(current_key)
-                last_error = error
-            except openai.PermissionDeniedError as error:
-                logger.warning(
-                    "{} key rotation: PermissionDeniedError for key ...{}",
-                    self._provider_name,
-                    current_key[-8:] if len(current_key) >= 8 else "...",
-                )
-                self.mark_key_failed(current_key)
-                last_error = error
-            except openai.RateLimitError as error:
-                cooldown = (
-                    _rate_limit_reset_seconds(error)
-                    or retry_after_seconds(error)
-                    or _RATE_LIMIT_COOLDOWN_S
-                )
-                logger.warning(
-                    "{} key rotation: RateLimitError for key ...{}, cooling for {}s",
-                    self._provider_name,
-                    current_key[-8:] if len(current_key) >= 8 else "...",
-                    int(cooldown),
-                )
-                self.mark_key_rate_limited(current_key, cooldown)
-                last_error = error
-            except Exception:
+            except Exception as error:
+                if self._handle_key_error(current_key, error):
+                    last_error = error
+                    continue
                 raise
 
         if last_error is not None:
@@ -353,6 +378,79 @@ class KeyPool:
             status_code=429,
             message=f"Every {self._provider_name} API key in the pool is cooling or exhausted.",
             retryable=True,
+        )
+
+    async def _run_key_hedged(
+        self,
+        operation: Callable[[AsyncOpenAI], Awaitable[T]],
+        *,
+        proves_credential: bool = True,
+    ) -> T:
+        assert self._client_factory is not None
+
+        async def execute_on_key(key: str) -> T:
+            assert self._client_factory is not None
+            client = self._client_factory(key)
+            result = await operation(client)
+            self.mark_key_used(key, proves_credential=proves_credential)
+            return result
+
+        key1 = self.get_next_key()
+        if not key1:
+            return await self._run_key_sequential(
+                operation, proves_credential=proves_credential
+            )
+
+        task1: asyncio.Task[T] = asyncio.create_task(execute_on_key(key1))
+        done, _ = await asyncio.wait([task1], timeout=self._hedge_delay_seconds)
+        if task1 in done:
+            exc = task1.exception()
+            if exc is None:
+                return task1.result()
+            if isinstance(exc, Exception) and self._handle_key_error(key1, exc):
+                return await self._run_key_sequential(
+                    operation, proves_credential=proves_credential
+                )
+            if isinstance(exc, BaseException):
+                raise exc
+
+        key2 = self.get_next_key()
+        if not key2 or key2 == key1:
+            return await task1
+
+        logger.info(
+            "{} key hedging: key ...{} quiet after {}s, racing with key ...{}",
+            self._provider_name,
+            key1[-6:] if len(key1) >= 6 else "...",
+            self._hedge_delay_seconds,
+            key2[-6:] if len(key2) >= 6 else "...",
+        )
+        task2: asyncio.Task[T] = asyncio.create_task(execute_on_key(key2))
+        tasks: dict[asyncio.Task[T], str] = {task1: key1, task2: key2}
+
+        while tasks:
+            done_tasks, _ = await asyncio.wait(
+                tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+            )
+            for finished in done_tasks:
+                k = tasks.pop(finished)
+                exc = finished.exception()
+                if exc is None:
+                    for remaining in tasks:
+                        remaining.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await asyncio.sleep(0)
+                    return finished.result()
+
+                if isinstance(exc, Exception) and self._handle_key_error(k, exc):
+                    continue
+                if isinstance(exc, BaseException):
+                    for remaining in tasks:
+                        remaining.cancel()
+                    raise exc
+
+        return await self._run_key_sequential(
+            operation, proves_credential=proves_credential
         )
 
     async def aclose(self) -> None:

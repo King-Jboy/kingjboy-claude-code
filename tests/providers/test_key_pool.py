@@ -1,5 +1,6 @@
 """Unit and regression tests for API Key Pool (LRU rotation and provider failover)."""
 
+import asyncio
 import time
 from unittest.mock import MagicMock
 
@@ -262,3 +263,57 @@ def test_key_pool_failure_monotonic_cooldown():
 
     pool.mark_key_failed("key1")
     assert pool._key_index["key1"].rate_limited_until >= original_until
+
+
+@pytest.mark.asyncio
+async def test_key_pool_hedged_fast_path_avoids_racing():
+    """When the first key returns before the hedge delay, second key is not called."""
+    keys = ["k1", "k2"]
+    attempted = []
+
+    def client_factory(key: str) -> AsyncOpenAI:
+        mock = MagicMock(spec=AsyncOpenAI)
+        mock.api_key = key
+        return mock
+
+    pool = KeyPool(keys, client_factory=client_factory, hedge_delay_seconds=0.1)
+
+    async def operation(client: AsyncOpenAI) -> str:
+        attempted.append(client.api_key)
+        await asyncio.sleep(0.01)
+        return f"result_{client.api_key}"
+
+    result = await pool.run_key_local(operation)
+    assert result == "result_k1"
+    assert attempted == ["k1"]
+
+
+@pytest.mark.asyncio
+async def test_key_pool_hedged_racing_second_key_wins():
+    """When the first key is slow, the second key races and wins."""
+    keys = ["slow_k1", "fast_k2"]
+    attempted = []
+
+    def client_factory(key: str) -> AsyncOpenAI:
+        mock = MagicMock(spec=AsyncOpenAI)
+        mock.api_key = key
+        return mock
+
+    pool = KeyPool(keys, client_factory=client_factory, hedge_delay_seconds=0.05)
+
+    async def operation(client: AsyncOpenAI) -> str:
+        attempted.append(client.api_key)
+        if client.api_key == "slow_k1":
+            await asyncio.sleep(1.0)
+            return "slow_result"
+        await asyncio.sleep(0.01)
+        return "fast_result"
+
+    t0 = time.monotonic()
+    result = await pool.run_key_local(operation)
+    duration = time.monotonic() - t0
+
+    assert result == "fast_result"
+    assert "slow_k1" in attempted
+    assert "fast_k2" in attempted
+    assert duration < 0.5  # Much faster than slow_k1's 1.0s delay
