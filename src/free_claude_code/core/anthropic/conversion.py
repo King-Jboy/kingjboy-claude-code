@@ -324,6 +324,44 @@ def _coalesce_openai_user_messages(
     return result
 
 
+def _coalesce_openai_assistant_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Combine adjacent assistant messages after transcript ordering is complete."""
+    result: list[dict[str, Any]] = []
+    for message in messages:
+        if (
+            message.get("role") == "assistant"
+            and result
+            and result[-1].get("role") == "assistant"
+        ):
+            previous = result[-1]
+            prev_content = previous.get("content") or ""
+            curr_content = message.get("content") or ""
+            if prev_content and curr_content:
+                previous["content"] = f"{prev_content}\n\n{curr_content}"
+            elif curr_content:
+                previous["content"] = curr_content
+
+            prev_tools = previous.get("tool_calls")
+            curr_tools = message.get("tool_calls")
+            if curr_tools:
+                if prev_tools:
+                    previous["tool_calls"] = [*prev_tools, *curr_tools]
+                else:
+                    previous["tool_calls"] = list(curr_tools)
+
+            prev_reasoning = previous.get("reasoning_content")
+            curr_reasoning = message.get("reasoning_content")
+            if prev_reasoning and curr_reasoning:
+                previous["reasoning_content"] = f"{prev_reasoning}\n\n{curr_reasoning}"
+            elif curr_reasoning:
+                previous["reasoning_content"] = curr_reasoning
+            continue
+        result.append(message)
+    return result
+
+
 class _OpenAIChatHistoryLedger:
     """Assemble OpenAI chat history while respecting tool-result dependencies."""
 
@@ -500,7 +538,8 @@ class AnthropicToOpenAIConverter:
 
         ordered_messages = ledger.finish()
         closed_messages = close_chat_tool_result_turns(ordered_messages)
-        return _coalesce_openai_user_messages(closed_messages)
+        coalesced_user = _coalesce_openai_user_messages(closed_messages)
+        return _coalesce_openai_assistant_messages(coalesced_user)
 
     @staticmethod
     def _convert_message_to_segments(

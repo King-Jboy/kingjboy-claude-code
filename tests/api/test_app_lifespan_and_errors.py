@@ -290,6 +290,35 @@ async def test_runtime_asgi_app_reports_incomplete_owned_shutdown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_asgi_app_reports_cancelled_owned_shutdown() -> None:
+    runtime = MagicMock(spec=ApplicationRuntime)
+    runtime.settings = _settings()
+    runtime.start = AsyncMock()
+    runtime.close = AsyncMock(side_effect=asyncio.CancelledError())
+    app = RuntimeASGIApp(AsyncMock(), runtime)
+    received = iter(
+        [
+            {"type": "lifespan.startup"},
+            {"type": "lifespan.shutdown"},
+        ]
+    )
+    sent: list[dict[str, str]] = []
+
+    async def receive():
+        return next(received)
+
+    async def send(message):
+        sent.append(message)
+
+    await app({"type": "lifespan"}, receive, send)
+
+    assert sent == [
+        {"type": "lifespan.startup.complete"},
+        {"type": "lifespan.shutdown.failed", "message": ""},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runtime_asgi_app_reports_concise_startup_failure():
     runtime = MagicMock(spec=ApplicationRuntime)
     runtime.settings = _settings(log_api_error_tracebacks=False)

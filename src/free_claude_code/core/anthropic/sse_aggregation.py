@@ -99,6 +99,10 @@ async def aggregate_anthropic_sse_to_message(
             for event in parse_sse_text(raw_event + "\n\n"):
                 handle_payload(event.data)
 
+    if buffer.strip():
+        for event in parse_sse_text(buffer + "\n\n"):
+            handle_payload(event.data)
+
     content: list[dict[str, Any]] = []
     for idx in sorted(blocks):
         block = blocks[idx]

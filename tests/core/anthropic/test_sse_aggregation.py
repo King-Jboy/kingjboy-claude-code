@@ -85,3 +85,33 @@ async def test_a_signature_split_across_deltas_is_concatenated() -> None:
 
     assert error is None
     assert message["content"][0]["signature"] == "sig-part-one.sig-part-two."
+
+
+@pytest.mark.asyncio
+async def test_trailing_buffer_without_final_double_newline_is_aggregated() -> None:
+    # A stream that terminates without a trailing double newline on its final
+    # event must still aggregate the last event instead of dropping it.
+    last_event = format_sse_event(
+        "message_delta",
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+    ).rstrip("\n")
+    events = [
+        _message_start(),
+        format_sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "Hello"},
+            },
+        ),
+        format_sse_event(
+            "content_block_stop", {"type": "content_block_stop", "index": 0}
+        ),
+        last_event,
+    ]
+
+    message, error = await aggregate_anthropic_sse_to_message(_body(events))
+    assert error is None
+    assert message["content"][0]["text"] == "Hello"
+    assert message["stop_reason"] == "end_turn"

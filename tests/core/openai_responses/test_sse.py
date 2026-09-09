@@ -1085,3 +1085,143 @@ def _overlapping_text_stream() -> list[str]:
         ),
         format_sse_event("message_stop", {"type": "message_stop"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_tool_start_with_initial_input_streams_delta_immediately() -> None:
+    events = [
+        format_sse_event(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-3-5-sonnet",
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            },
+        ),
+        format_sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "call_init",
+                    "name": "search",
+                    "input": {"q": "fcc"},
+                },
+            },
+        ),
+        format_sse_event(
+            "content_block_stop",
+            {"type": "content_block_stop", "index": 0},
+        ),
+        format_sse_event("message_stop", {"type": "message_stop"}),
+    ]
+    text = await _collect_sse(
+        _responses_sse(
+            _aiter(events),
+            {
+                "model": "nvidia_nim/test-model",
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            },
+        )
+    )
+    parsed = parse_sse_text(text)
+    event_names = [e.event for e in parsed]
+    assert "response.function_call_arguments.delta" in event_names
+    assert "response.function_call_arguments.done" in event_names
+    completed = parsed[-1].data["response"]
+    assert completed["output"][0]["arguments"] == '{"q":"fcc"}'
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_call_streams_deltas_without_duplicate_on_done() -> None:
+    events = [
+        format_sse_event(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_custom",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-3-5-sonnet",
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            },
+        ),
+        format_sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "call_c1",
+                    "name": "custom_editor",
+                    "input": {},
+                },
+            },
+        ),
+        format_sse_event(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": "chunk1 "},
+            },
+        ),
+        format_sse_event(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": "chunk2"},
+            },
+        ),
+        format_sse_event(
+            "content_block_stop",
+            {"type": "content_block_stop", "index": 0},
+        ),
+        format_sse_event("message_stop", {"type": "message_stop"}),
+    ]
+    text = await _collect_sse(
+        _responses_sse(
+            _aiter(events),
+            {
+                "model": "nvidia_nim/test-model",
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "custom",
+                        "name": "custom_editor",
+                    }
+                ],
+            },
+        )
+    )
+    parsed = parse_sse_text(text)
+    deltas = [
+        e.data["delta"]
+        for e in parsed
+        if e.event == "response.custom_tool_call_input.delta"
+    ]
+    assert deltas == ["chunk1 ", "chunk2"]
+    completed = parsed[-1].data["response"]
+    assert completed["output"][0]["input"] == "chunk1 chunk2"

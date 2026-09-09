@@ -53,7 +53,7 @@ class RuntimeASGIApp:
                         closed = await self.runtime.close()
                     except asyncio.CancelledError:
                         logger.info("Lifespan shutdown cancelled.")
-                        await send({"type": "lifespan.shutdown.complete"})
+                        await send({"type": "lifespan.shutdown.failed", "message": ""})
                         return
                     except Exception as exc:
                         logger.error(

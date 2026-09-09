@@ -961,7 +961,7 @@ briefly pause other NIM models during shared recovery. No provider-specific
 marker enters `core/`, another provider, or an API adapter.
 
 [providers/stream_recovery.py](src/free_claude_code/providers/stream_recovery.py)
-owns only the 0.75-second/65,536-byte commit holdback and the choice between
+owns only the 0.15-second/65,536-byte commit holdback and the choice between
 transparent replay, request-local continuation/tool salvage, and final failure.
 `ProviderRetrySession` owns one five-attempt budget for the whole logical
 execution: initial opening, deterministic request-shape corrections, early

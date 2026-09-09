@@ -173,7 +173,6 @@ class ProviderExecutor:
                             provider_id=routed.resolved.provider_id,
                         ) from exc
                     if not chunk:
-                        progress_deadline = loop.time() + self._progress_timeout_seconds
                         await asyncio.sleep(0)
                         continue
                     yield chunk

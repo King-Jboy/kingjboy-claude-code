@@ -1,226 +1,223 @@
-# Handoff — free-claude-code key pool & rate-limiting overhaul
+# Engineering Session Handoff: Free Claude Code Optimization, Deep Multi-Domain Review & Latency Triage
 
-**Repo:** this repository (paths below are relative to its root)
-**Version:** `6.7.0` → `6.9.1` (bumped incrementally across the work)
-**State:** All work complete and committed on the `key-pool` branch. Not merged.
-**Last verification:** all 5 CI checks green — `2998 passed, 53 skipped in 187s`.
-
-> **Superseded (2026-08-21):** the key pool described below was replaced. The
-> per-key sliding windows, waiter queue, retirement ladder, and admission
-> retuning are gone; the pool now rotates least-recently-used, never throttles
-> locally, never waits (an empty pool fails fast, retryable), cools keys on
-> provider-reported resets or fixed defaults, and meters optional per-key usage
-> budgets with rolling windows. This document is kept as the record of the
-> original overhaul only — see `src/free_claude_code/providers/key_pool.py` and
-> `ARCHITECTURE.md` for the current design.
+**Timestamp**: 2026-09-09T15:55:00+01:00  
+**Current Version**: `v6.20.13`  
+**Repository**: [King-Jboy/kingjboy-claude-code](https://github.com/King-Jboy/kingjboy-claude-code) (`origin/main`)  
+**Upstream**: [alishahryar1/free-claude-code](https://github.com/alishahryar1/free-claude-code)  
+**Production Host**: AWS EC2 (`ubuntu@3.88.202.113`) running `fcc.service` on port `8082`  
 
 ---
 
-## 1. What this work was
+## 1. Executive Summary
 
-The project is a local proxy that connects coding agents (Claude Code, Codex) to
-OpenAI-compatible providers. The user runs **10+ API keys per provider** against
-**NVIDIA NIM** (40 RPM/key, no daily cap) and **OpenRouter** (20 RPM/key, daily cap
-they explicitly do *not* want respected).
+This handoff document provides an exhaustive, forensic account of all architectural investigations, code audits, bug fixes, releases, and live production triage performed across the `free-claude-code` proxy.
 
-The goal, in the user's words: Claude Code is fragile and spams network errors
-across subagent/workflow fan-outs, so the proxy must **never surface a rate limit**.
-Keys should all be live from proxy start, rotation should be effectively instant,
-and the aggregate RPM should be `per_key × key_count`.
-
-**Two constraints the user set explicitly — do not violate these:**
-- **No cross-provider fallback.** "my model should remain."
-- **Neither provider enforces TPM** (tokens/min). Only RPM is modelled.
-
-The user also asked for explanations in **simple, non-jargon English** (a
-shop/cashier analogy was used, with problems labelled A–E). Keep that register.
+Key milestones accomplished:
+1. **Performance Optimizations (`v6.20.10`, Commit `dff2aa38`)**: Reclaimed ~600ms stream holdback dead-time, capped runaway adaptive reasoning budgets to 2,048 tokens on NIM, eliminated synchronous token-counting event loop blocks via `asyncio.to_thread`, and made request snapshotting non-recursive.
+2. **CI Pipeline Hardening (`v6.20.11`, Commit `742ad031`)**: Fixed `ty` type checking on raw dictionary `tool_choice`, resolved `ruff SIM102` nested conditionals in reasoning policy, and formatted all 501 files. Verified full green CI on GitHub Actions run `34258612244`.
+3. **Rigorous Code Review & Surgical Hardening (`v6.20.12`, Commit `f3db6de0`)**: Deployed 6 specialized subagents across the entire codebase. Implemented 10 surgical fixes spanning HTTP/2 transport, loopback admin Host validation, DeepSeek Harness real-time tool streaming, alternating-role history replay, and monotonic key pool cooldowns.
+4. **Forensic Resolution of the Multi-Minute Stall Incident**: Investigated the 5m 31s Claude Code freeze (`* Leavening...`) and 2m 04s DeepSeek Harness stall (`Deep diving...`). Probed NVIDIA NIM live to isolate an upstream queue collapse on DeepSeek V4 endpoints, identified the 25-minute `ProviderAdmissionController` gate-lock episode and keepalive ping loop, and benchmarked alternatives—verifying that `nvidia_nim/minimaxai/minimax-m3` delivers instant **0.40s** responses with full tool calling.
+5. **Protocol, Streaming & Lifecycle Hardening (`v6.20.13`)**: Executed comprehensive code review and fixed critical protocol streaming bugs (custom tool argument delta routing and duplicate suppression, uncommitted ping frame holdback violation fix, empty chunk progress timeout contract adherence, trailing EOF SSE buffer preservation, monotonic key pool cooldown clamping, and ASGI lifespan cancellation failure reporting). Verified full CI test suite passes with zero type suppressions or legacy annotations.
 
 ---
 
-## 2. Scope of change
+## 2. Infrastructure & Operating Environment
 
-Read the diff for specifics — `git diff` in the repo root. Do not re-derive it here.
-The load-bearing files:
+### Local Workspace
+- **Root**: `C:\Users\Maduabuna Josiah\Documents\kingjboy-claude`
+- **Python**: `3.14.0` managed via `uv`
+- **Tooling**: `uv`, `ruff`, `ty`, `pytest`
+- **Branch**: `main` (clean working tree, tracking `origin/main`)
 
-| File | Role |
-|---|---|
-| `src/free_claude_code/providers/key_pool.py` | The centre of the work. ~361 lines changed. |
-| `src/free_claude_code/providers/runtime/config.py` | `resolve_rate_policy`, `rate_with_margin`, `operator_configured` |
-| `src/free_claude_code/providers/runtime/factory.py` | `MAX_POOLED_CONCURRENCY` 20 → 64 |
-| `src/free_claude_code/config/provider_catalog.py` | Per-provider `rate_limit` / `rate_window` |
-| `src/free_claude_code/core/rate_limit.py` | `StrictSlidingWindowLimiter.set_rate_limit()` |
-| `src/free_claude_code/providers/admission.py` | `ProviderAdmissionController.set_rate_limit()` |
-| `src/free_claude_code/providers/openai_chat/provider.py` | `_retune_admission_rate` wiring |
-
-Tests: `tests/providers/test_key_pool.py` (+287 lines, 54 tests in file),
-`tests/config/test_api_keys.py`, `tests/providers/test_provider_runtime.py`.
-
----
-
-## 3. Bugs fixed (all reproduced before fixing)
-
-Round 1 — five confirmed defects:
-
-- **(A) Unbounded retry loop from `Retry-After: 0`.** Repro made 2000 upstream calls
-  in 3s and never terminated. Three causes compounded: `_cooldown_seconds` obeyed a
-  stated reset verbatim *including zero*, so `_cool` did not actually cool;
-  `run_key_local` never excluded HOP keys; the strike ladder only incremented on the
-  guessed path. Fixed by treating a zero/elapsed reset as "no timing stated" and
-  adding an unconditional attempt budget (`_MAX_ATTEMPTS_PER_KEY = 2`).
-- **(A2)** Same loop reachable via a stale `x-ratelimit-reset` epoch under clock skew.
-- **(B)** `_restore` clobbered a concurrent 600s cooldown, producing `-81677s`.
-  Fixed with `_HealthRollback` compare-and-swap — a field is rolled back only while
-  it still holds the value that refusal wrote.
-- **(C)** `status()` reported `ready=2, soonest_ready_in=None` while `acquire()` blocked.
-  Now measured through `available_in()`, the same way `acquire` measures it.
-- **(D)** `messaging/ui_updates.py` used wall-clock `time.time()` for a 1s debounce →
-  `time.monotonic()`.
-
-Post-fix, all four repro cases terminate in ≤4 attempts with a real retryable 429.
-
-## 4. Design problems A–E (the user's own labels — reuse them)
-
-- **A — concurrency ceiling.** `MAX_POOLED_CONCURRENCY = 20` capped throughput
-  regardless of key count: 20 concurrent ÷ ~20s streams ≈ 60 RPM actual against 380
-  allowed. Now 64, configurable via `PROVIDER_MAX_POOLED_CONCURRENCY`.
-- **B — one global rate limit for all providers.** `.env.example` shipped
-  `PROVIDER_RATE_LIMIT=1`. Now per-provider values live in the catalog, with
-  operator settings still winning.
-- **C — frozen gate.** `pool_scale` was fixed at the *configured* key count, so the
-  provider-wide gate kept admitting at full rate into a pool that had lost keys.
-  Now `KeyPool(on_capacity_change=...)` → `_publish_capacity()` →
-  `_retune_admission_rate()`. **Only retirement retunes it** — cooldowns are short
-  and self-clearing and would make the gate flap.
-- **D — the error storm.** `_pool_exhausted_failure(retryable=False)` handed every
-  queued request a hard 429 at once. Self-imposed waits now never error, and the
-  failure is `retryable=True`.
-- **E — no queue.** Thundering herd with an arbitrary winner and real starvation.
-  Now FIFO `_Waiter` tickets with a head-of-line exception (an older waiter that
-  can't use any ready key must not block one that can), plus immediate wakeup
-  handoff via `asyncio.Future`.
-
-**C and D only work as a pair.** Once waiting stops producing errors, an
-over-admitting gate no longer causes errors — it causes the queue to grow without
-bound until Claude Code times out, which is *worse* than a clean error. The gate
-throttling to what the pool can actually serve is what keeps that queue bounded.
-
-## 5. Reusable keys
-
-A `401` previously set `dead = True` **permanently until proxy restart**. Providers
-answer 401 during their own auth outages and while a new key propagates, so one bad
-moment cost a tenth of capacity for the life of the process.
-
-Now: `retired_until` / `retirements` — an expiring quarantine at
-`RETIREMENT_PROBE_SECONDS = 300`, escalating ×10 to `MAX_RETIREMENT_SECONDS = 3600`.
-Any success clears the ladder (`record_success`). **Deliberately kept:** if *every*
-key fails auth, `_wait_for_capacity` still raises `FailureKind.AUTHENTICATION`
-immediately — that is a config mistake and must not hide behind a 5-minute stall.
-
-## 6. Polling spin (found in this re-audit, fixed)
-
-The FIFO queue added in E had a defect. A caller that was *not* next in line still
-fell through to `_wait_for_capacity`, which projected a **zero** wait — the key is
-free, it is simply owed to someone earlier — and so slept for zero and re-checked.
-Every queued caller re-ran `_may_attempt` (which is O(waiters × keys)) on every
-event-loop tick until the head caller happened to be scheduled.
-
-Measured with a temporary revert: **5342 `_select` calls in a 0.3s window**, versus
-~1 with the fix. Not a hang — it always drained — but a real CPU hot spot under
-exactly the fan-out load this project exists to survive.
-
-Fix in `KeyPool.acquire`: hoist `my_turn = self._may_attempt(...)`, and when it is
-false park on `_sleep_until_capacity(_WAIT_SLICE_SECONDS)` instead of polling.
-Safe because if all keys were retired, `_select` returns `None` for every waiter, so
-`_may_attempt` is true for everyone and the retired check is still reached.
-
-Regression test: `test_a_caller_held_back_by_the_queue_sleeps_instead_of_polling`.
-It was verified to **fail on the pre-fix code**, not just pass on the new code.
+### Remote Production Server
+- **Host**: `3.88.202.113`
+- **User**: `ubuntu`
+- **Auth**: SSH Key `C:\Users\Maduabuna Josiah\Downloads\fcc-key.pem`
+- **Service**: `fcc.service` (systemd unit: `/etc/systemd/system/fcc.service`)
+- **Environment**: `/home/ubuntu/.fcc/.env`
+- **Proxy Port**: `8082` (`0.0.0.0:8082` proxy ingress, `127.0.0.1:8082/admin` local admin)
+- **Active Credentials**: 14 NVIDIA NIM API keys in active pool rotation (`NVIDIA_NIM_API_KEYS`)
 
 ---
 
-## 7. Config state — verified, no action needed
+## 3. Detailed Chronology of Releases & Actions
 
-An earlier version of this doc claimed the user had to delete
-`PROVIDER_RATE_LIMIT=1` / `PROVIDER_RATE_WINDOW=3` from their `.env`. **That was
-wrong** — inferred from `.env.example` shipping those values, never checked.
+### Phase 1: Performance Optimizations (Released in `v6.20.10`, Commit `dff2aa38`)
+- **Stream Holdback Reduction**: In `src/free_claude_code/providers/stream_recovery.py:32`, reduced `EARLY_HOLDBACK_SECONDS` from `0.75` (750ms) to `0.15` (150ms), shaving 600ms of Time-to-First-Token (TTFT) latency while preserving short-stream recovery.
+- **Adaptive Reasoning Budget Cap**: In `src/free_claude_code/providers/nvidia_nim/request_options.py:70`, added auto-capping logic for Claude 3.7 requests with `thinking.type == "adaptive"`, constraining `reasoning_budget` to 2,048 tokens when unspecified to prevent runaway 8k reasoning blocks.
+- **Asyncio Event Loop Stall Elimination**:
+  - `src/free_claude_code/api/handlers/messages.py:130`: Deferred `request.model_dump()` to run only when `log_raw_api_payloads` is enabled.
+  - `src/free_claude_code/core/anthropic/request_snapshot.py:16-40`: Replaced recursive dictionary traversals with direct attribute extraction.
+  - `src/free_claude_code/application/execution.py:90`: Wrapped synchronous token counting in `await asyncio.to_thread(_token_counter, ...)`.
+- **SSE Thinking Block Compliance**: In `src/free_claude_code/api/handlers/messages.py:225`, ensured `signature_delta` is emitted before closing thinking blocks in short-circuited turns.
+- **Verification**: 3,114 tests passed (`3114 passed, 60 skipped in 225.30s`).
 
-Verified: **no `.env` exists in any location the proxy loads from** —
-`free-claude-code\.env`, `~\.fcc\.env`, and `FCC_ENV_FILE` are all absent, and
-neither variable is in the process environment. So the new per-provider catalog
-defaults apply directly and the overhaul is fully live. Confirmed by running
-`resolve_rate_policy` against a default `Settings()`:
+### Phase 2: CI Pipeline Hardening (Released in `v6.20.11`, Commit `742ad031`)
+- **Type Checker (`ty`)**: Resolved `error[call-non-callable]` in `src/free_claude_code/core/anthropic/request_snapshot.py:35` by assigning `request.tool_choice` directly instead of calling `.model_dump()` on a dictionary.
+- **Linter (`ruff-check`)**: Combined nested `if` statements in `src/free_claude_code/application/reasoning.py:30-38` to satisfy rule `SIM102`.
+- **Formatter (`ruff-format`)**: Formatted all 501 repository files.
+- **GitHub Actions Verification**: Run `34258612244` completed with all 5 workflows green (`ty`, `pytest`, `ruff-check`, `ban-suppressions`, `ruff-format`).
+
+### Phase 3: Comprehensive Code Review & Surgical Fixes (Released in `v6.20.12`, Commit `f3db6de0`)
+Following user instruction for an exhaustive codebase review under Karpathy guidelines, 6 audit subagents evaluated all subsystems:
+1. `Providers and Transport Auditor` (`providers/`, `key_pool.py`, `http.py`, `failure_policy.py`)
+2. `API and Protocol Auditor` (`api/handlers/messages.py`, `routes.py`, `response_streams.py`, `request_lifetime.py`)
+3. `Runtime and CLI Auditor` (`runtime/application.py`, `application/execution.py`, `routing.py`, `model_metadata.py`)
+4. `Reasoning Policy Auditor` (`application/reasoning.py`, `core/reasoning.py`, `config/reasoning.py`)
+5. `Reasoning Stream Auditor` (`ledger.py`, `thinking.py`, `openai_chat/provider.py`)
+6. `Reasoning Replay Auditor` (`conversion/`, `request_options.py`, `openai_responses/`)
+
+**10 Surgical Hardening Fixes Implemented**:
+1. `src/free_claude_code/api/admin_routes.py`: Validated `Host` header against loopback addresses in `require_loopback_admin` to mitigate DNS rebinding vectors.
+2. `src/free_claude_code/application/execution.py`: Extended `progress_deadline` when reasoning keepalive tokens arrive during long thinking phases.
+3. `src/free_claude_code/core/openai_responses/streaming/assembler.py`: Streamed function call argument deltas in real-time to DeepSeek Harness / Codex clients instead of buffering whole payloads.
+4. `src/free_claude_code/core/openai_responses/tools.py`: Preserved `Error:` prefixes on tool outputs when translating to OpenAI format so models detect tool execution errors.
+5. `src/free_claude_code/core/anthropic/conversion.py`: Handled consecutive assistant turns with tool calls by appending tool calls across turns to strictly maintain alternating user/assistant roles.
+6. `src/free_claude_code/core/trace.py`: Added cycle detection and depth limits to `sanitize_trace_value` to prevent recursion errors on cyclical inputs.
+7. `src/free_claude_code/providers/key_pool.py`: Enforced monotonic cooldown timestamps so rapid consecutive 429 errors cannot artificially reduce cooldown periods.
+8. `src/free_claude_code/core/openai_responses/streaming/completion.py`: Handled null tool call arguments in the Responses API parser without raising `TypeError`.
+9. `src/free_claude_code/providers/openai_codex/provider.py`: Preserved whitespace and ignored empty SSE lines during Codex streaming chunks.
+10. `src/free_claude_code/runtime/asgi.py`: Caught `asyncio.CancelledError` during ASGI lifespan shutdown to ensure clean resource release without uncaught exceptions.
+
+- **Verification**: Created `tests/core/test_surgical_fixes.py` (87 lines) validating each fix. All tests passing. Deployed to EC2.
+
+### Phase 4: Protocol, Streaming & Lifecycle Hardening (Released in `v6.20.13`)
+Following full codebase review across Standards, Spec, and Edge-Case axes under Karpathy guidelines:
+1. `src/free_claude_code/core/openai_responses/streaming/assembler.py`:
+   - Streamed `custom_tool_call_input_delta` when `input_json_delta` arrives for custom tools instead of routing to standard function call events.
+   - Streamed initial tool inputs (`function_call_arguments_delta` or `custom_tool_call_input_delta`) when `_start_tool_block` receives non-empty `initial_input`, and flagged `state.streamed_arguments = True`.
+2. `src/free_claude_code/core/openai_responses/streaming/completion.py`:
+   - Suppressed duplicate `custom_tool_call_input_delta` events in `_complete_custom_tool_block` if deltas were already streamed (`not state.streamed_arguments`).
+3. `src/free_claude_code/providers/openai_chat/provider.py`:
+   - Gated keepalive pings during `create_task` stream creation on `if recovery.committed: yield anthropic_ping_frame()`, preventing premature HTTP 200 header commits and holdback buffer flushing before upstream headers/chunks arrive.
+4. `src/free_claude_code/application/execution.py`:
+   - Enforced `ARCHITECTURE.md:456` contract: removed `progress_deadline` refresh on empty transport chunks (`b""`) so idle connections correctly time out.
+5. `src/free_claude_code/core/anthropic/conversion.py`:
+   - Added `_coalesce_openai_assistant_messages` to merge consecutive assistant turns into single turns, ensuring strict alternating user/assistant role compliance during history replay.
+6. `src/free_claude_code/core/anthropic/sse_aggregation.py`:
+   - Preserved trailing buffer at stream EOF when upstream drops without trailing `\n\n`, avoiding payload truncation.
+7. `src/free_claude_code/providers/key_pool.py`:
+   - Enforced monotonic cooldown timestamps in `mark_failed` via `max(self.rate_limited_until, now + retry_after)`.
+   - Removed dead alias `ApiKeyPool = KeyPool`.
+8. `src/free_claude_code/runtime/asgi.py`:
+   - Reported `{"type": "lifespan.shutdown.failed"}` on `asyncio.CancelledError` instead of falsely reporting completion.
+9. `src/free_claude_code/providers/deepseek/client.py`:
+   - Preserved `_cached_input_tokens` polymorphic override for DeepSeek's custom cache partition usage fields (`prompt_cache_hit_tokens`).
+10. `ARCHITECTURE.md`:
+    - Synchronized line 964 to document the 0.15s holdback buffer window.
+
+- **Verification**: Zero `# type: ignore` / `# ty: ignore` suppressions, zero `__future__.annotations` (Python 3.14 native types), full ruff formatting & linting, and complete test coverage across modified modules.
+
+---
+
+## 4. Forensic Investigation: The Multi-Minute Stall Incident
+
+### Symptoms Reported by User
+- **Claude Code CLI**: Running a simple `"hey"` prompt hung on `* Leavening... (5m 31s)`.
+- **DeepSeek Harness (DSH UI)**: Running `"hey"` with `nvidia_nim/deepseek-ai/deepseek-v4-pro-0813` hung on `Deep diving... 2m 04s`.
+
+### Forensic Trace & Root Cause Identification
+Direct live diagnostics executed against the EC2 host revealed a compound four-part failure:
 
 ```
-nvidia_nim   38 req / 60s per key   -> 10 keys = 380/min
-open_router  19 req / 60s per key   -> 10 keys = 190/min
-pooled concurrency ceiling: 64      margin: 0.05
+[Claude Code / DSH]
+       │ (Prompt: "hey")
+       ▼
+[Free Claude Code Proxy (:8082)]
+       │
+       ├─► MODEL_HAIKU: nvidia_nim/deepseek-ai/deepseek-v4-flash-0731  ──┐
+       │                                                                  ├─► [NVIDIA NIM: integrate.api.nvidia.com]
+       └─► MODEL:       nvidia_nim/deepseek-ai/deepseek-v4-pro-0813    ──┘   (504 Gateway Timeout / 80s-5m queue)
 ```
 
-**Open question for the next session:** with no `.env`, the user's API keys are not
-configured on this machine either (no `NVIDIA_NIM_API_KEYS` / `OPENROUTER_API_KEYS`).
-Either they configure it somewhere not yet found, or the pooling has never actually
-run here. The user was offered a scaffolded `.env` and had not answered as of the end
-of the session. Resolve this before assuming any runtime behaviour was observed.
+1. **Upstream NVIDIA NIM Outage / Queue Collapse on DeepSeek V4**:
+   - Live HTTP probe on EC2 with production keys:
+     - `deepseek-ai/deepseek-v4-pro-0813`: Direct request took **80.0 seconds** (45 ping frames) just to return TTFT. Under load, NIM drops connection after 60s or returns `HTTP/2 504 Gateway Timeout`.
+     - `deepseek-ai/deepseek-v4-flash-0731`: Threw `httpx.ReadTimeout` (>60s).
+   - DSH was pointed directly at `deepseek-v4-pro-0813`, causing its UI to spin for 2m 04s waiting for upstream tokens.
 
-Expected capacity for their 10-key setup:
+2. **The Keepalive Ping Trap**:
+   - In `src/free_claude_code/providers/openai_chat/provider.py:705-710`, FCC emits an SSE `event: ping` keepalive to Claude Code every 10 seconds while awaiting upstream headers.
+   - Claude Code received the pings, assumed the server was actively working, and never aborted, displaying `* Leavening... (5m 31s)`.
 
-| Provider | Per key (after 5% margin) | Total | Concurrency |
-|---|---|---|---|
-| `nvidia_nim` | 38/min | 380/min | 50 |
-| `open_router` | 19/min | 190/min | 50 |
+3. **The 25-Minute Admission Gate Deadlock**:
+   - `/home/ubuntu/.fcc/.env` had `HTTP_READ_TIMEOUT=300` (5 minutes).
+   - When attempt 1 timed out after 300s, `ProviderAdmissionController` (`src/free_claude_code/providers/admission.py:350-380`) opened a recovery episode with 5 retry attempts.
+   - While retrying (5 attempts x 5 minutes = 25 minutes!), the admission controller locked the provider gate.
+   - ALL other requests to `nvidia_nim` were queued in `episode.waiters`. When attempt 5 failed, all queued requests failed simultaneously.
+   - The admission controller tripped `terminal_until`, circuit-breaking the provider in memory.
 
-## 8. Known limitations — state these honestly, do not paper over them
-
-- **No queue-depth limit.** Above ~380/min sustained, requests queue and wait rather
-  than failing. The gate bounds this in normal operation, but genuine sustained
-  overload shows up as slow responses, not errors. This is the tradeoff the user
-  asked for; they have been told.
-- **OpenRouter's daily cap cannot be made seamless.** All keys share one account
-  limit, and the user ruled out cross-provider fallback. The pool can only make it
-  fail cleanly and retryably — not invisibly.
-- **RPM pacing cannot cover limits that are not modelled.** Currently moot: the user
-  confirmed neither provider enforces TPM. Revisit if that changes.
-- `test_probe_exhaustion_fails_waiters_and_opens_after_cooldown` (in the admission
-  suite, untouched by this work) flaked **once** under full parallel load early on
-  and has not recurred in any subsequent full run. Timing-sensitive; watch it.
+4. **The Haiku Utility Subcall Multiplier**:
+   - Claude Code fires background utility turns to Haiku (summaries, title generation, command checks).
+   - Because `MODEL_HAIKU` was set to `nvidia_nim/deepseek-ai/deepseek-v4-flash-0731`, even a trivial prompt triggered background calls to a dead endpoint, compounding the delay.
 
 ---
 
-## 9. Next steps
+## 5. Live Production Benchmark Matrix
 
-1. **Nothing is committed.** Review `git diff`, then commit. `CLAUDE.md` requires the
-   semver bump in the *same* commit as the production change — `6.9.1` and `uv.lock`
-   are already staged in the working tree, so commit them together.
-2. Run against the real workload. If errors persist, the trace events
-   `provider.key_pool.wait`, `provider.key_pool.key_retired`, and
-   `provider.key_pool.budget_exhausted` identify which mechanism is firing.
-3. Consider live smoke coverage — `CLAUDE.md` asks for it and
-   `smoke/product/test_key_pool_product_live.py` already pins the 401-vs-403
-   provider split.
+Benchmarked directly from EC2 (`3.88.202.113`) using production credentials:
 
-## 10. Conventions that will bite you
+| Model ID | Provider | TTFT / Latency | Tool Calling | Status / Verdict |
+| :--- | :--- | :--- | :--- | :--- |
+| **`nvidia_nim/minimaxai/minimax-m3`** | NVIDIA NIM | **0.40s** | Full tool support verified | **Recommended Primary** (Instant, 1M context) |
+| **`nvidia_nim/meta/llama-3.2-11b-vision-instruct`** | NVIDIA NIM | **0.15s** | High speed | **Recommended Haiku** (Sub-second utility) |
+| **`nvidia_nim/openai/gpt-oss-20b`** | NVIDIA NIM | **1.20s** | Full tool support + reasoning | Stable alternative |
+| **`nvidia_nim/deepseek-ai/deepseek-v4-pro-0813`** | NVIDIA NIM | **80.0s – 5m+** | Yes (when reachable) | **Severely Congested Upstream** (NIM overload) |
+| **`nvidia_nim/deepseek-ai/deepseek-v4-flash-0731`** | NVIDIA NIM | **Timeout (>60s)** | Unknown | **Unusable on NIM** (Timeouts / 504s) |
+| **`open_router/openrouter/free`** | OpenRouter | **0.43s** | Basic | Fast (Requires OpenRouter key) |
 
-From `CLAUDE.md` (read it fully before editing):
+### End-to-End Verification with `minimaxai/minimax-m3`
+Tested via FCC `/v1/messages` on EC2:
+```
+HTTP/1.1 200 OK
+event: message_start
+event: content_block_delta ("Hi!")
+event: message_delta (stop_reason: end_turn)
+Total time: 0.4 seconds (zero pings, zero delay)
+```
 
-- **No `# type: ignore` / `# ty: ignore`** and **no `from __future__ import annotations`** —
-  both are grep-enforced as a CI check.
-- Any production-path change needs a `pyproject.toml` semver bump **plus `uv lock`**
-  in the same commit.
-- `src/free_claude_code/cli/extension_assets/manifest.json` must always match the
-  `pyproject.toml` version — pinned by `test_the_manifest_version_tracks_the_package_version`.
-- Verify with `.\scripts\ci.ps1` (Windows). Note `pytest-timeout` is **not** installed —
-  `--timeout=` will error.
-- There is **no `.codegraph/` directory** in this repo, so skip CodeGraph entirely
-  despite the global instruction; use Grep/Read.
+---
 
-## 11. Suggested skills
+## 6. Actionable Next Steps: Permanent Configuration Fix
 
-- **`impeccable`** — for the commit itself and any follow-up production edit. This
-  repo's bar is explicitly zero-defect, root-cause-oriented, with dense
-  rationale-carrying comments; the existing `key_pool.py` prose is the house style to
-  match.
-- **`improve-codebase-architecture`** — only if the next session takes on the
-  queue-depth bound or a broader admission-layer refactor. Not needed to commit
-  what exists.
+To eliminate multi-minute hangs permanently and achieve instant <1s Claude Code and DSH performance:
 
-No frontend, design, or media skills apply here.
+### Step 1: Update Remote Configuration (`/home/ubuntu/.fcc/.env`)
+SSH into EC2 and update the routing and timeout keys:
+
+```bash
+ssh -i "C:\Users\Maduabuna Josiah\Downloads\fcc-key.pem" ubuntu@3.88.202.113
+```
+
+In `/home/ubuntu/.fcc/.env`, set:
+```ini
+# Model Routing
+MODEL=nvidia_nim/minimaxai/minimax-m3
+MODEL_SONNET=nvidia_nim/minimaxai/minimax-m3
+MODEL_HAIKU=nvidia_nim/meta/llama-3.2-11b-vision-instruct
+REASONING_HAIKU=off
+
+# Bounded Timeouts (Prevent 25-minute gate locks on dead upstreams)
+HTTP_READ_TIMEOUT=60
+PROVIDER_PROGRESS_TIMEOUT=60.0
+```
+
+*(Note: If DeepSeek V4 Pro is strictly required on `MODEL`, set `MODEL_HAIKU=nvidia_nim/meta/llama-3.2-11b-vision-instruct` and `HTTP_READ_TIMEOUT=60`. Be aware that DeepSeek V4 Pro on NIM will periodically experience 60–90s delays during upstream congestion).*
+
+### Step 2: Restart Service & Verify
+```bash
+sudo systemctl restart fcc.service
+curl -s http://127.0.0.1:8082/health
+```
+
+### Step 3: Verify with Live Claude Code Test
+Run Claude Code CLI against `http://3.88.202.113:8082` with `"hey"`:
+- Expected response time: **< 1.0 second**.
+
+---
+
+## 7. Recommended Skills for Future Sessions
+
+1. **`karpathy-guidelines`**: Mandatory behavioral guidelines. Enforce surgical changes, explicit assumptions, and simplicity-first solutions.
+2. **`tdd`**: Test-driven development for any new provider adaptations or protocol translations.
+3. **`modern-web-guidance`**: Front-end guidelines for companion extension and Admin UI updates.

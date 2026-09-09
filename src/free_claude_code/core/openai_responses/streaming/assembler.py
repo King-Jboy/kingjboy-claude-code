@@ -264,6 +264,16 @@ class ResponsesStreamAssembler:
                             sequence_number=self._next_sequence_number(),
                         )
                     ]
+                if part and state.kind == "custom":
+                    state.streamed_arguments = True
+                    return [
+                        events.custom_tool_call_input_delta(
+                            state.item_id,
+                            state.output_index,
+                            part,
+                            sequence_number=self._next_sequence_number(),
+                        )
+                    ]
         return []
 
     def _handle_content_block_stop(self, data: Mapping[str, Any]) -> list[str]:
@@ -364,10 +374,16 @@ class ResponsesStreamAssembler:
             namespace=identity.namespace,
         )
         initial_input = block.get("input")
+        initial_str = ""
         if (identity.kind == "custom" and initial_input not in (None, {}, "")) or (
             isinstance(initial_input, dict) and initial_input
         ):
-            state.argument_parts.append(json.dumps(initial_input))
+            initial_str = (
+                initial_input
+                if identity.kind == "custom" and isinstance(initial_input, str)
+                else json.dumps(initial_input)
+            )
+            state.argument_parts.append(initial_str)
         self._ledger.set_active_block(state)
         chunks.append(
             events.output_item_added(
@@ -376,6 +392,26 @@ class ResponsesStreamAssembler:
                 sequence_number=self._next_sequence_number(),
             )
         )
+        if initial_str:
+            state.streamed_arguments = True
+            if state.kind == "function":
+                chunks.append(
+                    events.function_call_arguments_delta(
+                        state.item_id,
+                        state.output_index,
+                        initial_str,
+                        sequence_number=self._next_sequence_number(),
+                    )
+                )
+            elif state.kind == "custom":
+                chunks.append(
+                    events.custom_tool_call_input_delta(
+                        state.item_id,
+                        state.output_index,
+                        initial_str,
+                        sequence_number=self._next_sequence_number(),
+                    )
+                )
         return chunks
 
     def _emit_text_delta(self, state: TextBlockState, text: str) -> list[str]:

@@ -937,10 +937,10 @@ def test_convert_mixed_blocks_and_types_and_roles():
     ]
     result = AnthropicToOpenAIConverter.convert_messages(messages)
 
-    assert len(result) == 4
+    assert len(result) == 3
     assert result[0]["role"] == "user"
     assert "<think>" in result[1]["content"]
-    assert result[2]["tool_calls"][0]["id"] == "t1"
+    assert result[1]["tool_calls"][0]["id"] == "t1"
 
 
 # --- Edge Cases ---
@@ -2030,3 +2030,17 @@ def test_convert_assistant_server_tool_blocks_raise(content) -> None:
     messages = [MockMessage("assistant", content)]
     with pytest.raises(OpenAIConversionError, match="server tool"):
         AnthropicToOpenAIConverter.convert_messages(messages)
+
+
+def test_convert_messages_coalesces_adjacent_assistant_messages() -> None:
+    """Adjacent assistant messages must be merged to respect strict alternating turns."""
+    messages = [
+        MockMessage("user", "Hello"),
+        MockMessage("assistant", "Part 1"),
+        MockMessage("assistant", "Part 2"),
+    ]
+    converted = AnthropicToOpenAIConverter.convert_messages(messages)
+    assert len(converted) == 2
+    assert converted[0] == {"role": "user", "content": "Hello"}
+    assert converted[1]["role"] == "assistant"
+    assert converted[1]["content"] == "Part 1\n\nPart 2"

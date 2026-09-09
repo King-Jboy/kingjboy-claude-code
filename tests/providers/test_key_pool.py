@@ -251,3 +251,14 @@ async def test_run_key_local_raises_when_all_keys_exhausted():
         await pool.run_key_local(operation)
 
     assert exc_info.value.status_code == 429
+
+
+def test_key_pool_failure_monotonic_cooldown():
+    """mark_failed must never shorten an existing longer rate limit cooldown."""
+    pool = KeyPool(["key1"])
+    long_cooldown = 3600.0
+    pool.mark_key_rate_limited("key1", long_cooldown)
+    original_until = pool._key_index["key1"].rate_limited_until
+
+    pool.mark_key_failed("key1")
+    assert pool._key_index["key1"].rate_limited_until >= original_until

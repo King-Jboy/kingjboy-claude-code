@@ -690,23 +690,10 @@ class _OpenAIChatStreamRunner:
                     self._provider._create_stream(body, retry_session)
                 )
                 try:
-                    quiet = 0.0
                     while not await _settled_within(
-                        create_task,
-                        _keepalive_wait_step(
-                            quiet,
-                            UPSTREAM_QUIET_KEEPALIVE_SECONDS,
-                            KEEPALIVE_INTERVAL_SECONDS,
-                        ),
+                        create_task, KEEPALIVE_INTERVAL_SECONDS
                     ):
-                        quiet += _keepalive_wait_step(
-                            quiet,
-                            UPSTREAM_QUIET_KEEPALIVE_SECONDS,
-                            KEEPALIVE_INTERVAL_SECONDS,
-                        )
-                        if quiet >= UPSTREAM_QUIET_KEEPALIVE_SECONDS:
-                            for event in recovery.flush():
-                                yield event
+                        if recovery.committed:
                             yield anthropic_ping_frame()
                 except BaseException:
                     await _discard_pending_task(create_task)

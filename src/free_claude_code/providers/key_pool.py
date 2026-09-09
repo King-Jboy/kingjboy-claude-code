@@ -120,7 +120,9 @@ class ApiKeyInfo:
         with self.lock:
             self.consecutive_failures += 1
             if self.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                self.rate_limited_until = time.monotonic() + _HARD_COOLDOWN_S
+                self.rate_limited_until = max(
+                    self.rate_limited_until, time.monotonic() + _HARD_COOLDOWN_S
+                )
                 logger.warning(
                     "key_pool: key {} hit {} consecutive failures - hard cooldown for {}min before retry.",
                     self._key_suffix(),
@@ -128,7 +130,9 @@ class ApiKeyInfo:
                     int(_HARD_COOLDOWN_S // 60),
                 )
             else:
-                self.rate_limited_until = time.monotonic() + _FAIL_COOLDOWN_S
+                self.rate_limited_until = max(
+                    self.rate_limited_until, time.monotonic() + _FAIL_COOLDOWN_S
+                )
                 logger.warning(
                     "key_pool: key {} failure {}/{} - cooling down for {}s before retry.",
                     self._key_suffix(),
@@ -354,9 +358,6 @@ class KeyPool:
     async def aclose(self) -> None:
         """Release any resources held by the pool."""
         pass
-
-
-ApiKeyPool = KeyPool
 
 
 def _rate_limit_reset_seconds(error: BaseException) -> float | None:
