@@ -2,11 +2,10 @@
 
 Chrome launches this as a subprocess and speaks a length-prefixed JSON protocol
 over stdin/stdout. It exists because Manifest V3 cannot spawn a process, and the
-alternative -- an exec endpoint on fcc-server -- would be remote code execution:
-that server binds 0.0.0.0 by default and skips auth entirely when
-ANTHROPIC_AUTH_TOKEN is blank. Native messaging moves the boundary from the
-network to the OS, where only Chrome can reach it and only for the one extension
-ID named in the host manifest's allowed_origins.
+alternative -- an exec endpoint on fcc-server -- would expand the network attack
+surface. Native messaging moves the boundary from the network to the OS, where
+only Chrome can reach it and only for the one extension ID named in the host
+manifest's allowed_origins.
 
 Three further gates sit in front of execution, because "only Chrome can reach
 it" is not on its own a reason to run arbitrary commands:
@@ -24,14 +23,16 @@ Every accepted command is appended to ~/.fcc/logs/bridge.log.
 import json
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import IO, Any, BinaryIO
 
 from free_claude_code.config.paths import bridge_log_path
 from free_claude_code.config.settings import Settings
@@ -46,6 +47,7 @@ DISCARD_CHUNK_BYTES = 65_536
 # Chrome caps host-to-extension messages at 1MB, and the output becomes prompt
 # text besides. Truncating here keeps both limits honest.
 MAX_OUTPUT_CHARS = 32_000
+MAX_OUTPUT_CAPTURE_BYTES = MAX_OUTPUT_CHARS * 4
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_TIMEOUT_SECONDS = 600
 
@@ -120,34 +122,100 @@ def _truncate(text: str) -> tuple[str, bool]:
     return f"{text[:MAX_OUTPUT_CHARS]}\n[truncated]", True
 
 
+def _read_bounded(stream: IO[Any], *, limit: int) -> tuple[bytes, bool]:
+    """Drain a pipe while retaining only a bounded prefix."""
+
+    parts: list[bytes] = []
+    received = 0
+    truncated = False
+    while chunk := stream.read(65_536):
+        if received < limit:
+            remaining = limit - received
+            parts.append(chunk[:remaining])
+            received += min(len(chunk), remaining)
+            if len(chunk) > remaining:
+                truncated = True
+        else:
+            truncated = True
+    return b"".join(parts), truncated
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Terminate the shell and its descendants after a bridge timeout."""
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+
+
 def run_shell_command(command: str, *, cwd: Path, timeout: int) -> ShellResult:
     """Run one command string in ``cwd`` and return its captured result."""
 
     argv = [*default_shell(), command]
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             argv,
-            check=False,
             cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             # No stdin: a command that prompts would otherwise hang until the
             # timeout with nobody able to answer it.
             stdin=subprocess.DEVNULL,
+            start_new_session=os.name != "nt",
         )
-    except subprocess.TimeoutExpired:
-        raise BridgeError(f"Command timed out after {timeout}s.") from None
     except OSError as error:
         raise BridgeError(f"Could not start a shell: {error}") from None
 
-    stdout, stdout_cut = _truncate(completed.stdout or "")
-    stderr, stderr_cut = _truncate(completed.stderr or "")
+    stdout_stream = process.stdout
+    stderr_stream = process.stderr
+    assert stdout_stream is not None
+    assert stderr_stream is not None
+    output: dict[str, tuple[bytes, bool]] = {}
+    stdout_thread = threading.Thread(
+        target=lambda: output.setdefault(
+            "stdout", _read_bounded(stdout_stream, limit=MAX_OUTPUT_CAPTURE_BYTES)
+        ),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=lambda: output.setdefault(
+            "stderr", _read_bounded(stderr_stream, limit=MAX_OUTPUT_CAPTURE_BYTES)
+        ),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    try:
+        exit_code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            _terminate_process_tree(process)
+            process.wait(timeout=5)
+        except OSError, subprocess.TimeoutExpired:
+            pass
+        raise BridgeError(f"Command timed out after {timeout}s.") from None
+    finally:
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+
+    stdout_bytes, stdout_captured_cut = output.get("stdout", (b"", False))
+    stderr_bytes, stderr_captured_cut = output.get("stderr", (b"", False))
+    stdout, stdout_cut = _truncate(stdout_bytes.decode("utf-8", errors="replace"))
+    stderr, stderr_cut = _truncate(stderr_bytes.decode("utf-8", errors="replace"))
     return ShellResult(
-        exit_code=completed.returncode,
+        exit_code=exit_code,
         stdout=stdout,
         stderr=stderr,
-        truncated=stdout_cut or stderr_cut,
+        truncated=stdout_captured_cut
+        or stderr_captured_cut
+        or stdout_cut
+        or stderr_cut,
     )
 
 

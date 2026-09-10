@@ -10,7 +10,6 @@ import math
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -402,56 +401,58 @@ class KeyPool:
             )
 
         task1: asyncio.Task[T] = asyncio.create_task(execute_on_key(key1))
-        done, _ = await asyncio.wait([task1], timeout=self._hedge_delay_seconds)
-        if task1 in done:
-            exc = task1.exception()
-            if exc is None:
-                return task1.result()
-            if isinstance(exc, Exception) and self._handle_key_error(key1, exc):
-                return await self._run_key_sequential(
-                    operation, proves_credential=proves_credential
-                )
-            if isinstance(exc, BaseException):
-                raise exc
-
-        key2 = self.get_next_key()
-        if not key2 or key2 == key1:
-            return await task1
-
-        logger.info(
-            "{} key hedging: key ...{} quiet after {}s, racing with key ...{}",
-            self._provider_name,
-            key1[-6:] if len(key1) >= 6 else "...",
-            self._hedge_delay_seconds,
-            key2[-6:] if len(key2) >= 6 else "...",
-        )
-        task2: asyncio.Task[T] = asyncio.create_task(execute_on_key(key2))
-        tasks: dict[asyncio.Task[T], str] = {task1: key1, task2: key2}
-
-        while tasks:
-            done_tasks, _ = await asyncio.wait(
-                tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-            )
-            for finished in done_tasks:
-                k = tasks.pop(finished)
-                exc = finished.exception()
+        tasks: dict[asyncio.Task[T], str] = {task1: key1}
+        try:
+            done, _ = await asyncio.wait([task1], timeout=self._hedge_delay_seconds)
+            if task1 in done:
+                tasks.pop(task1)
+                exc = task1.exception()
                 if exc is None:
-                    for remaining in tasks:
-                        remaining.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await asyncio.sleep(0)
-                    return finished.result()
-
-                if isinstance(exc, Exception) and self._handle_key_error(k, exc):
-                    continue
+                    return task1.result()
+                if isinstance(exc, Exception) and self._handle_key_error(key1, exc):
+                    return await self._run_key_sequential(
+                        operation, proves_credential=proves_credential
+                    )
                 if isinstance(exc, BaseException):
-                    for remaining in tasks:
-                        remaining.cancel()
                     raise exc
 
-        return await self._run_key_sequential(
-            operation, proves_credential=proves_credential
-        )
+            key2 = self.get_next_key()
+            if not key2 or key2 == key1:
+                return await task1
+
+            logger.info(
+                "{} key hedging: key ...{} quiet after {}s, racing with key ...{}",
+                self._provider_name,
+                key1[-6:] if len(key1) >= 6 else "...",
+                self._hedge_delay_seconds,
+                key2[-6:] if len(key2) >= 6 else "...",
+            )
+            task2: asyncio.Task[T] = asyncio.create_task(execute_on_key(key2))
+            tasks[task2] = key2
+
+            while tasks:
+                done_tasks, _ = await asyncio.wait(
+                    tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+                )
+                for finished in done_tasks:
+                    k = tasks.pop(finished)
+                    exc = finished.exception()
+                    if exc is None:
+                        return finished.result()
+
+                    if isinstance(exc, Exception) and self._handle_key_error(k, exc):
+                        continue
+                    if isinstance(exc, BaseException):
+                        raise exc
+
+            return await self._run_key_sequential(
+                operation, proves_credential=proves_credential
+            )
+        finally:
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def aclose(self) -> None:
         """Release any resources held by the pool."""

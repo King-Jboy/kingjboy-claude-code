@@ -25,6 +25,7 @@ from .diagnostics import classify_managed_claude_stderr
 
 # Cap stderr capture so a runaway child cannot exhaust memory; pipe is still drained.
 _MAX_STDERR_CAPTURE_BYTES = 256 * 1024
+_MAX_STDOUT_LINE_BYTES = 256 * 1024
 
 
 class ManagedClaudeSession:
@@ -139,6 +140,7 @@ class ManagedClaudeSession:
                         stderr=asyncio.subprocess.PIPE,
                         cwd=invocation.cwd,
                         env=invocation.env,
+                        start_new_session=os.name != "nt",
                     )
                     self.process = process
                     if process.pid:
@@ -174,6 +176,16 @@ class ManagedClaudeSession:
                             break
 
                         buffer.extend(chunk)
+
+                        if len(buffer) > _MAX_STDOUT_LINE_BYTES:
+                            await asyncio.shield(self.stop())
+                            yield {
+                                "type": "error",
+                                "error": {
+                                    "message": "Claude CLI emitted an oversized output line."
+                                },
+                            }
+                            return
 
                         while True:
                             newline_pos = buffer.find(b"\n")

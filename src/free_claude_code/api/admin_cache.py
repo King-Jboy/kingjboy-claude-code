@@ -5,6 +5,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _ADMIN_CACHE_CONTROL = "no-store"
+_ADMIN_CONTENT_SECURITY_POLICY = "frame-ancestors 'none'"
 
 
 class AdminNoStoreMiddleware:
@@ -47,3 +48,5 @@ def _is_admin_path(path: str) -> bool:
 
 def _set_no_store(headers: MutableHeaders) -> None:
     headers["Cache-Control"] = _ADMIN_CACHE_CONTROL
+    headers["Content-Security-Policy"] = _ADMIN_CONTENT_SECURITY_POLICY
+    headers["X-Frame-Options"] = "DENY"

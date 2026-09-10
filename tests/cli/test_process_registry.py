@@ -90,3 +90,16 @@ def test_process_registry_kill_pid_tree_windows_uses_taskkill(monkeypatch):
 
     assert calls
     assert calls[0][0][0] == ["taskkill", "/PID", "12345", "/T", "/F"]
+
+
+def test_process_registry_kill_pid_tree_posix_terminates_process_group(monkeypatch):
+    from free_claude_code.cli import process_registry as pr
+
+    monkeypatch.setattr(os, "name", "posix", raising=False)
+    getpgid = patch("os.getpgid", return_value=5678, create=True)
+    killpg = patch("os.killpg", create=True)
+    with getpgid as mocked_getpgid, killpg as mocked_killpg:
+        pr.kill_pid_tree_best_effort(12345)
+
+    mocked_getpgid.assert_called_once_with(12345)
+    mocked_killpg.assert_called_once_with(5678, pr.signal.SIGTERM)

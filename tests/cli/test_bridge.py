@@ -164,6 +164,16 @@ def test_output_larger_than_the_cap_is_truncated_and_says_so() -> None:
     assert len(text) < bridge.MAX_OUTPUT_CHARS + 100
 
 
+def test_bounded_pipe_reader_discards_output_over_its_cap() -> None:
+    retained, was_cut = bridge._read_bounded(
+        io.BytesIO(b"x" * (bridge.MAX_OUTPUT_CAPTURE_BYTES + 1)),
+        limit=bridge.MAX_OUTPUT_CAPTURE_BYTES,
+    )
+
+    assert len(retained) == bridge.MAX_OUTPUT_CAPTURE_BYTES
+    assert was_cut is True
+
+
 def test_a_command_that_runs_is_written_to_the_audit_log(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

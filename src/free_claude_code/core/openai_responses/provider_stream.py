@@ -7,6 +7,10 @@ from free_claude_code.core.anthropic.openai_tool_names import OpenAIToolNameCode
 from free_claude_code.core.anthropic.streaming import AnthropicStreamLedger
 from free_claude_code.core.anthropic.usage import anthropic_input_usage_fields
 
+_CONTEXT_WINDOW_INCOMPLETE_REASON = "model_context_window_exceeded"
+_CONTEXT_WINDOW_ERROR_CODE = "context_length_exceeded"
+_CONTEXT_WINDOW_ERROR_MESSAGE = "Provider input exceeds the model context window."
+
 
 class ResponsesStreamFailure(RuntimeError):
     """An upstream Responses stream reported a terminal failure."""
@@ -74,6 +78,11 @@ class ResponsesProviderStream:
             return self._tool_delta(data)
         if event_type == "response.output_item.done":
             return self._item_done(data)
+        if event_type == "response.incomplete" and _is_context_window_incomplete(data):
+            raise ResponsesStreamFailure(
+                _CONTEXT_WINDOW_ERROR_MESSAGE,
+                code=_CONTEXT_WINDOW_ERROR_CODE,
+            )
         if event_type in {"response.completed", "response.incomplete"}:
             return self._finish(data, incomplete=event_type == "response.incomplete")
         if event_type in {"response.failed", "error", "response.error"}:
@@ -242,6 +251,18 @@ def _stream_failure(data: dict[str, Any]) -> ResponsesStreamFailure:
     return ResponsesStreamFailure(
         message if isinstance(message, str) and message else "OpenAI response failed.",
         code=code if isinstance(code, str) else None,
+    )
+
+
+def _is_context_window_incomplete(data: dict[str, Any]) -> bool:
+    response = data.get("response")
+    if not isinstance(response, dict):
+        return False
+    details = response.get("incomplete_details")
+    return (
+        isinstance(details, dict)
+        and isinstance(details.get("reason"), str)
+        and details["reason"].strip().casefold() == _CONTEXT_WINDOW_INCOMPLETE_REASON
     )
 
 

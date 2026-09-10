@@ -85,6 +85,8 @@ def test_admin_responses_are_never_cached(monkeypatch, tmp_path, path):
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
+    assert response.headers["x-frame-options"] == "DENY"
 
 
 @pytest.mark.parametrize(

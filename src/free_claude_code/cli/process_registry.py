@@ -59,9 +59,10 @@ def kill_pid_tree_best_effort(pid: int) -> None:
             logger.debug("process_registry: taskkill failed pid=%s: %s", pid, e)
         return
 
-    # Best-effort fallback for non-Windows.
+    # All tracked POSIX children start a fresh session, so their process group
+    # contains the command and its descendants without touching this process.
     try:
-        os.kill(pid, signal.SIGTERM)
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
     except Exception as e:
         logger.debug("process_registry: terminate failed pid=%s: %s", pid, e)
 

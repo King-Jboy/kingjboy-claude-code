@@ -317,3 +317,31 @@ async def test_key_pool_hedged_racing_second_key_wins():
     assert "slow_k1" in attempted
     assert "fast_k2" in attempted
     assert duration < 0.5  # Much faster than slow_k1's 1.0s delay
+
+
+@pytest.mark.asyncio
+async def test_key_pool_hedged_cancellation_cancels_the_running_operation():
+    pool = KeyPool(
+        ["k1", "k2"],
+        client_factory=lambda key: MagicMock(spec=AsyncOpenAI, api_key=key),
+        hedge_delay_seconds=10,
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def operation(client: AsyncOpenAI) -> str:
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "unreachable"
+
+    task = asyncio.create_task(pool.run_key_local(operation))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert cancelled.is_set()

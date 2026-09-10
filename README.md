@@ -411,7 +411,7 @@ Untick **Let the model read the active tab** in the panel's settings to send no 
 
 **Running shell commands (optional, off by default)**
 
-Manifest V3 cannot spawn a process, so this goes through a Chrome Native Messaging host — `fcc-bridge`. That moves the boundary from the network to the OS: only the browser can reach it, and only for the one extension ID named in the host manifest. An HTTP endpoint on `fcc-server` would not be equivalent, because that server binds `0.0.0.0` by default and skips auth entirely when `ANTHROPIC_AUTH_TOKEN` is blank.
+Manifest V3 cannot spawn a process, so this goes through a Chrome Native Messaging host — `fcc-bridge`. That moves the boundary from the network to the OS: only the browser can reach it, and only for the one extension ID named in the host manifest. An HTTP endpoint on `fcc-server` would not be equivalent, because it expands the network attack surface.
 
 Three things must all be true before a single command runs:
 
@@ -736,7 +736,7 @@ Everything below is additional to upstream [Alishahryar1/free-claude-code](https
 
 **Instant 0.0s context window resolution.** `fcc-context` instantly resolves verified model context ceilings from memory (1,048,576 tokens for DeepSeek V4 & Kimi K3, 262,144 for MiniMax M3) with a fast-fail 20s timeout, eliminating 10-minute network stalls.
 
-**A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page you are developing, with tools that read the DOM and that tab's console — so debugging a page no longer means pasting a stack trace into a terminal. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host. That path is gated behind a per-extension registration, a `BROWSER_SHELL_ENABLED` switch, per-command approval in the panel, and a directory confinement — because the obvious alternative, an exec endpoint on `fcc-server`, would be unauthenticated LAN-reachable RCE given that server binds `0.0.0.0` by default and skips auth when `ANTHROPIC_AUTH_TOKEN` is blank. See [Connect Your Client](#connect-your-client).
+**A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page you are developing, with tools that read the DOM and that tab's console — so debugging a page no longer means pasting a stack trace into a terminal. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host. That path is gated behind a per-extension registration, a `BROWSER_SHELL_ENABLED` switch, per-command approval in the panel, and a directory confinement — because an HTTP exec endpoint would create an unnecessary network execution surface. See [Connect Your Client](#connect-your-client).
 
 **Credential pooling.** `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS` accept a JSON list of keys that behave as one high-throughput, self-healing virtual key. Requests rotate across the pool, dead keys are walked past and probed again later, and rate-limited keys are cooled for exactly as long as the provider asked. See [Key Pools](#key-pools-nvidia-nim-and-openrouter).
 

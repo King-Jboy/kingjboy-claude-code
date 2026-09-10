@@ -59,6 +59,7 @@ class TestSettings:
         assert settings.debug_subagent_stack is False
         assert settings.log_level == "INFO"
         assert settings.open_admin_browser is True
+        assert settings.host == "127.0.0.1"
 
     def test_open_admin_browser_loads_from_environment(self, monkeypatch):
         from free_claude_code.config.settings import Settings

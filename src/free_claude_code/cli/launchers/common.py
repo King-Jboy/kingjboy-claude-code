@@ -1,5 +1,6 @@
 """Shared process helpers for installed client CLI launchers."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -78,7 +79,11 @@ def run_client_process(
 
     process: subprocess.Popen[bytes] | None = None
     try:
-        process = subprocess.Popen(command, env=dict(env))
+        process = subprocess.Popen(
+            command,
+            env=dict(env),
+            start_new_session=os.name != "nt",
+        )
         if process.pid:
             register_pid(process.pid)
         return_code = process.wait()

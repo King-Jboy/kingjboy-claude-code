@@ -13,7 +13,8 @@ from free_claude_code.core.anthropic.stream_contracts import (
     text_content,
 )
 from free_claude_code.core.diagnostics import ERROR_DETAIL_DISPLAY_CAP_BYTES
-from free_claude_code.core.failures import ExecutionFailure
+from free_claude_code.core.failures import ExecutionFailure, FailureKind
+from free_claude_code.core.openai_responses import ResponsesStreamFailure
 from free_claude_code.core.reasoning import ReasoningEffort, ReasoningPolicy
 from free_claude_code.providers.admission import ProviderAdmissionController
 from free_claude_code.providers.base import ProviderConfig
@@ -21,7 +22,10 @@ from free_claude_code.providers.openai_codex.auth import (
     OpenAIAccess,
     OpenAIAuthManager,
 )
-from free_claude_code.providers.openai_codex.provider import OpenAICodexProvider
+from free_claude_code.providers.openai_codex.provider import (
+    OpenAICodexProvider,
+    _effective_error,
+)
 
 
 class _FakeAuth(OpenAIAuthManager):
@@ -39,6 +43,16 @@ class _FakeAuth(OpenAIAuthManager):
         self.recovery_calls += 1
         self.current_token = "access_2"
         return OpenAIAccess(self.current_token, "account_1", False)
+
+
+def test_effective_error_preserves_context_window_contract() -> None:
+    error = _effective_error(
+        ResponsesStreamFailure("input too long", code="context_length_exceeded")
+    )
+
+    assert isinstance(error, ExecutionFailure)
+    assert error.kind is FailureKind.CONTEXT_WINDOW_EXCEEDED
+    assert error.status_code == 400
 
 
 def _config() -> ProviderConfig:

@@ -381,7 +381,7 @@ class Settings(BaseSettings):
     )
 
     # ==================== Server ====================
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8082
     open_admin_browser: bool = Field(default=True, validation_alias="FCC_OPEN_BROWSER")
     # Optional proxy bearer token protecting public API endpoints.

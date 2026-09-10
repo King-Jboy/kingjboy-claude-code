@@ -38,6 +38,8 @@ from free_claude_code.providers.base import BaseProvider, ProviderConfig
 from free_claude_code.providers.failure_policy import (
     RetryableProviderProtocolError,
     classify_provider_failure,
+    context_window_exceeded_provider_failure,
+    is_context_window_error_code,
 )
 from free_claude_code.providers.stream_recovery import RecoveryController
 
@@ -449,6 +451,8 @@ def _effective_error(error: Exception) -> Exception:
             or "OpenAI response failed."
         )
         code = (error.code or "").lower()
+        if is_context_window_error_code(code):
+            return context_window_exceeded_provider_failure(message)
         if "rate" in code or "429" in code:
             return ExecutionFailure(FailureKind.RATE_LIMIT, 429, message, True)
         if any(marker in code for marker in ("overload", "capacity", "529")):

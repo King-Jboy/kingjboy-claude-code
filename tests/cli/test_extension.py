@@ -375,3 +375,10 @@ def test_every_element_the_panel_script_looks_up_exists_in_the_markup() -> None:
     missing = sorted(name for name in looked_up if f'id="{name}"' not in html)
 
     assert not missing, f"looked up by the script but never rendered: {missing}"
+
+
+def test_screenshot_refuses_an_inactive_target_tab() -> None:
+    script = (extension.extension_dir() / "page_tools.js").read_text(encoding="utf-8")
+
+    assert "if (!tab.active)" in script
+    assert "selected tab is not visible" in script

@@ -4,6 +4,9 @@ import pytest
 from telegram.error import TelegramError
 
 from free_claude_code.messaging.platforms.telegram import TelegramRuntime
+from free_claude_code.messaging.platforms.telegram_inbound import (
+    telegram_text_message_from_update,
+)
 
 
 def _limiter_mock() -> MagicMock:
@@ -37,6 +40,24 @@ def test_telegram_platform_init_no_token():
     with patch.dict("os.environ", {}, clear=True):
         platform = _telegram_runtime(bot_token=None)
         assert platform.bot_token is None
+
+
+def test_telegram_inbound_rejects_when_no_user_is_allowlisted():
+    update = MagicMock()
+    update.message.text = "hello"
+    update.message.message_id = 1
+    update.message.reply_to_message = None
+    update.effective_user.id = 123
+    update.effective_chat.id = 456
+
+    assert (
+        telegram_text_message_from_update(
+            update,
+            allowed_user_id=None,
+            log_raw_messaging_content=False,
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

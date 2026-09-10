@@ -189,6 +189,26 @@ def test_responses_provider_stream_surfaces_failed_event() -> None:
     assert exc_info.value.code == "server_error"
 
 
+def test_responses_provider_stream_surfaces_context_window_incomplete() -> None:
+    stream = ResponsesProviderStream(
+        message_id="msg_test",
+        model="gpt-test",
+        input_tokens=0,
+    )
+
+    with pytest.raises(ResponsesStreamFailure) as exc_info:
+        stream.feed(
+            "response.incomplete",
+            {
+                "response": {
+                    "incomplete_details": {"reason": "model_context_window_exceeded"}
+                }
+            },
+        )
+
+    assert exc_info.value.code == "context_length_exceeded"
+
+
 def test_responses_provider_stream_restores_added_and_done_only_tool_names() -> None:
     originals = (
         "mcp__responses_added__" + "x" * 70,

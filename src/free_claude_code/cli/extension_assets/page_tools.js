@@ -311,6 +311,11 @@ const EXECUTORS = {
 
   async screenshot(_input, { tabId }) {
     const tab = await targetTab(tabId);
+    if (!tab.active) {
+      throw new Error(
+        "The selected tab is not visible. Switch to it before requesting a screenshot.",
+      );
+    }
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: "jpeg",
       quality: 85,
