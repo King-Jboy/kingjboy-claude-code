@@ -572,6 +572,23 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def require_progress_timeout_to_cover_upstream_reads(self) -> Settings:
+        """Prevent the proxy watchdog from defeating the upstream read budget.
+
+        A streaming provider can legitimately pause while it is still within
+        ``HTTP_READ_TIMEOUT``.  Ending the logical execution sooner turns that
+        pause into the same mid-response failure this watchdog is meant to
+        contain.  Keep a strict gap so the read timeout can be handled by the
+        provider recovery path first.
+        """
+        if self.provider_progress_timeout <= self.http_read_timeout:
+            raise ValueError(
+                "PROVIDER_PROGRESS_TIMEOUT must be greater than "
+                "HTTP_READ_TIMEOUT so streaming recovery can finish."
+            )
+        return self
+
+    @model_validator(mode="after")
     def prefer_dotenv_anthropic_auth_token(self) -> Settings:
         """Let explicit .env auth config override stale shell/client tokens."""
         dotenv_value = env_file_override(self.model_config, ANTHROPIC_AUTH_TOKEN_ENV)

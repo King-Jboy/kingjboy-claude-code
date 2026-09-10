@@ -252,6 +252,7 @@ class TestSettings:
         from free_claude_code.config.settings import Settings
 
         monkeypatch.setenv("HTTP_READ_TIMEOUT", "600")
+        monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "601")
         settings = Settings()
         assert settings.http_read_timeout == 600.0
 
@@ -1165,3 +1166,30 @@ def test_provider_progress_timeout_must_be_finite_and_positive(
     monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", value)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("progress_timeout", [30, 300])
+def test_progress_timeout_must_exceed_http_read_timeout(
+    progress_timeout: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A watchdog shorter than the read timeout recreates stream cutoffs."""
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("HTTP_READ_TIMEOUT", "300")
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", str(progress_timeout))
+
+    with pytest.raises(ValidationError, match="PROVIDER_PROGRESS_TIMEOUT"):
+        Settings(_env_file=None)
+
+
+def test_progress_timeout_can_cover_http_read_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("HTTP_READ_TIMEOUT", "300")
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "600")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.provider_progress_timeout == 600
