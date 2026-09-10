@@ -311,7 +311,7 @@ If you hold several API keys for NVIDIA NIM or OpenRouter, FCC can treat them as
 
 Click **Validate**, then **Apply**. There is no limit on how many keys you add, and the pool replaces the single API key field for that provider.
 
-Each key gets its own rate-limit window, and all keys run at the same time, so the pool's throughput is the sum of its keys rather than one key's ceiling. Per request, FCC picks the key with the most headroom left:
+Each key gets its own rate-limit window, and all keys run at the same time, so the pool's throughput is the sum of its keys rather than one key's ceiling. Per request, FCC picks the least-recently-used available key, which keeps the pool evenly distributed.
 
 | Upstream response | What FCC does |
 | --- | --- |
@@ -322,7 +322,7 @@ Each key gets its own rate-limit window, and all keys run at the same time, so t
 
 `401` and `403` are handled differently because providers disagree about which one means "bad key". OpenRouter answers `401`, which is unambiguous. NVIDIA NIM answers `403` — but other providers use `403` to refuse the *request* (content policy, or a model the account cannot reach). Retiring on `403` would let a single refused prompt walk the pool and kill every key. So a `403` only sidelines its key; the error is reported to you unchanged once **every** key has refused the same request alike, which is the only proof that the request, not the keys, was at fault.
 
-When a provider states its own reset time (`Retry-After` or `X-RateLimit-Reset`) FCC obeys it exactly. The pool never throttles on its own and never makes a request wait: switching keys is instant, costs none of a request's retry budget, and if every key is cooling at once the request fails right away with a retryable error rather than hanging behind a cooldown the provider chose. Any successful request clears a key's failure streak, so a key that starts working again returns to rotation on its own.
+Before an upstream request, FCC also enforces each key's independent RPM window: `NVIDIA_NIM_KEY_RATE_LIMIT` defaults to 40 and `OPENROUTER_KEY_RATE_LIMIT` defaults to 20. A saturated key waits only for its own next slot; it does not spend or throttle another key's budget. When a provider states its own reset time (`Retry-After` or `X-RateLimit-Reset`) FCC also cools that key for exactly that long. Any successful request clears a key's failure streak, so a key that starts working again returns to rotation on its own.
 
 For OpenRouter you can also give each key a daily usage budget (`OPENROUTER_KEY_USAGE_LIMIT`, default 1000 uses per key per 24h; `0` disables it). A key that reaches its budget sits out until the window rolls over, which models the free-tier daily cap locally instead of paying a `429` for the surplus requests.
 

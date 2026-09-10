@@ -22,6 +22,7 @@ from free_claude_code.providers.runtime.config import (
     has_provider_configuration,
     provider_credential_pool,
     rate_with_margin,
+    resolve_key_rate_policy,
     resolve_rate_policy,
 )
 from free_claude_code.providers.runtime.factory import (
@@ -136,6 +137,18 @@ def test_the_singular_key_still_wins_for_the_shared_client() -> None:
     assert config.api_keys == ("a", "b")
 
 
+def test_pooled_keys_get_their_own_restored_rate_window() -> None:
+    settings = _settings(
+        NVIDIA_NIM_API_KEYS='["a", "b"]', NVIDIA_NIM_KEY_RATE_LIMIT="17"
+    )
+
+    config = build_provider_config(NIM, settings)
+
+    assert config.key_rate_limit == 17
+    assert config.key_rate_window == 60.0
+    assert resolve_key_rate_policy(OPEN_ROUTER, _settings())[0] == 20
+
+
 def _managed_env_with_pools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the managed env at a temp home that already holds pooled keys."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -145,7 +158,9 @@ def _managed_env_with_pools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     managed.write_text(
         'NVIDIA_NIM_API_KEY="single"\n'
         f"NVIDIA_NIM_API_KEYS='{POOL_KEYS}'\n"
-        'OPENROUTER_API_KEYS=\'["or-a", "or-b"]\'\n',
+        'NVIDIA_NIM_KEY_RATE_LIMIT="33"\n'
+        'OPENROUTER_API_KEYS=\'["or-a", "or-b"]\'\n'
+        'OPENROUTER_KEY_RATE_LIMIT="17"\n',
         encoding="utf-8",
     )
     return managed
@@ -158,6 +173,13 @@ def test_pool_variables_are_registered_admin_fields() -> None:
         field = FIELD_BY_KEY[key]
         assert field.field_type == "textarea"
         assert field.secret is True
+
+
+def test_per_key_rate_variables_are_registered_admin_fields() -> None:
+    for key in ("NVIDIA_NIM_KEY_RATE_LIMIT", "OPENROUTER_KEY_RATE_LIMIT"):
+        field = FIELD_BY_KEY[key]
+        assert field.field_type == "number"
+        assert field.advanced is True
 
 
 def test_saving_an_unrelated_field_preserves_the_key_pool(
@@ -174,6 +196,8 @@ def test_saving_an_unrelated_field_preserves_the_key_pool(
     assert saved["NVIDIA_NIM_API_KEYS"] == POOL_KEYS
     assert saved["OPENROUTER_API_KEYS"] == '["or-a", "or-b"]'
     assert saved["NVIDIA_NIM_API_KEY"] == "single"
+    assert saved["NVIDIA_NIM_KEY_RATE_LIMIT"] == "33"
+    assert saved["OPENROUTER_KEY_RATE_LIMIT"] == "17"
     assert saved["GROQ_API_KEY"] == "groq-key"
 
 

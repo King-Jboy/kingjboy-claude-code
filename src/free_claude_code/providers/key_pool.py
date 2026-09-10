@@ -18,6 +18,7 @@ from loguru import logger
 from openai import AsyncOpenAI
 
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
+from free_claude_code.core.rate_limit import StrictSlidingWindowLimiter
 from free_claude_code.providers.failure_policy import retry_after_seconds
 
 T = TypeVar("T")
@@ -196,6 +197,8 @@ class KeyPool:
         client_factory: KeyClientFactory | None = None,
         usage_limit: int = 0,
         usage_window_seconds: float | None = None,
+        key_rate_limit: int = 0,
+        key_rate_window: float = 60.0,
         hedge_delay_seconds: float = 0.0,
     ) -> None:
         if not keys:
@@ -213,6 +216,14 @@ class KeyPool:
             for i, key in enumerate(keys)
         ]
         self._key_index: dict[str, ApiKeyInfo] = {ki.key: ki for ki in self.keys}
+        self._key_limiters: dict[str, StrictSlidingWindowLimiter] = (
+            {
+                ki.key: StrictSlidingWindowLimiter(key_rate_limit, key_rate_window)
+                for ki in self.keys
+            }
+            if key_rate_limit > 0
+            else {}
+        )
         self.lock = threading.Lock()
 
         logger.info(
@@ -292,6 +303,16 @@ class KeyPool:
         if key_info is not None:
             key_info.mark_rate_limited(cooldown_seconds)
 
+    async def _acquire_key_rate_slot(self, key: str) -> bool:
+        """Wait for this key's own RPM window without consuming a stale slot."""
+        limiter = self._key_limiters.get(key)
+        if limiter is None:
+            return True
+        key_info = self._key_index.get(key)
+        if key_info is None:
+            return False
+        return await limiter.acquire_if(key_info.is_available)
+
     def _handle_key_error(self, key: str, error: Exception) -> bool:
         if isinstance(error, openai.AuthenticationError):
             logger.warning(
@@ -358,6 +379,9 @@ class KeyPool:
             if not current_key:
                 break
 
+            if not await self._acquire_key_rate_slot(current_key):
+                continue
+
             client = self._client_factory(current_key)
             try:
                 result = await operation(client)
@@ -389,6 +413,14 @@ class KeyPool:
 
         async def execute_on_key(key: str) -> T:
             assert self._client_factory is not None
+            admitted = await self._acquire_key_rate_slot(key)
+            if not admitted:
+                raise ExecutionFailure(
+                    kind=FailureKind.RATE_LIMIT,
+                    status_code=429,
+                    message=f"{self._provider_name} API key is cooling down.",
+                    retryable=True,
+                )
             client = self._client_factory(key)
             result = await operation(client)
             self.mark_key_used(key, proves_credential=proves_credential)
@@ -409,6 +441,10 @@ class KeyPool:
                 exc = task1.exception()
                 if exc is None:
                     return task1.result()
+                if isinstance(exc, ExecutionFailure):
+                    return await self._run_key_sequential(
+                        operation, proves_credential=proves_credential
+                    )
                 if isinstance(exc, Exception) and self._handle_key_error(key1, exc):
                     return await self._run_key_sequential(
                         operation, proves_credential=proves_credential
@@ -440,6 +476,8 @@ class KeyPool:
                     if exc is None:
                         return finished.result()
 
+                    if isinstance(exc, ExecutionFailure):
+                        continue
                     if isinstance(exc, Exception) and self._handle_key_error(k, exc):
                         continue
                     if isinstance(exc, BaseException):

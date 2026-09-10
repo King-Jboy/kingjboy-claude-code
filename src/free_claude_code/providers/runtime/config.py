@@ -124,6 +124,27 @@ def resolve_key_usage_policy(
     return int(limit), window
 
 
+def resolve_key_rate_policy(
+    descriptor: ProviderDescriptor, settings: Settings
+) -> tuple[int, float]:
+    """Return the proactive request budget for one key in a configured pool.
+
+    Pool-level admission protects the aggregate provider budget.  It cannot
+    guarantee that one credential stays inside its own upstream RPM allowance,
+    so the two providers with supported credential pools retain independent
+    key windows just as the original pool implementation did.
+    """
+    limits = {
+        "open_router": ("open_router_key_rate_limit", 20),
+        "nvidia_nim": ("nvidia_nim_key_rate_limit", 40),
+    }
+    entry = limits.get(descriptor.provider_id)
+    if entry is None:
+        return 0, 60.0
+    attr, default = entry
+    return max(0, int(numeric_setting(settings, attr, default))), 60.0
+
+
 def provider_credential(descriptor: ProviderDescriptor, settings: Settings) -> str:
     """Return the configured credential for a provider descriptor.
 
@@ -201,12 +222,15 @@ def build_provider_config(
     pool = provider_credential_pool(descriptor, settings)
     rate_limit, rate_window = resolve_rate_policy(descriptor, settings)
     key_usage_limit, key_usage_window = resolve_key_usage_policy(descriptor, settings)
+    key_rate_limit, key_rate_window = resolve_key_rate_policy(descriptor, settings)
     return ProviderConfig(
         api_key=credential,
         base_url=resolved_base_url,
         api_keys=pool if len(pool) > 1 else (),
         key_usage_limit=key_usage_limit,
         key_usage_window_seconds=key_usage_window,
+        key_rate_limit=key_rate_limit,
+        key_rate_window=key_rate_window,
         rate_limit=rate_limit,
         rate_window=rate_window,
         max_concurrency=settings.provider_max_concurrency,

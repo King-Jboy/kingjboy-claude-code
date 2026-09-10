@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     open_router_key_usage_limit: int = Field(
         default=1000, validation_alias="OPENROUTER_KEY_USAGE_LIMIT"
     )
+    open_router_key_rate_limit: int = Field(
+        # The free OpenRouter variants are limited per account, not per
+        # provider pool.  Each pooled key therefore needs its own window.
+        default=20,
+        validation_alias="OPENROUTER_KEY_RATE_LIMIT",
+    )
 
     # ==================== DeepSeek Config ====================
     deepseek_api_key: str = Field(default="", validation_alias="DEEPSEEK_API_KEY")
@@ -166,6 +172,9 @@ class Settings(BaseSettings):
     # self-impose a per-key budget anyway.
     nvidia_nim_key_usage_limit: int = Field(
         default=0, validation_alias="NVIDIA_NIM_KEY_USAGE_LIMIT"
+    )
+    nvidia_nim_key_rate_limit: int = Field(
+        default=40, validation_alias="NVIDIA_NIM_KEY_RATE_LIMIT"
     )
 
     # ==================== LM Studio Config ====================

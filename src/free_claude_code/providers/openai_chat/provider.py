@@ -287,6 +287,8 @@ class OpenAIChatProvider(BaseProvider):
             client_factory=self._client_for_key,
             usage_limit=config.key_usage_limit,
             usage_window_seconds=config.key_usage_window_seconds,
+            key_rate_limit=config.key_rate_limit,
+            key_rate_window=config.key_rate_window,
             hedge_delay_seconds=config.key_hedge_delay_seconds,
         )
 

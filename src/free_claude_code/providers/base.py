@@ -46,6 +46,11 @@ class ProviderConfig:
     # set a positive limit, optionally rolling over on a window.
     key_usage_limit: int = 0
     key_usage_window_seconds: float | None = None
+    # Requests-per-window budget for each individual key in a pool.  This is
+    # intentionally distinct from the provider admission budget, which is the
+    # sum of every usable key's budget.
+    key_rate_limit: int = 0
+    key_rate_window: float = 60.0
     key_hedge_delay_seconds: float = 0.0
 
 

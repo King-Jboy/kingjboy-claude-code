@@ -232,6 +232,35 @@ async def test_run_key_local_hops_on_rate_limit():
 
 
 @pytest.mark.asyncio
+async def test_key_pool_paces_each_key_in_its_own_window():
+    """A saturated key waits without stealing another key's independent RPM."""
+    keys = ["key-A", "key-B"]
+
+    def client_factory(key: str) -> AsyncOpenAI:
+        return MagicMock(spec=AsyncOpenAI, api_key=key)
+
+    pool = KeyPool(
+        keys,
+        client_factory=client_factory,
+        key_rate_limit=1,
+        key_rate_window=0.05,
+    )
+    attempted: list[str] = []
+
+    async def operation(client: AsyncOpenAI) -> str:
+        attempted.append(client.api_key)
+        return client.api_key
+
+    assert await pool.run_key_local(operation) == "key-A"
+    assert await pool.run_key_local(operation) == "key-B"
+
+    started = time.monotonic()
+    assert await pool.run_key_local(operation) == "key-A"
+    assert time.monotonic() - started >= 0.03
+    assert attempted == ["key-A", "key-B", "key-A"]
+
+
+@pytest.mark.asyncio
 async def test_run_key_local_raises_when_all_keys_exhausted():
     """run_key_local raises ExecutionFailure when no keys are available."""
     keys = ["k1", "k2"]

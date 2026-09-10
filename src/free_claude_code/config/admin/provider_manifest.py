@@ -45,6 +45,7 @@ def provider_field_specs() -> tuple[dict[str, Any], ...]:
     return (
         *_credential_field_specs(),
         *_credential_pool_field_specs(),
+        *_key_rate_limit_field_specs(),
         *_base_url_field_specs(),
         *_proxy_field_specs(),
     )
@@ -91,6 +92,34 @@ def _credential_pool_field_specs() -> tuple[dict[str, Any], ...]:
                     "replaces the single key above: each key gets its own rate "
                     "window, and a rejected or rate-limited key is skipped "
                     "automatically."
+                ),
+            }
+        )
+    return tuple(specs)
+
+
+def _key_rate_limit_field_specs() -> tuple[dict[str, Any], ...]:
+    """Expose per-key RPM controls for providers that support key pools."""
+    limits = {
+        "open_router": "open_router_key_rate_limit",
+        "nvidia_nim": "nvidia_nim_key_rate_limit",
+    }
+    specs: list[dict[str, Any]] = []
+    for provider_id, settings_attr in limits.items():
+        descriptor = PROVIDER_CATALOG[provider_id]
+        specs.append(
+            {
+                "key": _settings_env_key(settings_attr),
+                "label": f"{descriptor.display_name} Per-Key RPM",
+                "section_id": "providers",
+                "field_type": "number",
+                "settings_attr": settings_attr,
+                "default": str(Settings.model_fields[settings_attr].default),
+                "advanced": True,
+                "restart_required": True,
+                "description": (
+                    "Maximum requests per minute for each key in this pool. "
+                    "Set 0 to disable proactive per-key pacing."
                 ),
             }
         )
