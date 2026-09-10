@@ -48,7 +48,12 @@ _STRIPPED_CODEX_ENV_KEYS = frozenset(
 def launch(argv: Sequence[str] | None = None) -> None:
     """Launch Codex CLI with Free Claude Code proxy configuration."""
 
+    args = list(sys.argv[1:] if argv is None else argv)
     settings = get_settings()
+    if args == ["--print-proxy-auth-token"]:
+        print(proxy_auth_token(settings.anthropic_auth_token))
+        return
+
     proxy_root_url = local_proxy_root_url(settings)
     if error := preflight_proxy(proxy_root_url):
         print(
@@ -65,7 +70,6 @@ def launch(argv: Sequence[str] | None = None) -> None:
         install_hint=_INSTALL_HINT,
     )
     catalog_args = codex_model_catalog_config_args(proxy_root_url, settings)
-    args = list(sys.argv[1:] if argv is None else argv)
     run_client_process(
         command=build_codex_launcher_command(
             binary_path=binary_path,
@@ -201,7 +205,9 @@ def codex_config_args(*, api_url: str, model: str | None = None) -> list[str]:
         "-c",
         _toml_assignment("model_providers.fcc.base_url", _ensure_v1_url(api_url)),
         "-c",
-        _toml_assignment("model_providers.fcc.env_key", _CODEX_AUTH_ENV_KEY),
+        _toml_assignment("model_providers.fcc.auth.command", "fcc-codex"),
+        "-c",
+        'model_providers.fcc.auth.args=["--print-proxy-auth-token"]',
         "-c",
         _toml_assignment("model_providers.fcc.wire_api", "responses"),
     ]

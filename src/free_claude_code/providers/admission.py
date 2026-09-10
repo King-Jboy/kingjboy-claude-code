@@ -9,6 +9,7 @@ from typing import TypeVar
 
 from loguru import logger
 
+from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.rate_limit import StrictSlidingWindowLimiter
 from free_claude_code.core.trace import trace_event
 from free_claude_code.providers.failure_policy import (
@@ -162,6 +163,33 @@ class ProviderAttempt:
         self._resolved = True
         return should_retry
 
+    async def retry_after_acceptance(
+        self,
+        error: Exception,
+        *,
+        provider_failure_override: ProviderFailureOverride | None = None,
+    ) -> bool:
+        """Schedule recovery for a stream that failed after its first chunk."""
+        if not self._accepted:
+            return await self.retry(
+                error, provider_failure_override=provider_failure_override
+            )
+        effective_error = (
+            provider_failure_override(error)
+            if provider_failure_override is not None
+            else None
+        ) or error
+        retryable = is_retryable_provider_error(effective_error)
+        self._failure_retryable = retryable
+        if not retryable:
+            return False
+        return await self._controller._attempt_failed(
+            self._session,
+            self._permit,
+            error=error,
+            status=retryable_upstream_status(effective_error),
+        )
+
     async def aclose(self) -> None:
         """Release attempt ownership and its concurrency slot exactly once."""
         if self._closed:
@@ -174,6 +202,20 @@ class ProviderAttempt:
                 )
         finally:
             self._controller._release_concurrency()
+
+
+class ProviderHedgePermit:
+    """The short-lived extra bulkhead slot consumed while opening a hedge."""
+
+    def __init__(self, controller: ProviderAdmissionController) -> None:
+        self._controller = controller
+        self._closed = False
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._controller._release_concurrency()
 
 
 class ProviderAdmissionController:
@@ -224,6 +266,7 @@ class ProviderAdmissionController:
         self._condition = asyncio.Condition()
         self._episode: _RecoveryEpisode | None = None
         self._next_generation = 1
+        self._rate_limit_supplier: Callable[[], int] | None = None
         logger.info(
             "Provider admission initialized for {} ({} req / {}s, "
             "max_concurrency={}, max_attempts={})",
@@ -244,6 +287,23 @@ class ProviderAdmissionController:
         """
         self._proactive_limiter.set_rate_limit(rate_limit)
 
+    def set_rate_limit_supplier(self, supplier: Callable[[], int]) -> None:
+        """Refresh aggregate admission from currently usable pooled keys."""
+        self._rate_limit_supplier = supplier
+
+    async def open_hedge_permit(self) -> ProviderHedgePermit | None:
+        """Reserve an immediately available extra slot for a physical hedge.
+
+        A hedge is an optimization, so it must yield to the configured bulkhead
+        rather than waiting behind its own primary request.
+        """
+        if not self._refresh_rate_limit():
+            return None
+        if self._concurrency_sem.locked() or not self._proactive_limiter.try_acquire():
+            return None
+        await self._concurrency_sem.acquire()
+        return ProviderHedgePermit(self)
+
     def new_retry_session(
         self,
         *,
@@ -259,6 +319,13 @@ class ProviderAdmissionController:
         """Wait for provider admission and hold one active-operation slot."""
         if not session.can_attempt:
             raise RuntimeError("provider retry session is exhausted")
+        if not self._refresh_rate_limit():
+            raise ExecutionFailure(
+                kind=FailureKind.RATE_LIMIT,
+                status_code=429,
+                message=f"Every {self._provider_name} API key in the pool is cooling or exhausted.",
+                retryable=True,
+            )
 
         while True:
             permit = await self._wait_for_gate(session)
@@ -284,6 +351,15 @@ class ProviderAdmissionController:
                     self._concurrency_sem.release()
                 await self._abandon_probe_permit(session, permit)
                 raise
+
+    def _refresh_rate_limit(self) -> bool:
+        if self._rate_limit_supplier is None:
+            return True
+        rate_limit = self._rate_limit_supplier()
+        if rate_limit <= 0:
+            return False
+        self._proactive_limiter.set_rate_limit(rate_limit)
+        return True
 
     async def run_with_retry(
         self,

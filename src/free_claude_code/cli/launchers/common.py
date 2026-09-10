@@ -10,6 +10,7 @@ from urllib.request import Request
 
 from free_claude_code.cli.local_http import open_local_request
 from free_claude_code.cli.process_registry import (
+    force_kill_pid_tree_best_effort,
     kill_pid_tree_best_effort,
     register_pid,
     unregister_pid,
@@ -17,6 +18,8 @@ from free_claude_code.cli.process_registry import (
 
 PROXY_PREFLIGHT_PATH = "/health"
 PROXY_PREFLIGHT_TIMEOUT_SECONDS = 1.5
+CLI_TERMINATION_GRACE_SECONDS = 5.0
+CLI_FORCE_TERMINATION_WAIT_SECONDS = 5.0
 
 
 def proxy_v1_url(proxy_root_url: str) -> str:
@@ -78,6 +81,7 @@ def run_client_process(
     """Run a client CLI command and mirror its exit code."""
 
     process: subprocess.Popen[bytes] | None = None
+    termination_confirmed = False
     try:
         process = subprocess.Popen(
             command,
@@ -87,6 +91,7 @@ def run_client_process(
         if process.pid:
             register_pid(process.pid)
         return_code = process.wait()
+        termination_confirmed = True
     except FileNotFoundError:
         print(
             f"Could not find {display_name} command: {binary_name}",
@@ -97,10 +102,21 @@ def run_client_process(
     except KeyboardInterrupt:
         if process is not None and process.pid:
             kill_pid_tree_best_effort(process.pid)
-            process.wait()
+            try:
+                process.wait(timeout=CLI_TERMINATION_GRACE_SECONDS)
+                termination_confirmed = True
+            except subprocess.TimeoutExpired:
+                force_kill_pid_tree_best_effort(process.pid)
+                try:
+                    process.wait(timeout=CLI_FORCE_TERMINATION_WAIT_SECONDS)
+                    termination_confirmed = True
+                except subprocess.TimeoutExpired:
+                    # Preserve registry ownership for the atexit safety net rather
+                    # than blocking the caller forever on an uninterruptible child.
+                    pass
         raise
     finally:
-        if process is not None and process.pid:
+        if process is not None and process.pid and termination_confirmed:
             unregister_pid(process.pid)
 
     raise SystemExit(return_code)

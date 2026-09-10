@@ -272,7 +272,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "secret",
         settings_attr="anthropic_auth_token",
-        default="freecc",
+        default="",
         secret=True,
         restart_required=True,
         description="Bearer token protecting Claude/API access. It is not admin-page login.",
@@ -283,7 +283,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="provider_rate_limit",
-        default="1",
+        default="40",
     ),
     ConfigFieldSpec(
         "PROVIDER_RATE_WINDOW",
@@ -291,7 +291,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="provider_rate_window",
-        default="3",
+        default="60",
     ),
     ConfigFieldSpec(
         "PROVIDER_MAX_CONCURRENCY",
@@ -321,7 +321,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="http_read_timeout",
-        default="300",
+        default="120",
     ),
     ConfigFieldSpec(
         "HTTP_WRITE_TIMEOUT",
@@ -329,7 +329,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="http_write_timeout",
-        default="60",
+        default="10",
     ),
     ConfigFieldSpec(
         "HTTP_CONNECT_TIMEOUT",
@@ -337,14 +337,14 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="http_connect_timeout",
-        default="60",
+        default="10",
     ),
     ConfigFieldSpec(
         "HOST",
         "Server Host",
         "runtime",
         settings_attr="host",
-        default="0.0.0.0",
+        default="127.0.0.1",
         restart_required=True,
     ),
     ConfigFieldSpec(
@@ -457,7 +457,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "voice",
         "boolean",
         settings_attr="voice_note_enabled",
-        default="false",
+        default="true",
         session_sensitive=True,
     ),
     ConfigFieldSpec(
@@ -466,7 +466,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "voice",
         "select",
         settings_attr="whisper_device",
-        default="nvidia_nim",
+        default="cpu",
         options=("cpu", "cuda", "nvidia_nim"),
         session_sensitive=True,
     ),
@@ -475,7 +475,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "Whisper Model",
         "voice",
         settings_attr="whisper_model",
-        default="openai/whisper-large-v3",
+        default="base",
         session_sensitive=True,
     ),
     ConfigFieldSpec(

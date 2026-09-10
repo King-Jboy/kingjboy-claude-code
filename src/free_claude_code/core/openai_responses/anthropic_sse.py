@@ -1,12 +1,17 @@
 """Anthropic SSE parsing used by the Responses stream adapter."""
 
 import json
+import re
 import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
 from free_claude_code.core.trace import close_stream_input
+
+# RFC 8895 permits either LF or CRLF line endings.  Provider adapters mostly
+# emit LF today, but accepting CRLF here keeps the protocol boundary portable.
+_SSE_EVENT_BOUNDARY = re.compile(r"\r?\n\r?\n")
 
 
 @dataclass(slots=True)
@@ -27,8 +32,9 @@ async def iter_sse_events(
             else:
                 buffer += str(chunk)
 
-            while "\n\n" in buffer:
-                raw, buffer = buffer.split("\n\n", 1)
+            while (boundary := _SSE_EVENT_BOUNDARY.search(buffer)) is not None:
+                raw = buffer[: boundary.start()]
+                buffer = buffer[boundary.end() :]
                 event = parse_sse_event(raw)
                 if event is not None:
                     yield event

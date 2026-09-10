@@ -44,6 +44,19 @@ def unregister_pid(pid: int) -> None:
 
 def kill_pid_tree_best_effort(pid: int) -> None:
     """Kill a tracked process and its children where the platform supports it."""
+
+    _signal_pid_tree_best_effort(pid, signal.SIGTERM)
+
+
+def force_kill_pid_tree_best_effort(pid: int) -> None:
+    """Force-kill a tracked process tree after graceful termination timed out."""
+
+    # Windows has no SIGKILL constant, but its taskkill branch already uses /F.
+    _signal_pid_tree_best_effort(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+
+
+def _signal_pid_tree_best_effort(pid: int, sig: int) -> None:
+    """Send ``sig`` to one tracked process tree without raising cleanup errors."""
     if not pid:
         return
     if os.name == "nt":
@@ -62,9 +75,9 @@ def kill_pid_tree_best_effort(pid: int) -> None:
     # All tracked POSIX children start a fresh session, so their process group
     # contains the command and its descendants without touching this process.
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        os.killpg(os.getpgid(pid), sig)
     except Exception as e:
-        logger.debug("process_registry: terminate failed pid=%s: %s", pid, e)
+        logger.debug("process_registry: signal failed pid=%s: %s", pid, e)
 
 
 def kill_all_best_effort() -> None:

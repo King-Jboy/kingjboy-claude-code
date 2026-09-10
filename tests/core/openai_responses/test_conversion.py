@@ -133,6 +133,27 @@ def test_responses_messages_tools_and_tool_results_convert() -> None:
     assert payload["tool_choice"] == {"type": "tool", "name": "echo"}
 
 
+@pytest.mark.parametrize(
+    "item_type", ["function_call_output", "custom_tool_call_output"]
+)
+def test_responses_reject_orphan_tool_output(item_type: str) -> None:
+    with pytest.raises(
+        _CONVERSION_ERROR, match="does not match a preceding function call"
+    ):
+        _to_anthropic_payload(
+            {
+                "model": "nvidia_nim/test-model",
+                "input": [
+                    {
+                        "type": item_type,
+                        "call_id": "missing_call",
+                        "output": "untrusted result",
+                    }
+                ],
+            }
+        )
+
+
 def test_responses_tool_choice_none_disables_forwarded_tools() -> None:
     payload = _to_anthropic_payload(
         {

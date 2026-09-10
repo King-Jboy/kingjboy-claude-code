@@ -261,6 +261,42 @@ async def test_key_pool_paces_each_key_in_its_own_window():
 
 
 @pytest.mark.asyncio
+async def test_key_pool_uses_capacity_ready_key_before_waiting_for_lru_key():
+    """A saturated older key must not stall a newer key with immediate capacity."""
+    pool = KeyPool(
+        ["key-A", "key-B"],
+        client_factory=lambda key: MagicMock(spec=AsyncOpenAI, api_key=key),
+        key_rate_limit=1,
+        key_rate_window=1.0,
+    )
+    assert pool._key_limiters["key-A"].try_acquire()
+
+    selected = await pool.run_key_local(lambda client: asyncio.sleep(0, client.api_key))
+
+    assert selected == "key-B"
+
+
+@pytest.mark.asyncio
+async def test_key_pool_can_surface_permission_denied_without_cooling_other_keys():
+    """Ambiguous provider 403 responses are request failures, not pool failures."""
+    pool = KeyPool(
+        ["key-A", "key-B"],
+        client_factory=lambda key: MagicMock(spec=AsyncOpenAI, api_key=key),
+        rotate_on_permission_denied=False,
+    )
+    request = httpx2.Request("POST", "https://api.test/v1/chat")
+    response = httpx2.Response(403, request=request)
+
+    async def operation(_client: AsyncOpenAI) -> str:
+        raise openai.PermissionDeniedError("model denied", response=response, body=None)
+
+    with pytest.raises(openai.PermissionDeniedError):
+        await pool.run_key_local(operation)
+
+    assert all(key.rate_limited_until == 0.0 for key in pool.keys)
+
+
+@pytest.mark.asyncio
 async def test_run_key_local_raises_when_all_keys_exhausted():
     """run_key_local raises ExecutionFailure when no keys are available."""
     keys = ["k1", "k2"]
@@ -346,6 +382,30 @@ async def test_key_pool_hedged_racing_second_key_wins():
     assert "slow_k1" in attempted
     assert "fast_k2" in attempted
     assert duration < 0.5  # Much faster than slow_k1's 1.0s delay
+
+
+@pytest.mark.asyncio
+async def test_key_pool_hedge_releases_extra_admission_permit():
+    """A physical hedge holds and releases its own provider admission permit."""
+    released = asyncio.Event()
+
+    class Permit:
+        async def aclose(self) -> None:
+            released.set()
+
+    pool = KeyPool(
+        ["slow", "fast"],
+        client_factory=lambda key: MagicMock(spec=AsyncOpenAI, api_key=key),
+        hedge_delay_seconds=0.01,
+        hedge_permit_factory=lambda: asyncio.sleep(0, result=Permit()),
+    )
+
+    async def operation(client: AsyncOpenAI) -> str:
+        await asyncio.sleep(0.05 if client.api_key == "slow" else 0)
+        return client.api_key
+
+    assert await pool.run_key_local(operation) == "fast"
+    assert released.is_set()
 
 
 @pytest.mark.asyncio

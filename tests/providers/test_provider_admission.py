@@ -742,6 +742,81 @@ async def test_retry_after_is_a_minimum_backoff() -> None:
     assert 6.9 <= await_args.args[0] <= 7.0
 
 
+@pytest.mark.asyncio
+async def test_accepted_stream_failure_reenters_admission_recovery() -> None:
+    """A post-first-chunk failure uses the same coordinated backoff as an open failure."""
+    controller = _controller(max_attempts=2, base_delay=0.01, max_delay=0.01)
+    session = controller.new_retry_session()
+    attempt = await controller.open_attempt(session)
+    await attempt.succeeded()
+
+    assert await attempt.retry_after_acceptance(_status_error(503))
+    await attempt.aclose()
+
+    started = time.monotonic()
+    recovery_attempt = await controller.open_attempt(session)
+    assert time.monotonic() - started >= 0.008
+    await recovery_attempt.succeeded()
+    await recovery_attempt.aclose()
+
+
+@pytest.mark.asyncio
+async def test_hedge_permit_yields_to_the_primary_bulkhead() -> None:
+    """Hedging never waits behind or exceeds an occupied physical slot."""
+    controller = _controller(max_concurrency=1)
+    primary = await controller.open_attempt(controller.new_retry_session())
+
+    assert await controller.open_hedge_permit() is None
+
+    await primary.aclose()
+
+
+@pytest.mark.asyncio
+async def test_hedge_permit_counts_as_a_physical_concurrency_slot() -> None:
+    """A hedge consumes one extra slot only while its competing open is live."""
+    controller = _controller(max_concurrency=2)
+    primary = await controller.open_attempt(controller.new_retry_session())
+    hedge = await controller.open_hedge_permit()
+    assert hedge is not None
+
+    waiting = asyncio.create_task(
+        controller.open_attempt(controller.new_retry_session())
+    )
+    await asyncio.sleep(0)
+    assert not waiting.done()
+
+    await hedge.aclose()
+    follower = await waiting
+    await follower.aclose()
+    await primary.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_supplier_tracks_current_pool_capacity() -> None:
+    """Provider admission refreshes aggregate quota as pooled keys cool down."""
+    controller = _controller(rate_limit=10)
+    controller.set_rate_limit_supplier(lambda: 1)
+
+    attempt = await controller.open_attempt(controller.new_retry_session())
+    assert controller._proactive_limiter.headroom() == 0
+    await attempt.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_supplier_rejects_when_every_pooled_key_is_unavailable() -> (
+    None
+):
+    """All-key cooldown fails at admission rather than queueing behind the pool."""
+    controller = _controller(rate_limit=10)
+    controller.set_rate_limit_supplier(lambda: 0)
+
+    with pytest.raises(ExecutionFailure) as exc_info:
+        await controller.open_attempt(controller.new_retry_session())
+
+    assert exc_info.value.kind is FailureKind.RATE_LIMIT
+    assert exc_info.value.status_code == 429
+
+
 def test_retry_after_accepts_http_date_and_rejects_invalid_values() -> None:
     future = format_datetime(datetime.now(UTC) + timedelta(seconds=10), usegmt=True)
 

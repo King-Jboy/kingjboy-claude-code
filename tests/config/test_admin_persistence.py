@@ -15,6 +15,7 @@ from free_claude_code.config.admin.sources import dotenv_values_from_file
 from free_claude_code.config.admin.values import MASKED_SECRET
 from free_claude_code.config.env_migrations import RETIRED_ENV_KEYS
 from free_claude_code.config.paths import managed_env_path
+from free_claude_code.config.settings import Settings
 
 
 def _managed_env(
@@ -48,6 +49,51 @@ def test_unmanaged_variables_survive_an_admin_save(
     assert saved["HTTPS_PROXY"] == "http://127.0.0.1:8080"
     assert saved["NO_PROXY"] == "localhost"
     assert saved["GROQ_API_KEY"] == "groq-key"
+
+
+def test_first_admin_save_persists_runtime_defaults_without_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-op first save must not change security or transport behavior."""
+    managed = _managed_env(tmp_path, monkeypatch, "")
+    for key in (
+        "ANTHROPIC_AUTH_TOKEN",
+        "PROVIDER_RATE_LIMIT",
+        "PROVIDER_RATE_WINDOW",
+        "HTTP_READ_TIMEOUT",
+        "HTTP_WRITE_TIMEOUT",
+        "HTTP_CONNECT_TIMEOUT",
+        "HOST",
+        "VOICE_NOTE_ENABLED",
+        "WHISPER_DEVICE",
+        "WHISPER_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    prepared = prepare_admin_update({})
+    assert prepared.valid, prepared.errors
+    commit_prepared_admin_update(prepared)
+
+    persisted = dotenv_values_from_file(managed)
+    assert persisted["ANTHROPIC_AUTH_TOKEN"] == ""
+    assert persisted["PROVIDER_RATE_LIMIT"] == "40"
+    assert persisted["PROVIDER_RATE_WINDOW"] == "60"
+    assert persisted["HTTP_READ_TIMEOUT"] == "120"
+    assert persisted["HTTP_WRITE_TIMEOUT"] == "10"
+    assert persisted["HTTP_CONNECT_TIMEOUT"] == "10"
+    assert persisted["HOST"] == "127.0.0.1"
+    assert persisted["VOICE_NOTE_ENABLED"] == "true"
+    assert persisted["WHISPER_DEVICE"] == "cpu"
+    assert persisted["WHISPER_MODEL"] == "base"
+
+    settings = Settings(_env_file=managed)
+    assert settings.anthropic_auth_token == ""
+    assert settings.host == "127.0.0.1"
+    assert settings.http_read_timeout == 120.0
+    assert settings.http_write_timeout == 10.0
+    assert settings.http_connect_timeout == 10.0
+    assert settings.provider_rate_limit == 40
+    assert settings.provider_rate_window == 60
 
 
 def test_unmanaged_variables_survive_repeated_saves(

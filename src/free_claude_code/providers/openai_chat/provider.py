@@ -240,6 +240,12 @@ class OpenAIChatProvider(BaseProvider):
         self._default_headers = default_headers
         self._client = self._build_client(api_key_provider or self._api_key)
         self._key_pool = self._build_key_pool(config.api_keys)
+        pool = self._key_pool
+        if pool is not None:
+            per_key_rate = config.rate_limit or 40
+            self._admission.set_rate_limit_supplier(
+                lambda: per_key_rate * pool.usable_key_count()
+            )
 
     def _client_for_key(self, key: str) -> AsyncOpenAI:
         """Return a client view bound to ``key`` reusing the underlying connection pool."""
@@ -290,6 +296,8 @@ class OpenAIChatProvider(BaseProvider):
             key_rate_limit=config.key_rate_limit,
             key_rate_window=config.key_rate_window,
             hedge_delay_seconds=config.key_hedge_delay_seconds,
+            hedge_permit_factory=self._admission.open_hedge_permit,
+            rotate_on_permission_denied=self._rotate_on_permission_denied(),
         )
 
     def key_pool_status(self) -> KeyPoolStatus | None:
@@ -394,6 +402,10 @@ class OpenAIChatProvider(BaseProvider):
     def _provider_failure_override(self, error: Exception) -> ExecutionFailure | None:
         """Return provider-specific failure semantics, or defer to shared policy."""
         return None
+
+    def _rotate_on_permission_denied(self) -> bool:
+        """Return whether a 403 is reliable evidence that this key is unusable."""
+        return True
 
     def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """Return the body passed to the upstream OpenAI-compatible client."""
@@ -898,13 +910,21 @@ class _OpenAIChatStreamRunner:
             except asyncio.CancelledError, GeneratorExit:
                 raise
             except Exception as error:
-                if attempt is not None and not attempt.accepted:
-                    await attempt.retry(
-                        error,
-                        provider_failure_override=(
-                            self._provider._provider_failure_override
-                        ),
-                    )
+                if attempt is not None:
+                    if attempt.accepted:
+                        await attempt.retry_after_acceptance(
+                            error,
+                            provider_failure_override=(
+                                self._provider._provider_failure_override
+                            ),
+                        )
+                    else:
+                        await attempt.retry(
+                            error,
+                            provider_failure_override=(
+                                self._provider._provider_failure_override
+                            ),
+                        )
                 generated_output = has_committed_sse_output(ledger)
                 complete_tool_salvageable = (
                     generated_output
@@ -944,6 +964,17 @@ class _OpenAIChatStreamRunner:
                     continue
 
                 if decision.action == RecoveryFailureAction.MIDSTREAM_RECOVERY:
+                    if stream is not None:
+                        await close_provider_stream(
+                            stream,
+                            active_error=error,
+                            provider_name=tag,
+                            request_id=self._request_id,
+                        )
+                        stream = None
+                    if attempt is not None:
+                        await attempt.aclose()
+                        attempt = None
                     recovery_task = asyncio.create_task(
                         self._recovery_events(
                             body=body,
@@ -1210,13 +1241,21 @@ class _OpenAIChatStreamRunner:
             except Exception as error:
                 last_error = error
                 retryable = is_retryable_stream_error(error)
-                if attempt is not None and not attempt.accepted:
-                    await attempt.retry(
-                        error,
-                        provider_failure_override=(
-                            self._provider._provider_failure_override
-                        ),
-                    )
+                if attempt is not None:
+                    if attempt.accepted:
+                        await attempt.retry_after_acceptance(
+                            error,
+                            provider_failure_override=(
+                                self._provider._provider_failure_override
+                            ),
+                        )
+                    else:
+                        await attempt.retry(
+                            error,
+                            provider_failure_override=(
+                                self._provider._provider_failure_override
+                            ),
+                        )
                     if attempt.failure_retryable is not None:
                         retryable = attempt.failure_retryable
                 if not retryable or not retry_session.can_attempt:

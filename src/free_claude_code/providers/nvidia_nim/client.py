@@ -66,9 +66,9 @@ class NvidiaNimProvider(OpenAIChatProvider):
             admission=admission,
         )
         self._nim_settings = nim_settings
-        self._supports_reasoning_content: bool = True
-        self._supports_chat_template: bool = True
-        self._supports_reasoning_budget: bool = True
+        self._unsupported_reasoning_content_models: set[str] = set()
+        self._unsupported_chat_template_models: set[str] = set()
+        self._unsupported_reasoning_budget_models: set[str] = set()
 
     def _build_request_body(
         self,
@@ -86,15 +86,16 @@ class NvidiaNimProvider(OpenAIChatProvider):
     def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """Strip private request metadata before calling NVIDIA NIM."""
         body = body_without_nim_tool_argument_aliases(body)
-        if not self._supports_reasoning_content:
+        model = _model_id(body)
+        if model in self._unsupported_reasoning_content_models:
             _strip_message_reasoning_content(body)
-        if not self._supports_reasoning_budget:
+        if model in self._unsupported_reasoning_budget_models:
             extra = body.get("extra_body")
             if isinstance(extra, dict):
                 _strip_reasoning_budget_fields(extra)
                 if not extra:
                     body.pop("extra_body", None)
-        if not self._supports_chat_template:
+        if model in self._unsupported_chat_template_models:
             extra = body.get("extra_body")
             if isinstance(extra, dict):
                 _strip_chat_template_fields(extra)
@@ -122,11 +123,12 @@ class NvidiaNimProvider(OpenAIChatProvider):
         if error_body is not None:
             error_text = f"{error_text} {json.dumps(error_body, default=str)}"
         error_text = error_text.lower()
+        model = _model_id(body)
 
         if _is_reasoning_budget_rejection(error_text) and (
             bad_request_like or status_code == 500
         ):
-            self._supports_reasoning_budget = False
+            self._unsupported_reasoning_budget_models.add(model)
             retry_body = clone_body_without_reasoning_budget(body)
             if retry_body is None:
                 return None
@@ -139,7 +141,7 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return None
 
         if "chat_template" in error_text:
-            self._supports_chat_template = False
+            self._unsupported_chat_template_models.add(model)
             retry_body = clone_body_without_chat_template(body)
             if retry_body is None:
                 return None
@@ -147,7 +149,7 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return retry_body
 
         if "reasoning_content" in error_text:
-            self._supports_reasoning_content = False
+            self._unsupported_reasoning_content_models.add(model)
             retry_body = clone_body_without_reasoning_content(body)
             if retry_body is None:
                 return None
@@ -174,6 +176,10 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return overloaded_provider_failure()
         return None
 
+    def _rotate_on_permission_denied(self) -> bool:
+        """NIM uses 403 for request/model policy as well as credential access."""
+        return False
+
 
 def _nim_error_bodies(error: Exception) -> tuple[Mapping[str, Any], ...]:
     body = getattr(error, "body", None)
@@ -183,6 +189,12 @@ def _nim_error_bodies(error: Exception) -> tuple[Mapping[str, Any], ...]:
     if isinstance(nested, Mapping):
         return body, nested
     return (body,)
+
+
+def _model_id(body: Mapping[str, Any]) -> str:
+    """Return a model identifier suitable for a capability-cache key."""
+    model = body.get("model")
+    return model if isinstance(model, str) else ""
 
 
 def _is_context_window_exhaustion(body: Mapping[str, Any]) -> bool:

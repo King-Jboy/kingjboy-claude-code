@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import free_claude_code.api.web_tools.constants as web_tool_constants
 from free_claude_code.api.handlers import MessagesHandler
+from free_claude_code.api.web_tools import automatic_search as automatic_search_module
 from free_claude_code.api.web_tools import egress as web_egress
 from free_claude_code.api.web_tools.egress import (
     WebFetchEgressPolicy,
@@ -769,6 +770,48 @@ async def test_automatic_web_search_preserves_provider_failure_before_public_com
     assert response.headers["x-should-retry"] == "false"
     assert _json_body(response)["error"]["type"] == "rate_limit_error"
     search.assert_not_awaited()
+    assert provider.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_web_search_rejects_oversized_selection_before_public_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = ScriptedSelectionProvider(
+        ["x" * (automatic_search_module._MAX_SELECTION_STREAM_BYTES + 1)]
+    )
+    search = AsyncMock()
+    monkeypatch.setattr(
+        "free_claude_code.api.web_tools.outbound._run_web_search", search
+    )
+
+    response = await _automatic_search_service(provider).create(
+        _automatic_search_request(), request_id="req_selection_oversized"
+    )
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 500
+    assert "selection limit" in _json_body(response)["error"]["message"]
+    search.assert_not_awaited()
+    assert provider.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_web_search_rejects_slow_selection_before_public_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = ScriptedSelectionProvider([], wait_for=asyncio.Event())
+    monkeypatch.setattr(
+        automatic_search_module, "_SELECTION_DECISION_TIMEOUT_SECONDS", 1.0
+    )
+
+    response = await _automatic_search_service(provider).create(
+        _automatic_search_request(), request_id="req_selection_timeout"
+    )
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 500
+    assert "selection deadline" in _json_body(response)["error"]["message"]
     assert provider.close_count == 1
 
 

@@ -103,12 +103,13 @@ class Settings(BaseSettings):
     # Usage budget per pooled key per 24h window. OpenRouter's free tier caps
     # each key daily; 0 disables local metering.
     open_router_key_usage_limit: int = Field(
-        default=1000, validation_alias="OPENROUTER_KEY_USAGE_LIMIT"
+        default=1000, ge=0, validation_alias="OPENROUTER_KEY_USAGE_LIMIT"
     )
     open_router_key_rate_limit: int = Field(
         # The free OpenRouter variants are limited per account, not per
         # provider pool.  Each pooled key therefore needs its own window.
         default=20,
+        ge=0,
         validation_alias="OPENROUTER_KEY_RATE_LIMIT",
     )
 
@@ -171,10 +172,12 @@ class Settings(BaseSettings):
     # budget, so no local usage metering by default; set a positive value to
     # self-impose a per-key budget anyway.
     nvidia_nim_key_usage_limit: int = Field(
-        default=0, validation_alias="NVIDIA_NIM_KEY_USAGE_LIMIT"
+        default=0, ge=0, validation_alias="NVIDIA_NIM_KEY_USAGE_LIMIT"
     )
     nvidia_nim_key_rate_limit: int = Field(
-        default=40, validation_alias="NVIDIA_NIM_KEY_RATE_LIMIT"
+        default=40,
+        ge=0,
+        validation_alias="NVIDIA_NIM_KEY_RATE_LIMIT",
     )
 
     # ==================== LM Studio Config ====================
@@ -238,19 +241,25 @@ class Settings(BaseSettings):
     tokenrouter_proxy: str = Field(default="", validation_alias="TOKENROUTER_PROXY")
     nararoute_proxy: str = Field(default="", validation_alias="NARAROUTE_PROXY")
     # ==================== Provider Rate Limiting ====================
-    provider_rate_limit: int = Field(default=40, validation_alias="PROVIDER_RATE_LIMIT")
+    provider_rate_limit: int = Field(
+        default=40, gt=0, validation_alias="PROVIDER_RATE_LIMIT"
+    )
     provider_rate_window: int = Field(
-        default=60, validation_alias="PROVIDER_RATE_WINDOW"
+        default=60, gt=0, validation_alias="PROVIDER_RATE_WINDOW"
     )
     provider_max_concurrency: int = Field(
-        default=5, validation_alias="PROVIDER_MAX_CONCURRENCY"
+        default=5, gt=0, validation_alias="PROVIDER_MAX_CONCURRENCY"
     )
     # Fraction of a provider's published quota held back as headroom. We count a
     # request when we send it; the provider counts it on arrival, so latency and
     # clock skew can push our last request of a window into the provider's next
     # one. The cushion also covers the same key being used outside this proxy.
     provider_rate_margin: float = Field(
-        default=0.05, validation_alias="PROVIDER_RATE_MARGIN"
+        default=0.05,
+        ge=0,
+        lt=1,
+        allow_inf_nan=False,
+        validation_alias="PROVIDER_RATE_MARGIN",
     )
     # Ceiling on simultaneous upstream requests for a pooled provider. Quota is
     # per key and multiplies with the pool, but concurrency is bounded by local
@@ -258,7 +267,7 @@ class Settings(BaseSettings):
     # seconds, so too low a ceiling - not the rate limit - becomes the real
     # throughput bound and queues callers until they time out.
     provider_max_pooled_concurrency: int = Field(
-        default=64, validation_alias="PROVIDER_MAX_POOLED_CONCURRENCY"
+        default=64, gt=0, validation_alias="PROVIDER_MAX_POOLED_CONCURRENCY"
     )
     provider_progress_timeout: float = Field(
         default=600.0,
@@ -289,17 +298,27 @@ class Settings(BaseSettings):
 
     # ==================== HTTP Client Timeouts ====================
     http_read_timeout: float = Field(
-        default=120.0, validation_alias="HTTP_READ_TIMEOUT"
+        default=120.0,
+        gt=0,
+        allow_inf_nan=False,
+        validation_alias="HTTP_READ_TIMEOUT",
     )
     http_write_timeout: float = Field(
-        default=10.0, validation_alias="HTTP_WRITE_TIMEOUT"
+        default=10.0,
+        gt=0,
+        allow_inf_nan=False,
+        validation_alias="HTTP_WRITE_TIMEOUT",
     )
     http_connect_timeout: float = Field(
         default=HTTP_CONNECT_TIMEOUT_DEFAULT,
+        gt=0,
+        allow_inf_nan=False,
         validation_alias="HTTP_CONNECT_TIMEOUT",
     )
     key_hedge_delay_seconds: float = Field(
         default=0.0,
+        ge=0,
+        allow_inf_nan=False,
         validation_alias="KEY_HEDGE_DELAY_SECONDS",
     )
 
@@ -391,7 +410,7 @@ class Settings(BaseSettings):
 
     # ==================== Server ====================
     host: str = "127.0.0.1"
-    port: int = 8082
+    port: int = Field(default=8082, ge=1, le=65535)
     open_admin_browser: bool = Field(default=True, validation_alias="FCC_OPEN_BROWSER")
     # Optional proxy bearer token protecting public API endpoints.
     # Set via env `ANTHROPIC_AUTH_TOKEN`. When empty, no auth is required.

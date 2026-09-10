@@ -388,14 +388,16 @@ async def test_admission_override_preserves_raw_exception_after_exhaustion() -> 
     assert exc_info.value is errors[-1]
 
 
-def test_nim_caches_downgrades_for_reasoning_budget_and_chat_template() -> None:
+def test_nim_caches_downgrades_per_model_for_reasoning_budget_and_chat_template() -> (
+    None
+):
     provider = NvidiaNimProvider(
         _config("https://integrate.api.nvidia.com/v1"),
         nim_settings=NimSettings(),
         admission=_admission(),
     )
-    assert provider._supports_reasoning_budget is True
-    assert provider._supports_chat_template is True
+    assert provider._unsupported_reasoning_budget_models == set()
+    assert provider._unsupported_chat_template_models == set()
 
     error = _bad_request("reasoning_budget is not supported")
     body = {
@@ -408,7 +410,7 @@ def test_nim_caches_downgrades_for_reasoning_budget_and_chat_template() -> None:
     }
     retry_body = provider._get_retry_request_body(error, body)
     assert retry_body is not None
-    assert provider._supports_reasoning_budget is False
+    assert provider._unsupported_reasoning_budget_models == {"meta/llama"}
 
     next_body = {
         "model": "meta/llama",
@@ -423,3 +425,12 @@ def test_nim_caches_downgrades_for_reasoning_budget_and_chat_template() -> None:
     assert "reasoning_budget" not in prepared.get("extra_body", {}).get(
         "chat_template_kwargs", {}
     )
+
+    other_model = provider._prepare_create_body(
+        {
+            "model": "nvidia/other",
+            "messages": [],
+            "extra_body": {"reasoning_budget": 2048},
+        }
+    )
+    assert other_model["extra_body"]["reasoning_budget"] == 2048

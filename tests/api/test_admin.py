@@ -14,7 +14,6 @@ from free_claude_code.application.model_metadata import (
     ProviderModelInfo,
     ProviderModelRefreshResult,
 )
-from free_claude_code.config.admin.values import MASKED_SECRET
 from free_claude_code.config.model_refs import ModelCatalogScope
 from free_claude_code.config.server_urls import local_admin_url
 from free_claude_code.config.settings import Settings
@@ -68,6 +67,23 @@ def test_admin_page_is_loopback_only(monkeypatch, tmp_path):
     assert _local_client(app).get("/admin").status_code == 200
     remote_client = TestClient(app, client=("203.0.113.10", 50000))
     assert remote_client.get("/admin").status_code == 403
+
+
+@pytest.mark.parametrize(
+    "header_name", ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip")
+)
+def test_admin_rejects_forwarded_requests_even_when_proxy_peer_is_loopback(
+    monkeypatch, tmp_path, header_name
+):
+    _set_home(monkeypatch, tmp_path)
+
+    response = _local_client(create_test_app()).get(
+        "/admin/api/config",
+        headers={header_name: "for=203.0.113.10"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Admin UI cannot be proxied"}
 
 
 @pytest.mark.parametrize(
@@ -411,7 +427,10 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
         field for field in body["fields"] if field["key"] == "ANTHROPIC_AUTH_TOKEN"
     )
     assert auth_field["secret"] is True
-    assert auth_field["value"] == MASKED_SECRET
+    # The runtime default is deliberately unauthenticated.  An empty secret
+    # must remain visibly empty instead of inheriting the obsolete template
+    # token ("freecc").
+    assert auth_field["value"] == ""
     assert auth_field["source"] == "template"
     telegram_proxy_field = next(
         field for field in body["fields"] if field["key"] == "TELEGRAM_PROXY_URL"
@@ -841,7 +860,9 @@ def test_admin_apply_writes_huggingface_key_and_masks_preview(monkeypatch, tmp_p
     assert response.status_code == 200
     body = response.json()
     assert body["applied"] is True
-    assert body["pending_fields"] == []
+    # The aligned default voice backend is local CPU Whisper, so its active
+    # Hugging Face credential can only be picked up on the next process start.
+    assert body["pending_fields"] == ["HUGGINGFACE_API_KEY"]
     assert "HUGGINGFACE_API_KEY=********" in body["env_preview"]
     env_file = tmp_path / ".fcc" / ".env"
     text = env_file.read_text(encoding="utf-8")

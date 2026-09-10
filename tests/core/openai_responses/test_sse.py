@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import patch
@@ -71,6 +72,23 @@ async def test_anthropic_sse_parser_closes_source_after_normal_completion() -> N
 
     assert [event.event for event in events] == ["message_start"]
     assert source.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_anthropic_sse_parser_accepts_crlf_event_boundaries() -> None:
+    source = _CloseTrackingAsyncIterator(
+        [
+            'event: message_start\r\ndata: {"type":"message_start"}\r\n\r\n',
+            'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n',
+        ]
+    )
+
+    events = [event async for event in iter_sse_events(source)]
+
+    assert [(event.event, event.data["type"]) for event in events] == [
+        ("message_start", "message_start"),
+        ("message_stop", "message_stop"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -430,6 +448,23 @@ async def test_unrelated_post_start_exception_group_remains_unexpected() -> None
     assert observed == [grouped]
     assert events[-1].event == "response.failed"
     assert events[-1].data["response"]["error"]["type"] == "api_error"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_containing_post_start_exception_group_propagates() -> None:
+    grouped = BaseExceptionGroup(
+        "stream cancelled",
+        [asyncio.CancelledError(), RuntimeError("socket closed")],
+    )
+    stream = _responses_sse(
+        _aiter_then_raise(_anthropic_text_stream("partial")[:3], grouped),
+        {"model": "nvidia_nim/test-model", "stream": True},
+    )
+
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        await _collect_sse(stream)
+
+    assert exc_info.value is grouped
 
 
 @pytest.mark.asyncio

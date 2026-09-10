@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import openai
 from loguru import logger
@@ -24,6 +24,7 @@ from free_claude_code.providers.failure_policy import retry_after_seconds
 T = TypeVar("T")
 
 KeyClientFactory = Callable[[str], AsyncOpenAI]
+HedgePermitFactory = Callable[[], Awaitable[Any]]
 
 # A key must fail this many times consecutively before it enters a hard cooldown.
 # A single 401/403 hiccup will not kill the key permanently — it gets a temporary
@@ -200,12 +201,16 @@ class KeyPool:
         key_rate_limit: int = 0,
         key_rate_window: float = 60.0,
         hedge_delay_seconds: float = 0.0,
+        hedge_permit_factory: HedgePermitFactory | None = None,
+        rotate_on_permission_denied: bool = True,
     ) -> None:
         if not keys:
             raise ValueError("A key pool requires at least one API key")
         self._provider_name = provider_name
         self._client_factory = client_factory
         self._hedge_delay_seconds = max(0.0, hedge_delay_seconds)
+        self._hedge_permit_factory = hedge_permit_factory
+        self._rotate_on_permission_denied = rotate_on_permission_denied
         self.keys = [
             ApiKeyInfo(
                 key,
@@ -287,6 +292,37 @@ class KeyPool:
             best.mark_used()
             return best.key
 
+    def usable_key_count(self) -> int:
+        """Return keys that may accept an upstream request right now."""
+        with self.lock:
+            return sum(key.is_available() for key in self.keys)
+
+    def _get_next_key_with_immediate_rate_slot(self) -> str | None:
+        """Claim the LRU key that has an immediately available RPM slot.
+
+        A pool must not wait behind an older, rate-saturated key while another
+        healthy credential can send now.  Claiming the slot here keeps the
+        selection and limiter admission together without an await boundary.
+        """
+        with self.lock:
+            candidates = [
+                key
+                for key in self.keys
+                if key.is_available()
+                and (
+                    (limiter := self._key_limiters.get(key.key)) is None
+                    or limiter.headroom() > 0
+                )
+            ]
+            if not candidates:
+                return None
+            best = min(candidates, key=lambda key: key.lru_score())
+            limiter = self._key_limiters.get(best.key)
+            if limiter is not None and not limiter.try_acquire():
+                return None
+            best.mark_used()
+            return best.key
+
     def mark_key_used(self, key: str, *, proves_credential: bool = True) -> None:
         key_info = self._key_index.get(key)
         if key_info is not None and proves_credential:
@@ -323,6 +359,8 @@ class KeyPool:
             self.mark_key_failed(key)
             return True
         if isinstance(error, openai.PermissionDeniedError):
+            if not self._rotate_on_permission_denied:
+                return False
             logger.warning(
                 "{} key rotation: PermissionDeniedError for key ...{}",
                 self._provider_name,
@@ -375,11 +413,16 @@ class KeyPool:
         assert self._client_factory is not None
         last_error: Exception | None = None
         for _ in range(len(self.keys)):
-            current_key = self.get_next_key()
+            current_key = self._get_next_key_with_immediate_rate_slot()
+            rate_slot_claimed = current_key is not None
+            if current_key is None:
+                current_key = self.get_next_key()
             if not current_key:
                 break
 
-            if not await self._acquire_key_rate_slot(current_key):
+            if not rate_slot_claimed and not await self._acquire_key_rate_slot(
+                current_key
+            ):
                 continue
 
             client = self._client_factory(current_key)
@@ -426,14 +469,28 @@ class KeyPool:
             self.mark_key_used(key, proves_credential=proves_credential)
             return result
 
-        key1 = self.get_next_key()
+        key1 = self._get_next_key_with_immediate_rate_slot()
+        key1_rate_slot_claimed = key1 is not None
+        if key1 is None:
+            key1 = self.get_next_key()
         if not key1:
             return await self._run_key_sequential(
                 operation, proves_credential=proves_credential
             )
 
-        task1: asyncio.Task[T] = asyncio.create_task(execute_on_key(key1))
+        async def execute_claimed_key(key: str, rate_slot_claimed: bool) -> T:
+            if not rate_slot_claimed:
+                return await execute_on_key(key)
+            assert self._client_factory is not None
+            result = await operation(self._client_factory(key))
+            self.mark_key_used(key, proves_credential=proves_credential)
+            return result
+
+        task1: asyncio.Task[T] = asyncio.create_task(
+            execute_claimed_key(key1, key1_rate_slot_claimed)
+        )
         tasks: dict[asyncio.Task[T], str] = {task1: key1}
+        hedge_permit: Any | None = None
         try:
             done, _ = await asyncio.wait([task1], timeout=self._hedge_delay_seconds)
             if task1 in done:
@@ -452,7 +509,14 @@ class KeyPool:
                 if isinstance(exc, BaseException):
                     raise exc
 
-            key2 = self.get_next_key()
+            if self._hedge_permit_factory is not None:
+                hedge_permit = await self._hedge_permit_factory()
+                if hedge_permit is None:
+                    return await task1
+            key2 = self._get_next_key_with_immediate_rate_slot()
+            key2_rate_slot_claimed = key2 is not None
+            if key2 is None:
+                key2 = self.get_next_key()
             if not key2 or key2 == key1:
                 return await task1
 
@@ -463,7 +527,9 @@ class KeyPool:
                 self._hedge_delay_seconds,
                 key2[-6:] if len(key2) >= 6 else "...",
             )
-            task2: asyncio.Task[T] = asyncio.create_task(execute_on_key(key2))
+            task2: asyncio.Task[T] = asyncio.create_task(
+                execute_claimed_key(key2, key2_rate_slot_claimed)
+            )
             tasks[task2] = key2
 
             while tasks:
@@ -491,6 +557,8 @@ class KeyPool:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            if hedge_permit is not None:
+                await hedge_permit.aclose()
 
     async def aclose(self) -> None:
         """Release any resources held by the pool."""

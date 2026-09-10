@@ -37,6 +37,15 @@ LOCAL_PROVIDER_PATHS = {
     "ollama": "/api/tags",
 }
 LOCAL_PROBE_TIMEOUT_SECONDS = 1.5
+_FORWARDED_REQUEST_HEADERS = frozenset(
+    {
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+    }
+)
 
 
 class AdminConfigPayload(BaseModel):
@@ -72,6 +81,13 @@ def _origin_is_local(origin: str | None) -> bool:
 
 def require_loopback_admin(request: Request) -> None:
     """Allow admin access only from the local machine."""
+
+    # ``request.client`` is the reverse proxy, not the browser, when an app is
+    # proxied through localhost.  The admin surface intentionally has no
+    # network authentication, so reject standard proxy-forwarded requests
+    # rather than mistaking the proxy's loopback socket for the user.
+    if any(request.headers.get(name) for name in _FORWARDED_REQUEST_HEADERS):
+        raise HTTPException(status_code=403, detail="Admin UI cannot be proxied")
 
     client_host = request.client.host if request.client else None
     if not _is_loopback_host(client_host):

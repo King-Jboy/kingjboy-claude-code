@@ -292,11 +292,14 @@ class OpenAICodexProvider(BaseProvider):
                     attempts_remaining=retry_session.attempts_remaining,
                     retryable_override=retryable,
                 )
-                if (
+                should_early_retry = (
                     not decision.committed
                     and decision.retryable
                     and retry_session.can_attempt
-                ):
+                )
+                if should_early_retry and attempt is not None and attempt.accepted:
+                    should_early_retry = await attempt.retry_after_acceptance(error)
+                if should_early_retry:
                     recovery.discard()
                     trace_event(
                         stage="provider",

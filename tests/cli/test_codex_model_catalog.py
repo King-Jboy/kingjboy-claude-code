@@ -267,6 +267,14 @@ def test_launcher_config_composes_with_persistent_codex_config(
     assert "nvidia_nim/test-model" in result.stdout
 
 
+def test_launcher_uses_command_auth_without_env_key() -> None:
+    config = codex_config_args(api_url="http://127.0.0.1:8082/v1")
+
+    assert 'model_providers.fcc.env_key="FCC_CODEX_API_KEY"' not in config
+    assert 'model_providers.fcc.auth.command="fcc-codex"' in config
+    assert 'model_providers.fcc.auth.args=["--print-proxy-auth-token"]' in config
+
+
 def test_catalog_writer_skips_identical_content_and_replaces_changes(
     tmp_path: Path,
 ) -> None:

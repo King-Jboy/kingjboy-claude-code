@@ -58,6 +58,7 @@ def convert_request_to_anthropic_payload(
 
     messages: list[dict[str, Any]] = []
     pending_reasoning = _PendingReasoning()
+    known_function_call_ids: set[str] = set()
     quarantined_function_call_ids: set[str] = set()
     for item in _iter_input_items(request.input):
         _append_input_item(
@@ -65,6 +66,7 @@ def convert_request_to_anthropic_payload(
             messages=messages,
             system_parts=system_parts,
             pending_reasoning=pending_reasoning,
+            known_function_call_ids=known_function_call_ids,
             quarantined_function_call_ids=quarantined_function_call_ids,
         )
     _append_pending_reasoning(messages, pending_reasoning)
@@ -108,6 +110,7 @@ def _append_input_item(
     messages: list[dict[str, Any]],
     system_parts: list[str],
     pending_reasoning: _PendingReasoning,
+    known_function_call_ids: set[str],
     quarantined_function_call_ids: set[str],
 ) -> None:
     if isinstance(item, str):
@@ -159,6 +162,7 @@ def _append_input_item(
             tool_use,
             reasoning_content=pending_reasoning,
         )
+        known_function_call_ids.add(call_id)
         return
     if item_type in {"function_call_output", "custom_tool_call_output"}:
         call_id = call_id_from_item(item)
@@ -167,6 +171,11 @@ def _append_input_item(
             and call_id in quarantined_function_call_ids
         ):
             return
+        if call_id not in known_function_call_ids:
+            raise ResponsesConversionError(
+                f"{item_type}.call_id does not match a preceding function call: "
+                f"{call_id!r}"
+            )
         _append_pending_reasoning_before_tool_output(messages, pending_reasoning)
         _append_tool_result_message(
             messages,

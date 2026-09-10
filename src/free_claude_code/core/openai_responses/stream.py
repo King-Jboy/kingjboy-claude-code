@@ -47,6 +47,11 @@ async def iter_responses_sse_from_anthropic(
         for chunk in assembler.fail_execution(exc):
             yield chunk
     except BaseExceptionGroup as exc:
+        # A cancellation bundled with another error is still cancellation
+        # control flow.  Turning it into a terminal SSE error leaves work
+        # running after the HTTP client has disconnected.
+        if exc.subgroup(asyncio.CancelledError) is not None:
+            raise
         if not emitted_any_chunk:
             raise
         failure = find_execution_failure(exc)

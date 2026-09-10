@@ -283,6 +283,29 @@ class TestSettings:
         assert settings.http_connect_timeout == HTTP_CONNECT_TIMEOUT_DEFAULT
         assert HTTP_CONNECT_TIMEOUT_DEFAULT == 10.0
 
+    @pytest.mark.parametrize(
+        "values",
+        [
+            {"PROVIDER_RATE_LIMIT": "0"},
+            {"PROVIDER_RATE_WINDOW": "0"},
+            {"PROVIDER_MAX_CONCURRENCY": "0"},
+            {"PROVIDER_MAX_POOLED_CONCURRENCY": "0"},
+            {"PROVIDER_RATE_MARGIN": "nan"},
+            {"PROVIDER_RATE_MARGIN": "1"},
+            {"HTTP_READ_TIMEOUT": "0"},
+            {"HTTP_WRITE_TIMEOUT": "-1"},
+            {"HTTP_CONNECT_TIMEOUT": "nan"},
+            {"KEY_HEDGE_DELAY_SECONDS": "-0.1"},
+            {"port": "0"},
+        ],
+    )
+    def test_provider_and_lifecycle_numeric_values_are_validated(self, values) -> None:
+        """Admin validation must reject values that fail only during lazy use."""
+        from free_claude_code.config.settings import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **values)
+
     def test_reasoning_policy_from_env(self, monkeypatch):
         """REASONING_POLICY is loaded as a typed preference."""
         from free_claude_code.config.settings import Settings

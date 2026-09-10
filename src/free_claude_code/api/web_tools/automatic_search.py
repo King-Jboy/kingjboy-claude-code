@@ -1,5 +1,6 @@
 """One provider decision for Claude Code's automatic WebSearch request."""
 
+import asyncio
 import sys
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
@@ -20,6 +21,12 @@ from .request import (
     WebSearchDomainFilter,
 )
 from .streaming import stream_selected_web_search_response
+
+# The model is asked only to choose one web-search query.  Retaining an
+# unlimited response before returning anything defeats streaming backpressure
+# and lets a malformed or runaway provider exhaust proxy memory.
+_MAX_SELECTION_STREAM_BYTES = 256 * 1024
+_SELECTION_DECISION_TIMEOUT_SECONDS = 30.0
 
 
 async def stream_automatic_web_search_response(
@@ -48,8 +55,28 @@ async def stream_automatic_web_search_response(
         request_id=request_id,
     )
     chunks: list[str] = []
+    received_bytes = 0
+    selection_timeout = asyncio.timeout(_SELECTION_DECISION_TIMEOUT_SECONDS)
     try:
-        chunks.extend([chunk async for chunk in provider_stream])
+        try:
+            async with selection_timeout:
+                async for chunk in provider_stream:
+                    received_bytes += len(chunk.encode("utf-8", errors="replace"))
+                    if received_bytes > _MAX_SELECTION_STREAM_BYTES:
+                        raise _protocol_failure(
+                            "Upstream model exceeded the automatic WebSearch "
+                            "selection limit.",
+                            request_id=request_id,
+                        )
+                    chunks.append(chunk)
+        except TimeoutError as exc:
+            if selection_timeout.expired():
+                raise _protocol_failure(
+                    "Upstream model exceeded the automatic WebSearch selection "
+                    "deadline.",
+                    request_id=request_id,
+                ) from exc
+            raise
     finally:
         await close_stream_input(
             provider_stream,

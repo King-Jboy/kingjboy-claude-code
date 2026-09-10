@@ -84,6 +84,44 @@ def test_legacy_env_migration_does_not_overwrite_managed_env(
     assert managed_env.read_text("utf-8") == "MODEL=nvidia_nim/current\n"
 
 
+def test_foreground_launcher_escalates_after_ctrl_c_grace_timeout() -> None:
+    """A client that ignores SIGTERM cannot block the launcher indefinitely."""
+    from free_claude_code.cli.launchers import common
+
+    process = MagicMock(pid=12345)
+    process.wait.side_effect = [
+        KeyboardInterrupt(),
+        subprocess.TimeoutExpired("client", common.CLI_TERMINATION_GRACE_SECONDS),
+        0,
+    ]
+    with (
+        patch.object(common.subprocess, "Popen", return_value=process),
+        patch.object(common, "register_pid") as register_pid,
+        patch.object(common, "kill_pid_tree_best_effort") as graceful_kill,
+        patch.object(common, "force_kill_pid_tree_best_effort") as force_kill,
+        patch.object(common, "unregister_pid") as unregister_pid,
+        pytest.raises(KeyboardInterrupt),
+    ):
+        common.run_client_process(
+            command=["client"],
+            env={},
+            binary_name="client",
+            display_name="Client",
+            install_hint="install client",
+        )
+
+    register_pid.assert_called_once_with(12345)
+    graceful_kill.assert_called_once_with(12345)
+    force_kill.assert_called_once_with(12345)
+    assert process.wait.call_args_list[1].kwargs == {
+        "timeout": common.CLI_TERMINATION_GRACE_SECONDS
+    }
+    assert process.wait.call_args_list[2].kwargs == {
+        "timeout": common.CLI_FORCE_TERMINATION_WAIT_SECONDS
+    }
+    unregister_pid.assert_called_once_with(12345)
+
+
 def test_cli_scripts_are_registered() -> None:
     pyproject = tomllib.loads(
         (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(
@@ -662,6 +700,20 @@ def test_launch_codex_passes_responses_config_and_child_env(
     assert "OPENAI_BASE_URL" not in child_env
     register_pid.assert_called_once_with(12345)
     unregister_pid.assert_called_once_with(12345)
+
+
+def test_codex_auth_command_prints_proxy_token(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from free_claude_code.cli.launchers.codex import launch
+
+    with patch(
+        "free_claude_code.cli.launchers.codex.get_settings",
+        return_value=_launcher_settings(token="proxy-token"),
+    ):
+        launch(["--print-proxy-auth-token"])
+
+    assert capsys.readouterr().out == "proxy-token\n"
 
 
 def test_launch_codex_catalog_failure_warns_and_continues(
