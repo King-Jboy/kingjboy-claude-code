@@ -117,7 +117,7 @@ async def test_messages_handler_passes_routed_request_and_stream_metadata() -> N
     body = await _streaming_body_text(response)
     assert "message_start" in body
     assert provider.requests[0].model == "test-model"
-    assert provider.stream_kwargs[0]["input_tokens"] > 0
+    assert provider.stream_kwargs[0]["input_tokens"] == 0
     assert provider.stream_kwargs[0]["request_id"].startswith("req_")
     assert provider.stream_kwargs[0]["response_model"] == "nvidia_nim/test-model"
     assert provider.stream_kwargs[0]["reasoning"] == ReasoningPolicy.provider_default()

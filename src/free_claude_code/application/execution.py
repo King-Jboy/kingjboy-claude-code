@@ -13,7 +13,6 @@ from free_claude_code.core.anthropic import (
     SystemContent,
     Tool,
     anthropic_request_snapshot,
-    get_token_count,
 )
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.trace import (
@@ -40,7 +39,7 @@ class ProviderExecutor:
         provider_resolver: ProviderResolver,
         *,
         progress_timeout_seconds: float,
-        token_counter: TokenCounter = get_token_count,
+        token_counter: TokenCounter | None = None,
         generation_id: int | None = None,
         log_raw_payloads: bool = False,
     ) -> None:
@@ -138,12 +137,15 @@ class ProviderExecutor:
         async def provider_body() -> AsyncIterator[str]:
             provider_stream: AsyncIterator[str] | None = None
             try:
-                input_tokens = await asyncio.to_thread(
-                    self._token_counter,
-                    routed.request.messages,
-                    routed.request.system,
-                    routed.request.tools,
-                )
+                if self._token_counter is not None:
+                    input_tokens = await asyncio.to_thread(
+                        self._token_counter,
+                        routed.request.messages,
+                        routed.request.system,
+                        routed.request.tools,
+                    )
+                else:
+                    input_tokens = 0
                 provider_stream = provider.stream_response(
                     routed.request,
                     input_tokens=input_tokens,

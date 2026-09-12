@@ -51,7 +51,6 @@ from free_claude_code.core.anthropic import (
     anthropic_error_type_for_failure,
     anthropic_failure_payload,
     anthropic_status_for_error_type,
-    get_token_count,
 )
 from free_claude_code.core.anthropic.streaming.emitter import format_sse_event
 from free_claude_code.core.async_iterators import try_close_async_iterator
@@ -84,7 +83,7 @@ class MessagesHandler:
         provider_resolver: ProviderResolver,
         *,
         model_router: ModelRouter | None = None,
-        token_counter: TokenCounter = get_token_count,
+        token_counter: TokenCounter | None = None,
         provider_executor: ProviderExecutor | None = None,
         generation_id: int | None = None,
     ) -> None:
@@ -120,11 +119,15 @@ class MessagesHandler:
                 self._reject_unsupported_server_tools(routed)
                 result = self._run_message_intercepts(routed)
             else:
-                input_tokens = await asyncio.to_thread(
-                    self._token_counter,
-                    routed.request.messages,
-                    routed.request.system,
-                    routed.request.tools,
+                input_tokens = (
+                    await asyncio.to_thread(
+                        self._token_counter,
+                        routed.request.messages,
+                        routed.request.system,
+                        routed.request.tools,
+                    )
+                    if self._token_counter is not None
+                    else 0
                 )
                 result = _MessagesStreamResult(
                     stream_automatic_web_search_response(
@@ -357,8 +360,12 @@ class MessagesHandler:
         if not is_web_server_tool_request(routed.request):
             return None
 
-        input_tokens = self._token_counter(
-            routed.request.messages, routed.request.system, routed.request.tools
+        input_tokens = (
+            self._token_counter(
+                routed.request.messages, routed.request.system, routed.request.tools
+            )
+            if self._token_counter is not None
+            else 0
         )
         trace_event(
             stage="routing",
