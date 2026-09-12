@@ -914,7 +914,7 @@ class _OpenAIChatStreamRunner:
                     yield event
                 break
 
-            except (asyncio.CancelledError, GeneratorExit):
+            except asyncio.CancelledError, GeneratorExit:
                 raise
             except Exception as error:
                 if attempt is not None:

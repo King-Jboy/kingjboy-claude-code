@@ -273,7 +273,7 @@ class OpenAICodexProvider(BaseProvider):
                     request_id=request_id,
                 )
                 return
-            except (asyncio.CancelledError, GeneratorExit):
+            except asyncio.CancelledError, GeneratorExit:
                 raise
             except Exception as raw_error:
                 error = _effective_error(raw_error)

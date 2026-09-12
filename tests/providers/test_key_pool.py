@@ -451,7 +451,9 @@ async def test_key_pool_consecutive_permission_denied_stops_iteration():
         attempted.append(client.api_key)
         raise openai.PermissionDeniedError(
             message="Forbidden",
-            response=httpx2.Response(403, request=httpx2.Request("POST", "http://test")),
+            response=httpx2.Response(
+                403, request=httpx2.Request("POST", "http://test")
+            ),
             body=None,
         )
 

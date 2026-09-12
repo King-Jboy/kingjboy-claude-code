@@ -154,7 +154,7 @@ def pi_binary_is_compatible(binary_path: str) -> bool:
             text=True,
             timeout=_HELP_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return False
     return result.returncode == 0 and all(
         marker in result.stdout for marker in _REQUIRED_HELP_MARKERS

@@ -101,7 +101,7 @@ class DiscordMessenger:
         try:
             msg = await channel.fetch_message(int(message_id))
             await msg.delete()
-        except (discord.NotFound, discord.Forbidden):
+        except discord.NotFound, discord.Forbidden:
             pass
 
     async def delete_messages(self, chat_id: str, message_ids: list[str]) -> None:

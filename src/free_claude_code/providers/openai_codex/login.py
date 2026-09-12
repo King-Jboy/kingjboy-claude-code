@@ -193,7 +193,7 @@ async def request_device_authorization(
         raise OpenAILoginError("OpenAI returned an invalid device-code response.")
     try:
         interval = max(1.0, float(payload.get("interval", 5)))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         interval = 5.0
     return _DeviceAuthorization(
         verification_url=OPENAI_DEVICE_VERIFICATION_URL,
