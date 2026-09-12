@@ -99,20 +99,22 @@ UPSTREAM_QUIET_KEEPALIVE_SECONDS = 5.0
 
 async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
     """Return whether ``task`` finished within ``timeout`` seconds."""
+    if task.done():
+        return True
     done, _ = await asyncio.wait((task,), timeout=timeout)
     return bool(done)
 
 
 def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> float:
-    """Return the next poll slice, shortened so a ping lands on the threshold.
+    """Return the next poll slice, landing directly on the keepalive threshold.
 
-    Quiet time accrues in fixed slices, so without a shortened final slice the
-    first keepalive would fire a full interval past the documented threshold
-    (5.0s of silence would first be reported at 6.0s).
+    Quiet time before ``quiet_after`` does not emit keepalives, so waiting directly
+    for the remaining threshold avoids churning event loop timers during active streaming.
+    Once past the threshold, subsequent pings fire on fixed ``interval`` slices.
     """
     if quiet >= quiet_after:
         return interval
-    return min(interval, quiet_after - quiet)
+    return max(0.0, quiet_after - quiet)
 
 
 # Yielded in place of a chunk when the upstream has gone quiet long enough that
