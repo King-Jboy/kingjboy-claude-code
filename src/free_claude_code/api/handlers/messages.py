@@ -120,7 +120,8 @@ class MessagesHandler:
                 self._reject_unsupported_server_tools(routed)
                 result = self._run_message_intercepts(routed)
             else:
-                input_tokens = self._token_counter(
+                input_tokens = await asyncio.to_thread(
+                    self._token_counter,
                     routed.request.messages,
                     routed.request.system,
                     routed.request.tools,
