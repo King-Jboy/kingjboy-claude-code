@@ -434,3 +434,63 @@ async def test_key_pool_hedged_cancellation_cancels_the_running_operation():
         await task
 
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_key_pool_consecutive_permission_denied_stops_iteration():
+    """Consecutive 403 PermissionDeniedError stops further key attempts without trying all keys."""
+    keys = ["k1", "k2", "k3", "k4"]
+    attempted = []
+    pool = KeyPool(
+        keys,
+        client_factory=lambda key: MagicMock(spec=AsyncOpenAI, api_key=key),
+        hedge_delay_seconds=10.0,
+    )
+
+    async def operation(client: AsyncOpenAI):
+        attempted.append(client.api_key)
+        raise openai.PermissionDeniedError(
+            message="Forbidden",
+            response=httpx2.Response(403, request=httpx2.Request("POST", "http://test")),
+            body=None,
+        )
+
+    with pytest.raises(openai.PermissionDeniedError):
+        await pool.run_key_local(operation)
+
+    assert len(attempted) == 2
+    assert attempted == ["k1", "k2"]
+
+
+@pytest.mark.asyncio
+async def test_key_pool_hedged_cleans_up_losing_stream():
+    """Losing hedged task has its completed async stream closed."""
+    keys = ["k1", "k2"]
+    pool = KeyPool(
+        keys,
+        client_factory=lambda key: MagicMock(spec=AsyncOpenAI, api_key=key),
+        hedge_delay_seconds=0.01,
+    )
+    closed = asyncio.Event()
+    gate = asyncio.Event()
+
+    class MockStream:
+        def __init__(self, key: str):
+            self.key = key
+
+        async def aclose(self) -> None:
+            closed.set()
+
+    async def operation(client: AsyncOpenAI):
+        await gate.wait()
+        return MockStream(client.api_key)
+
+    async def open_gate():
+        await asyncio.sleep(0.03)
+        gate.set()
+
+    asyncio.create_task(open_gate())
+    result = await pool.run_key_local(operation)
+    assert result.key in ("k1", "k2")
+    await asyncio.wait_for(closed.wait(), timeout=1.0)
+    assert closed.is_set()

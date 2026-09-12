@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from free_claude_code.config.env_migrations import RETIRED_ENV_KEYS
 from free_claude_code.config.paths import managed_env_path
@@ -195,7 +196,7 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
 
     path = prepared.path
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path = path.with_suffix(f"{path.suffix}.tmp.{uuid4().hex}")
     try:
         temp_path.write_text(
             render_env_file(
@@ -228,7 +229,12 @@ def quote_env_value(value: str) -> str:
 
     if value == "":
         return ""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "")
+        .replace("\n", "\\n")
+    )
     if any(char.isspace() for char in value) or any(
         char in value for char in _ENV_CHARS_REQUIRING_QUOTES
     ):

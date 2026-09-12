@@ -47,10 +47,11 @@ def render_segments(
         dropped = True
 
     if dropped and last_part:
+        ellipsis = ctx.escape_text("...")
         budget = limit_chars - len(prefix_marker) - len(status_text)
-        if budget > 20:
+        if budget > len(ellipsis) + 10:
             tail = (
-                "..." + last_part[-(budget - 3) :]
+                ellipsis + last_part[-(budget - len(ellipsis)) :]
                 if len(last_part) > budget
                 else last_part
             )

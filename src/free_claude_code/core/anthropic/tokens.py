@@ -97,7 +97,7 @@ def get_token_count(
                     )
                     try:
                         total_tokens += _count_text_tokens(fast_json_dumps(block))
-                    except TypeError, ValueError:
+                    except (TypeError, ValueError):
                         total_tokens += _count_text_tokens(str(block))
 
     if tools:

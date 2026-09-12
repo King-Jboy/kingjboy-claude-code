@@ -711,7 +711,14 @@ class _OpenAIChatStreamRunner:
                         if recovery.committed:
                             yield anthropic_ping_frame()
                 except BaseException:
-                    await _discard_pending_task(create_task)
+                    if (
+                        create_task.done()
+                        and not create_task.cancelled()
+                        and create_task.exception() is None
+                    ):
+                        stream, _, attempt = create_task.result()
+                    else:
+                        await _discard_pending_task(create_task)
                     raise
                 stream, body, attempt = create_task.result()
                 stream_opened = True
@@ -907,7 +914,7 @@ class _OpenAIChatStreamRunner:
                     yield event
                 break
 
-            except asyncio.CancelledError, GeneratorExit:
+            except (asyncio.CancelledError, GeneratorExit):
                 raise
             except Exception as error:
                 if attempt is not None:

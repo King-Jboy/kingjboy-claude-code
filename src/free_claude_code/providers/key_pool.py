@@ -9,7 +9,7 @@ import asyncio
 import math
 import threading
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Container, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -17,6 +17,7 @@ import openai
 from loguru import logger
 from openai import AsyncOpenAI
 
+from free_claude_code.core.async_iterators import try_close_async_iterator
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.rate_limit import StrictSlidingWindowLimiter
 from free_claude_code.providers.failure_policy import retry_after_seconds
@@ -282,10 +283,12 @@ class KeyPool:
             soonest_ready_in=min(soonest) if soonest else None,
         )
 
-    def get_next_key(self) -> str | None:
+    def get_next_key(self, exclude: Container[str] = ()) -> str | None:
         """Return the available key idle the longest (LRU), or None."""
         with self.lock:
-            available = [ki for ki in self.keys if ki.is_available()]
+            available = [
+                ki for ki in self.keys if ki.key not in exclude and ki.is_available()
+            ]
             if not available:
                 return None
             best = min(available, key=lambda ki: ki.lru_score())
@@ -297,7 +300,9 @@ class KeyPool:
         with self.lock:
             return sum(key.is_available() for key in self.keys)
 
-    def _get_next_key_with_immediate_rate_slot(self) -> str | None:
+    def _get_next_key_with_immediate_rate_slot(
+        self, exclude: Container[str] = ()
+    ) -> str | None:
         """Claim the LRU key that has an immediately available RPM slot.
 
         A pool must not wait behind an older, rate-saturated key while another
@@ -308,7 +313,8 @@ class KeyPool:
             candidates = [
                 key
                 for key in self.keys
-                if key.is_available()
+                if key.key not in exclude
+                and key.is_available()
                 and (
                     (limiter := self._key_limiters.get(key.key)) is None
                     or limiter.headroom() > 0
@@ -409,9 +415,11 @@ class KeyPool:
         operation: Callable[[AsyncOpenAI], Awaitable[T]],
         *,
         proves_credential: bool = True,
+        initial_permission_denied: int = 0,
     ) -> T:
         assert self._client_factory is not None
         last_error: Exception | None = None
+        consecutive_permission_denied = initial_permission_denied
         for _ in range(len(self.keys)):
             current_key = self._get_next_key_with_immediate_rate_slot()
             rate_slot_claimed = current_key is not None
@@ -431,6 +439,10 @@ class KeyPool:
                 self.mark_key_used(current_key, proves_credential=proves_credential)
                 return result
             except Exception as error:
+                if isinstance(error, openai.PermissionDeniedError):
+                    consecutive_permission_denied += 1
+                    if consecutive_permission_denied >= 2:
+                        raise error
                 if self._handle_key_error(current_key, error):
                     last_error = error
                     continue
@@ -498,13 +510,18 @@ class KeyPool:
                 exc = task1.exception()
                 if exc is None:
                     return task1.result()
+                is_perm_denied = isinstance(exc, openai.PermissionDeniedError)
                 if isinstance(exc, ExecutionFailure):
                     return await self._run_key_sequential(
-                        operation, proves_credential=proves_credential
+                        operation,
+                        proves_credential=proves_credential,
+                        initial_permission_denied=1 if is_perm_denied else 0,
                     )
                 if isinstance(exc, Exception) and self._handle_key_error(key1, exc):
                     return await self._run_key_sequential(
-                        operation, proves_credential=proves_credential
+                        operation,
+                        proves_credential=proves_credential,
+                        initial_permission_denied=1 if is_perm_denied else 0,
                     )
                 if isinstance(exc, BaseException):
                     raise exc
@@ -513,10 +530,10 @@ class KeyPool:
                 hedge_permit = await self._hedge_permit_factory()
                 if hedge_permit is None:
                     return await task1
-            key2 = self._get_next_key_with_immediate_rate_slot()
+            key2 = self._get_next_key_with_immediate_rate_slot(exclude={key1})
             key2_rate_slot_claimed = key2 is not None
             if key2 is None:
-                key2 = self.get_next_key()
+                key2 = self.get_next_key(exclude={key1})
             if not key2 or key2 == key1:
                 return await task1
 
@@ -546,6 +563,8 @@ class KeyPool:
                         continue
                     if isinstance(exc, Exception) and self._handle_key_error(k, exc):
                         continue
+                    if tasks:
+                        continue
                     if isinstance(exc, BaseException):
                         raise exc
 
@@ -553,8 +572,11 @@ class KeyPool:
                 operation, proves_credential=proves_credential
             )
         finally:
-            for task in tasks:
-                task.cancel()
+            for task in list(tasks):
+                if task.done() and not task.cancelled() and task.exception() is None:
+                    await try_close_async_iterator(task.result())
+                else:
+                    task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             if hedge_permit is not None:

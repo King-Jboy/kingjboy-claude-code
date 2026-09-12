@@ -184,3 +184,10 @@ def test_stop_cli_fallback_to_manager(client):
     assert response.status_code == 200
     assert response.json()["source"] == "cli_manager"
     session_control.stop_all.assert_awaited_once()
+
+
+def test_stop_cli_rejects_remote_client():
+    remote_client = TestClient(app, client=("203.0.113.10", 50000))
+    response = remote_client.post("/stop")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Admin UI is local-only"

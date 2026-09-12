@@ -118,12 +118,16 @@ class ManagedStreamingResponse(StreamingResponse):
 
 async def _wait_for_cleanup(task: asyncio.Task[None]) -> None:
     """Wait through repeated caller cancellation, then restore cancellation."""
+    current = asyncio.current_task()
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError as exc:
-            cancellation = exc
+            cancellation = cancellation or exc
+            if current is not None:
+                while current.cancelling():
+                    current.uncancel()
 
     # Ordinary defensive failures are trace-only; cancellation remains control flow.
     try:
@@ -234,6 +238,8 @@ async def _first_chunk_streaming_response(
         raise
     except BaseExceptionGroup as exc:
         await _close_pre_start_body(body, preserved_error=exc)
+        if exc.subgroup(asyncio.CancelledError) is not None:
+            raise
         return pre_start_error_response(exc)
     except Exception as exc:
         await _close_pre_start_body(body, preserved_error=exc)

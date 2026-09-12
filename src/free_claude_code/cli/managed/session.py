@@ -201,15 +201,22 @@ class ManagedClaudeSession:
                                     line_str, parse_state
                                 ):
                                     yield event
-                except asyncio.CancelledError:
-                    # Cancelling the handler task should not leave a Claude CLI
-                    # subprocess running in the background.
+                except (asyncio.CancelledError, GeneratorExit):
+                    # Cancelling the handler task or abandoning iteration early
+                    # should not leave a Claude CLI subprocess running.
+                    if stderr_task is not None and not stderr_task.done():
+                        stderr_task.cancel()
                     await asyncio.shield(self.stop())
                     raise
                 finally:
                     stderr_bytes = b""
                     if stderr_task is not None:
-                        stderr_bytes = await stderr_task
+                        try:
+                            stderr_bytes = await asyncio.wait_for(
+                                stderr_task, timeout=2.0
+                            )
+                        except (TimeoutError, asyncio.CancelledError):
+                            stderr_task.cancel()
 
                 stderr_text = None
                 if stderr_bytes:

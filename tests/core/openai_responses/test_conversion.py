@@ -703,3 +703,47 @@ def test_responses_malformed_only_function_call_still_has_no_routable_message() 
                 ],
             }
         )
+
+
+def test_responses_function_call_output_non_string_serialized_to_json() -> None:
+    payload = _to_anthropic_payload(
+        {
+            "model": "gpt-test",
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": {"status": "success", "code": 200},
+                },
+            ],
+        }
+    )
+    assert payload["messages"] == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "lookup",
+                    "input": {},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": '{"status": "success", "code": 200}',
+                }
+            ],
+        },
+    ]

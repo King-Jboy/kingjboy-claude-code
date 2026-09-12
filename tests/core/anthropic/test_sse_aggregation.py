@@ -115,3 +115,27 @@ async def test_trailing_buffer_without_final_double_newline_is_aggregated() -> N
     assert error is None
     assert message["content"][0]["text"] == "Hello"
     assert message["stop_reason"] == "end_turn"
+
+
+@pytest.mark.asyncio
+async def test_crlf_delimited_sse_events_are_aggregated() -> None:
+    # Servers or proxies emitting \r\n\r\n framing must be parsed identically to \n\n.
+    events = [
+        _message_start().replace("\n\n", "\r\n\r\n"),
+        format_sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "CRLF World"},
+            },
+        ).replace("\n\n", "\r\n\r\n"),
+        format_sse_event(
+            "content_block_stop", {"type": "content_block_stop", "index": 0}
+        ).replace("\n\n", "\r\n\r\n"),
+        *[e.replace("\n\n", "\r\n\r\n") for e in _stop_events()],
+    ]
+
+    message, error = await aggregate_anthropic_sse_to_message(_body(events))
+    assert error is None
+    assert message["content"][0]["text"] == "CRLF World"

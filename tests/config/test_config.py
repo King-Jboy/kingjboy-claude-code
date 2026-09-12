@@ -1,5 +1,4 @@
-"""Tests for config/settings.py and config/nim.py"""
-
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -1193,3 +1192,17 @@ def test_progress_timeout_can_cover_http_read_timeout(
     settings = Settings(_env_file=None)
 
     assert settings.provider_progress_timeout == 600
+
+
+def test_empty_numeric_settings_use_defaults(tmp_path: Path) -> None:
+    """Empty numeric strings in .env must not crash Settings initialization."""
+    from free_claude_code.config.settings import Settings
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "PORT=\nPROVIDER_RATE_LIMIT=\nPROVIDER_RATE_WINDOW=\n", encoding="utf-8"
+    )
+
+    settings = Settings(_env_file=env_file)
+    assert settings.port == 8082
+    assert settings.provider_rate_limit == 40

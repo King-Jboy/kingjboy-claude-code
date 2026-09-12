@@ -64,7 +64,7 @@ def _is_loopback_host(host: str | None) -> bool:
     if host is None:
         return False
     normalized = host.strip().strip("[]").lower()
-    if normalized in ("localhost", "testserver"):
+    if normalized in ("localhost", "testserver", "testclient"):
         return True
     try:
         return ipaddress.ip_address(normalized).is_loopback

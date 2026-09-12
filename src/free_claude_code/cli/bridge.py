@@ -197,7 +197,7 @@ def run_shell_command(command: str, *, cwd: Path, timeout: int) -> ShellResult:
         try:
             _terminate_process_tree(process)
             process.wait(timeout=5)
-        except OSError, subprocess.TimeoutExpired:
+        except (OSError, subprocess.TimeoutExpired):
             pass
         raise BridgeError(f"Command timed out after {timeout}s.") from None
     finally:

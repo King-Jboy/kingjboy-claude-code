@@ -15,6 +15,7 @@ from free_claude_code.core.anthropic import (
 from free_claude_code.core.openai_responses import OpenAIResponsesRequest
 from free_claude_code.core.trace import trace_event
 
+from .admin_routes import require_loopback_admin
 from .dependencies import (
     get_services,
     get_settings,
@@ -242,10 +243,12 @@ async def pool_status(
 
 @router.post("/stop")
 async def stop_cli(
+    request: Request,
     services: ApiServices = Depends(get_services),
     _auth=Depends(require_proxy_auth),
 ):
     """Stop all CLI sessions and pending tasks."""
+    require_loopback_admin(request)
     result = await services.tasks.stop_all()
     if result is None:
         raise HTTPException(status_code=503, detail="Messaging system not initialized")

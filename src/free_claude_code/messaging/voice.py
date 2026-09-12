@@ -307,7 +307,7 @@ class PendingVoiceRegistry:
         for task in tasks:
             try:
                 await task
-            except asyncio.CancelledError, Exception:
+            except (asyncio.CancelledError, Exception):
                 continue
             except BaseException as error:
                 fatal_error = fatal_error or error

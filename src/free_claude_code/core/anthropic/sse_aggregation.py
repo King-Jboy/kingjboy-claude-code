@@ -7,6 +7,7 @@ shape the real Anthropic API returns for a non-streaming ``messages.create()``
 call.
 """
 
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -14,6 +15,8 @@ from typing import Any
 from free_claude_code.core.json_utils import safe_parse_tool_arguments
 
 from .stream_contracts import parse_sse_text
+
+_SSE_EVENT_BOUNDARY = re.compile(r"\r?\n\r?\n")
 
 __all__ = ["aggregate_anthropic_sse_to_message"]
 
@@ -94,8 +97,9 @@ async def aggregate_anthropic_sse_to_message(
 
     async for chunk in stream:
         buffer += chunk
-        while "\n\n" in buffer:
-            raw_event, buffer = buffer.split("\n\n", 1)
+        while (boundary := _SSE_EVENT_BOUNDARY.search(buffer)) is not None:
+            raw_event = buffer[: boundary.start()]
+            buffer = buffer[boundary.end() :]
             for event in parse_sse_text(raw_event + "\n\n"):
                 handle_payload(event.data)
 

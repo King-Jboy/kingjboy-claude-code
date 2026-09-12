@@ -1,5 +1,4 @@
-"""Convert OpenAI Responses requests into Anthropic Messages payloads."""
-
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -177,12 +176,18 @@ def _append_input_item(
                 f"{call_id!r}"
             )
         _append_pending_reasoning_before_tool_output(messages, pending_reasoning)
+        raw_output = item.get("output", "")
+        content = (
+            raw_output
+            if isinstance(raw_output, (str, list))
+            else json.dumps(raw_output)
+        )
         _append_tool_result_message(
             messages,
             {
                 "type": "tool_result",
                 "tool_use_id": call_id,
-                "content": item.get("output", ""),
+                "content": content,
             },
         )
         return

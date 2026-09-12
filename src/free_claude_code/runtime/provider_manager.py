@@ -128,12 +128,13 @@ class ProviderRuntimeManager:
         return self._current.generation_id
 
     async def acquire(self) -> ProviderGenerationLease:
-        if self._closing or self._closed:
-            raise ApplicationUnavailableError("Provider runtime is shutting down.")
-        generation = self._current
-        generation.active_leases += 1
-        generation.drained.clear()
-        return ProviderGenerationLease(self, generation)
+        async with self._replace_lock:
+            if self._closing or self._closed:
+                raise ApplicationUnavailableError("Provider runtime is shutting down.")
+            generation = self._current
+            generation.active_leases += 1
+            generation.drained.clear()
+            return ProviderGenerationLease(self, generation)
 
     def current_settings(self) -> Settings:
         return self._current.settings

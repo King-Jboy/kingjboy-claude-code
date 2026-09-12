@@ -220,7 +220,7 @@ def hermes_binary_version(binary_path: str) -> tuple[int, int, int] | None:
             text=True,
             timeout=_VERSION_TIMEOUT_SECONDS,
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
@@ -332,7 +332,7 @@ def _require_overlay_activation(
             timeout=_ACTIVATION_TIMEOUT_SECONDS,
             env=dict(env),
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         _overlay_activation_error()
     if result.returncode != 0:
         _overlay_activation_error()
