@@ -284,19 +284,6 @@ CAPABILITY_CONTRACTS: tuple[CapabilityContract, ...] = (
     ),
     CapabilityContract(
         "provider_runtime",
-        "credential_key_pool",
-        "provider_key_pool",
-        "free_claude_code.providers.key_pool.KeyPool",
-        "a list of interchangeable provider keys and per-attempt outcomes",
-        "LRU distribution across all keys, failure cooldowns, and automatic key hopping",
-        "failover across keys within request, 429 when all keys exhausted",
-        (
-            "tests/providers/test_key_pool.py",
-            "tests/providers/test_openai_chat_key_pool.py",
-        ),
-    ),
-    CapabilityContract(
-        "provider_runtime",
         "rate_limit_and_disconnect",
         "smart_rate_limiting",
         "free_claude_code.providers.admission.ProviderAdmissionController",

@@ -231,15 +231,6 @@ async def list_muse_models(
     )
 
 
-@router.get("/api/pool-status")
-async def pool_status(
-    services: ApiServices = Depends(get_services),
-    _auth=Depends(require_proxy_auth),
-):
-    """Report pooled-credential health, counts only, for API clients."""
-    return {"key_pools": services.admin.key_pool_status()}
-
-
 @router.post("/stop")
 async def stop_cli(
     request: Request,

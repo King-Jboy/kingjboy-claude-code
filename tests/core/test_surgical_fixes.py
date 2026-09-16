@@ -1,4 +1,3 @@
-import time
 from typing import cast
 
 import httpx
@@ -7,7 +6,6 @@ import pytest
 from free_claude_code.core.openai_responses.tools import parse_arguments
 from free_claude_code.core.trace import sanitize_trace_value
 from free_claude_code.providers.failure_policy import _reports_context_window_exceeded
-from free_claude_code.providers.key_pool import ApiKeyInfo
 from free_claude_code.providers.openai_codex.provider import _iter_sse
 
 
@@ -46,17 +44,6 @@ def test_reports_context_window_exceeded():
 
     err_unrelated = CustomErr("Something went wrong with connection")
     assert _reports_context_window_exceeded(err_unrelated) is False
-
-
-def test_key_pool_mark_rate_limited_monotonic():
-    ki = ApiKeyInfo(key="test-key-12345678")
-    now = time.monotonic()
-    ki.mark_rate_limited(cooldown_seconds=60.0)
-    first_until = ki.rate_limited_until
-    assert first_until >= now + 59.0
-
-    ki.mark_rate_limited(cooldown_seconds=10.0)
-    assert ki.rate_limited_until >= first_until
 
 
 @pytest.mark.asyncio

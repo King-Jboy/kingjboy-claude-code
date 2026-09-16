@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
@@ -20,7 +20,6 @@ from pydantic_settings import (
 # loudly if a pydantic-settings upgrade moves this or the hook below it.
 from pydantic_settings.sources.providers.dotenv import parse_env_vars
 
-from .api_keys import parse_api_key_list
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
@@ -93,24 +92,14 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # ==================== OpenRouter Config ====================
-    open_router_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
-    # Optional pool of interchangeable keys as a JSON list; overrides the single
-    # key above. Stored raw so the Admin textarea round-trips exactly what the
-    # user typed; ``config.api_keys`` owns parsing.
+    # Kept raw so JSON lists and delimiter-separated values are both accepted
+    # without pydantic-settings attempting to decode one format as the other.
     open_router_api_keys: str = Field(
         default="", validation_alias="OPENROUTER_API_KEYS"
     )
-    # Usage budget per pooled key per 24h window. OpenRouter's free tier caps
-    # each key daily; 0 disables local metering.
-    open_router_key_usage_limit: int = Field(
-        default=1000, ge=0, validation_alias="OPENROUTER_KEY_USAGE_LIMIT"
-    )
+    open_router_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
     open_router_key_rate_limit: int = Field(
-        # The free OpenRouter variants are limited per account, not per
-        # provider pool.  Each pooled key therefore needs its own window.
-        default=20,
-        ge=0,
-        validation_alias="OPENROUTER_KEY_RATE_LIMIT",
+        default=20, gt=0, validation_alias="OPENROUTER_KEY_RATE_LIMIT"
     )
 
     # ==================== DeepSeek Config ====================
@@ -164,20 +153,14 @@ class Settings(BaseSettings):
     )
 
     # ==================== NVIDIA NIM Config ====================
-    nvidia_nim_api_key: str = ""
-    # Optional pool of interchangeable keys as a JSON list; overrides the single
-    # key above. See ``open_router_api_keys`` for why this stays a raw string.
-    nvidia_nim_api_keys: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEYS")
-    # NIM's free tier is rate-limited per minute rather than by a consumable
-    # budget, so no local usage metering by default; set a positive value to
-    # self-impose a per-key budget anyway.
-    nvidia_nim_key_usage_limit: int = Field(
-        default=0, ge=0, validation_alias="NVIDIA_NIM_KEY_USAGE_LIMIT"
+    nvidia_nim_api_keys: str = Field(
+        default="", validation_alias="NVIDIA_NIM_API_KEYS"
+    )
+    nvidia_nim_api_key: str = Field(
+        default="", validation_alias="NVIDIA_NIM_API_KEY"
     )
     nvidia_nim_key_rate_limit: int = Field(
-        default=40,
-        ge=0,
-        validation_alias="NVIDIA_NIM_KEY_RATE_LIMIT",
+        default=40, gt=0, validation_alias="NVIDIA_NIM_KEY_RATE_LIMIT"
     )
 
     # ==================== LM Studio Config ====================
@@ -261,14 +244,6 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="PROVIDER_RATE_MARGIN",
     )
-    # Ceiling on simultaneous upstream requests for a pooled provider. Quota is
-    # per key and multiplies with the pool, but concurrency is bounded by local
-    # sockets and event-loop work. Streaming responses stay open for tens of
-    # seconds, so too low a ceiling - not the rate limit - becomes the real
-    # throughput bound and queues callers until they time out.
-    provider_max_pooled_concurrency: int = Field(
-        default=64, gt=0, validation_alias="PROVIDER_MAX_POOLED_CONCURRENCY"
-    )
     provider_progress_timeout: float = Field(
         default=600.0,
         gt=0,
@@ -314,12 +289,6 @@ class Settings(BaseSettings):
         gt=0,
         allow_inf_nan=False,
         validation_alias="HTTP_CONNECT_TIMEOUT",
-    )
-    key_hedge_delay_seconds: float = Field(
-        default=0.0,
-        ge=0,
-        allow_inf_nan=False,
-        validation_alias="KEY_HEDGE_DELAY_SECONDS",
     )
 
     # ==================== Fast Prefix Detection ====================
@@ -461,13 +430,6 @@ class Settings(BaseSettings):
         if isinstance(v, str) and not v.strip():
             return None
         return v
-
-    @field_validator("nvidia_nim_api_keys", "open_router_api_keys")
-    @classmethod
-    def validate_api_key_pool(cls, value: str, info: ValidationInfo) -> str:
-        """Fail startup on a malformed pool rather than quietly serving one key."""
-        parse_api_key_list(value, env_name=(info.field_name or "").upper())
-        return value
 
     @field_validator("pinned_models")
     @classmethod

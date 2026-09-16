@@ -364,14 +364,6 @@ configuration vocabulary. FCC-owned dotenv files receive a one-time rename and
 value migration from the retired boolean settings; explicit `FCC_ENV_FILE`
 files are never rewritten and instead receive an actionable startup warning.
 
-[config/api_keys.py](src/free_claude_code/config/api_keys.py) owns credential-pool
-parsing. Pool variables such as `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS`
-hold a JSON list of interchangeable keys; entries are stripped, de-duplicated,
-and order-preserving, with no cap on count. Malformed input fails settings
-construction with the variable name and an example rather than falling back to
-the single key, because a pool that silently shrinks looks like ordinary slowness
-instead of a configuration error.
-
 [config/model_refs.py](src/free_claude_code/config/model_refs.py) owns provider-prefixed model ref
 parsing and configured `MODEL*` inventory. API routing and provider validation
 depend on those helpers instead of adding behavior methods to Settings.
@@ -637,13 +629,6 @@ catalog.
 provider ID within a generation; there is no pass-through cache object, process
 singleton, or second admission registry.
 
-[providers/key_pool.py](src/free_claude_code/providers/key_pool.py) owns
-credential pools for providers with multiple API keys configured. Selection is
-least-recently-used (LRU), spreading request load evenly across all keys.
-Failures trigger temporary cooldowns (5 minutes for early hiccups, 20 minutes
-after 3 consecutive failures), and requests automatically hop to the next
-available key on 401, 403, or 429 status codes.
-
 [providers/admission.py](src/free_claude_code/providers/admission.py) owns the
 complete shared upstream-admission lifecycle for that provider generation. A
 strict sliding window admits each real attempt before a concurrency bulkhead;
@@ -876,11 +861,10 @@ usage quirks such as DeepSeek prompt-cache counters.
 1. Add provider metadata to [config/provider_catalog.py](src/free_claude_code/config/provider_catalog.py).
 2. Add credentials and related settings to [config/settings.py](src/free_claude_code/config/settings.py)
    and [.env.example](.env.example) when user configurable.
-3. Let Admin UI provider credential, credential-pool, configurable base URL, and proxy fields
-   come from the catalog. Add admin-only help text or provider-specific fields under
-   [config/admin/](src/free_claude_code/config/admin/) only when the generated manifest is
-   insufficient. Set `credential_pool_attr` only when the upstream genuinely
-   accepts many interchangeable keys with independent quotas.
+3. Let Admin UI provider credential, configurable base URL, and proxy fields come
+   from the catalog. Add admin-only help text or provider-specific fields under
+   [config/admin/](src/free_claude_code/config/admin/) only when the generated
+   manifest is insufficient.
 4. Add an `OpenAIChatProfile` under [providers/openai_chat/](src/free_claude_code/providers/openai_chat/) when
    request policy fully describes the upstream.
 5. Add a specialized provider package and sparse factory entry only when the
@@ -977,7 +961,7 @@ transient failures can therefore still use all five attempts, but repeated
 fully-stalled operations cannot outlive the downstream harness.
 
 While an already-committed stream waits on mid-stream recovery, the OpenAI-chat
-runner emits Anthropic `ping` keep-alive frames so a long reconnect or pooled-key
+runner emits Anthropic `ping` keep-alive frames so a long reconnect or admission
 wait never looks like a stalled connection. Keep-alive is gated on the holdback's
 commit state, never on elapsed time: before the first frame escapes, silence is
 required so a failure can still be reported as typed non-2xx JSON with

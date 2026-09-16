@@ -176,10 +176,6 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return overloaded_provider_failure()
         return None
 
-    def _rotate_on_permission_denied(self) -> bool:
-        """NIM uses 403 for request/model policy as well as credential access."""
-        return False
-
 
 def _nim_error_bodies(error: Exception) -> tuple[Mapping[str, Any], ...]:
     body = getattr(error, "body", None)

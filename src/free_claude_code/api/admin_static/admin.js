@@ -100,7 +100,6 @@ async function load() {
   await hydrateModelOptions();
   await validate(false);
   await refreshLocalStatus();
-  await refreshKeyPools();
   updateDirtyState();
   showMessage("");
 }
@@ -872,37 +871,6 @@ async function refreshLocalStatus() {
       : provider.base_url;
     updateProviderCard(provider.provider_id, provider.status, provider.label, meta);
   });
-}
-
-async function refreshKeyPools() {
-  let pools = {};
-  try {
-    pools = (await api("/admin/api/providers/key-pools")).key_pools || {};
-  } catch {
-    return; // Pool health is advisory; never let it block the page.
-  }
-  Object.entries(pools).forEach(([providerId, pool]) => {
-    const card = document.querySelector(`[data-provider="${providerId}"]`);
-    if (!card) return;
-    let line = card.querySelector(".provider-pool");
-    if (!line) {
-      line = document.createElement("div");
-      line.className = "provider-pool";
-      card.querySelector(".provider-meta").after(line);
-    }
-    line.textContent = keyPoolSummary(pool);
-    line.dataset.degraded = pool.ready < pool.size ? "true" : "false";
-  });
-}
-
-function keyPoolSummary(pool) {
-  const parts = [`${pool.size} keys`, `${pool.ready} ready`];
-  if (pool.cooling) parts.push(`${pool.cooling} cooling`);
-  if (pool.retired) parts.push(`${pool.retired} retired`);
-  if (pool.ready === 0 && pool.soonest_ready_in !== null) {
-    parts.push(`next in ${pool.soonest_ready_in}s`);
-  }
-  return `Key pool: ${parts.join(" · ")}`;
 }
 
 async function testProvider(providerId, button) {

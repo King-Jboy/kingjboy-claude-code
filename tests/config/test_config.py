@@ -25,6 +25,84 @@ from free_claude_code.config.reasoning import ReasoningPreference
 class TestSettings:
     """Test Settings configuration."""
 
+    @pytest.mark.parametrize(
+        (
+            "provider_id",
+            "single_key_env",
+            "keys_env",
+            "keys_value",
+            "expected_keys",
+            "expected_rate",
+        ),
+        (
+            (
+                "nvidia_nim",
+                "NVIDIA_NIM_API_KEY",
+                "NVIDIA_NIM_API_KEYS",
+                '["nim-first", "nim-second"]',
+                ("nim-first", "nim-second"),
+                40,
+            ),
+            (
+                "open_router",
+                "OPENROUTER_API_KEY",
+                "OPENROUTER_API_KEYS",
+                "router-first, router-second",
+                ("router-first", "router-second"),
+                20,
+            ),
+        ),
+    )
+    def test_nim_and_openrouter_key_lists_override_single_credentials(
+        self,
+        monkeypatch,
+        provider_id,
+        single_key_env,
+        keys_env,
+        keys_value,
+        expected_keys,
+        expected_rate,
+    ):
+        """Only NIM and OpenRouter can resolve an ordered credential pool."""
+        from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
+        from free_claude_code.config.settings import Settings
+        from free_claude_code.providers.runtime.config import build_provider_config
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv(single_key_env, "single-key-that-must-not-win")
+        monkeypatch.setenv(keys_env, keys_value)
+
+        config = build_provider_config(PROVIDER_CATALOG[provider_id], Settings())
+
+        assert config.api_key == config.api_keys[0]
+        assert config.api_keys == expected_keys
+        assert config.key_rate_limit == expected_rate
+        assert config.rate_limit == expected_rate * len(expected_keys)
+        assert config.key_rate_window == 60.0
+
+    def test_key_pool_support_does_not_change_other_provider_credentials(
+        self, monkeypatch
+    ):
+        """A pool is an opt-in NIM/OpenRouter feature, not a global fallback."""
+        from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
+        from free_claude_code.config.settings import Settings
+        from free_claude_code.providers.runtime.config import (
+            build_provider_config,
+            has_provider_configuration,
+        )
+
+        monkeypatch.setitem(Settings.model_config, "env_file", ())
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-single")
+        descriptor = PROVIDER_CATALOG["deepseek"]
+        settings = Settings()
+
+        config = build_provider_config(descriptor, settings)
+
+        assert has_provider_configuration(descriptor, settings)
+        assert config.api_key == "deepseek-single"
+        assert config.api_keys == ()
+        assert config.key_rate_limit is None
+
     def test_settings_loads(self):
         """Ensure Settings can be instantiated."""
         from free_claude_code.config.settings import Settings
@@ -289,13 +367,11 @@ class TestSettings:
             {"PROVIDER_RATE_LIMIT": "0"},
             {"PROVIDER_RATE_WINDOW": "0"},
             {"PROVIDER_MAX_CONCURRENCY": "0"},
-            {"PROVIDER_MAX_POOLED_CONCURRENCY": "0"},
             {"PROVIDER_RATE_MARGIN": "nan"},
             {"PROVIDER_RATE_MARGIN": "1"},
             {"HTTP_READ_TIMEOUT": "0"},
             {"HTTP_WRITE_TIMEOUT": "-1"},
             {"HTTP_CONNECT_TIMEOUT": "nan"},
-            {"KEY_HEDGE_DELAY_SECONDS": "-0.1"},
             {"port": "0"},
         ],
     )

@@ -15,9 +15,9 @@ This handoff document provides an exhaustive, forensic account of all architectu
 Key milestones accomplished:
 1. **Performance Optimizations (`v6.20.10`, Commit `dff2aa38`)**: Reclaimed ~600ms stream holdback dead-time, capped runaway adaptive reasoning budgets to 2,048 tokens on NIM, eliminated synchronous token-counting event loop blocks via `asyncio.to_thread`, and made request snapshotting non-recursive.
 2. **CI Pipeline Hardening (`v6.20.11`, Commit `742ad031`)**: Fixed `ty` type checking on raw dictionary `tool_choice`, resolved `ruff SIM102` nested conditionals in reasoning policy, and formatted all 501 files. Verified full green CI on GitHub Actions run `34258612244`.
-3. **Rigorous Code Review & Surgical Hardening (`v6.20.12`, Commit `f3db6de0`)**: Deployed 6 specialized subagents across the entire codebase. Implemented 10 surgical fixes spanning HTTP/2 transport, loopback admin Host validation, DeepSeek Harness real-time tool streaming, alternating-role history replay, and monotonic key pool cooldowns.
+3. **Rigorous Code Review & Surgical Hardening (`v6.20.12`, Commit `f3db6de0`)**: Deployed 6 specialized subagents across the entire codebase. Implemented 10 surgical fixes spanning HTTP/2 transport, loopback admin Host validation, DeepSeek Harness real-time tool streaming, and alternating-role history replay.
 4. **Forensic Resolution of the Multi-Minute Stall Incident**: Investigated the 5m 31s Claude Code freeze (`* Leavening...`) and 2m 04s DeepSeek Harness stall (`Deep diving...`). Probed NVIDIA NIM live to isolate an upstream queue collapse on DeepSeek V4 endpoints, identified the 25-minute `ProviderAdmissionController` gate-lock episode and keepalive ping loop, and benchmarked alternatives—verifying that `nvidia_nim/minimaxai/minimax-m3` delivers instant **0.40s** responses with full tool calling.
-5. **Protocol, Streaming & Lifecycle Hardening (`v6.20.13`)**: Executed comprehensive code review and fixed critical protocol streaming bugs (custom tool argument delta routing and duplicate suppression, uncommitted ping frame holdback violation fix, empty chunk progress timeout contract adherence, trailing EOF SSE buffer preservation, monotonic key pool cooldown clamping, and ASGI lifespan cancellation failure reporting). Verified full CI test suite passes with zero type suppressions or legacy annotations.
+5. **Protocol, Streaming & Lifecycle Hardening (`v6.20.13`)**: Executed comprehensive code review and fixed critical protocol streaming bugs (custom tool argument delta routing and duplicate suppression, uncommitted ping frame holdback violation fix, empty chunk progress timeout contract adherence, trailing EOF SSE buffer preservation, and ASGI lifespan cancellation failure reporting). Verified full CI test suite passes with zero type suppressions or legacy annotations.
 
 ---
 
@@ -36,7 +36,6 @@ Key milestones accomplished:
 - **Service**: `fcc.service` (systemd unit: `/etc/systemd/system/fcc.service`)
 - **Environment**: `/home/ubuntu/.fcc/.env`
 - **Proxy Port**: `8082` (`0.0.0.0:8082` proxy ingress, `127.0.0.1:8082/admin` local admin)
-- **Active Credentials**: 14 NVIDIA NIM API keys in active pool rotation (`NVIDIA_NIM_API_KEYS`)
 
 ---
 
@@ -60,7 +59,7 @@ Key milestones accomplished:
 
 ### Phase 3: Comprehensive Code Review & Surgical Fixes (Released in `v6.20.12`, Commit `f3db6de0`)
 Following user instruction for an exhaustive codebase review under Karpathy guidelines, 6 audit subagents evaluated all subsystems:
-1. `Providers and Transport Auditor` (`providers/`, `key_pool.py`, `http.py`, `failure_policy.py`)
+1. `Providers and Transport Auditor` (`providers/`, `http.py`, `failure_policy.py`)
 2. `API and Protocol Auditor` (`api/handlers/messages.py`, `routes.py`, `response_streams.py`, `request_lifetime.py`)
 3. `Runtime and CLI Auditor` (`runtime/application.py`, `application/execution.py`, `routing.py`, `model_metadata.py`)
 4. `Reasoning Policy Auditor` (`application/reasoning.py`, `core/reasoning.py`, `config/reasoning.py`)
@@ -74,7 +73,6 @@ Following user instruction for an exhaustive codebase review under Karpathy guid
 4. `src/free_claude_code/core/openai_responses/tools.py`: Preserved `Error:` prefixes on tool outputs when translating to OpenAI format so models detect tool execution errors.
 5. `src/free_claude_code/core/anthropic/conversion.py`: Handled consecutive assistant turns with tool calls by appending tool calls across turns to strictly maintain alternating user/assistant roles.
 6. `src/free_claude_code/core/trace.py`: Added cycle detection and depth limits to `sanitize_trace_value` to prevent recursion errors on cyclical inputs.
-7. `src/free_claude_code/providers/key_pool.py`: Enforced monotonic cooldown timestamps so rapid consecutive 429 errors cannot artificially reduce cooldown periods.
 8. `src/free_claude_code/core/openai_responses/streaming/completion.py`: Handled null tool call arguments in the Responses API parser without raising `TypeError`.
 9. `src/free_claude_code/providers/openai_codex/provider.py`: Preserved whitespace and ignored empty SSE lines during Codex streaming chunks.
 10. `src/free_claude_code/runtime/asgi.py`: Caught `asyncio.CancelledError` during ASGI lifespan shutdown to ensure clean resource release without uncaught exceptions.
@@ -96,9 +94,6 @@ Following full codebase review across Standards, Spec, and Edge-Case axes under 
    - Added `_coalesce_openai_assistant_messages` to merge consecutive assistant turns into single turns, ensuring strict alternating user/assistant role compliance during history replay.
 6. `src/free_claude_code/core/anthropic/sse_aggregation.py`:
    - Preserved trailing buffer at stream EOF when upstream drops without trailing `\n\n`, avoiding payload truncation.
-7. `src/free_claude_code/providers/key_pool.py`:
-   - Enforced monotonic cooldown timestamps in `mark_failed` via `max(self.rate_limited_until, now + retry_after)`.
-   - Removed dead alias `ApiKeyPool = KeyPool`.
 8. `src/free_claude_code/runtime/asgi.py`:
    - Reported `{"type": "lifespan.shutdown.failed"}` on `asyncio.CancelledError` instead of falsely reporting completion.
 9. `src/free_claude_code/providers/deepseek/client.py`:

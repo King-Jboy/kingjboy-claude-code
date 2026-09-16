@@ -106,33 +106,6 @@ def test_an_explicit_window_overrides_the_recorded_one(
     assert finding.detail == "300,000 tokens (set by CLIENT_CONTEXT_WINDOW)"
 
 
-def test_a_configured_pool_reports_its_parsed_size() -> None:
-    settings = _settings(NVIDIA_NIM_API_KEYS='["a", "b", "c"]')
-
-    findings = list(doctor.check_key_pools(settings))
-
-    assert [(f.level, f.check, f.detail) for f in findings] == [
-        (Level.OK, "NVIDIA_NIM_API_KEYS", "3 keys pooled")
-    ]
-
-
-def test_a_single_key_warns_that_no_pool_is_built() -> None:
-    settings = _settings(NVIDIA_NIM_API_KEYS='["only"]')
-
-    (finding,) = list(doctor.check_key_pools(settings))
-
-    assert finding.level is Level.WARN
-    assert "no pool" in finding.detail
-
-
-def test_pool_env_names_come_from_the_manifest_not_from_upper_casing() -> None:
-    settings = _settings(OPENROUTER_API_KEYS='["a", "b"]')
-
-    (finding,) = list(doctor.check_key_pools(settings))
-
-    assert finding.check == "OPENROUTER_API_KEYS"
-
-
 def test_a_model_routed_to_an_unconfigured_provider_fails(monkeypatch) -> None:
     monkeypatch.setattr(doctor, "load_value_state", lambda: {})
     monkeypatch.setattr(

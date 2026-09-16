@@ -36,22 +36,6 @@ Evidence: `config/admin/persistence.py:68-95,200-213`, `config/admin/sources.py:
 
 Required test: first Admin save followed by restart must preserve each unedited Settings default.
 
-### P1 — Saturated LRU blocks capacity-ready key
-
-Selection checks cooldown/quota but not a key's sliding-window headroom. The sequential path selects the oldest key and waits for its limiter instead of trying a newer ready key. Direct reproduction with two keys: saturated A, ready B; the request selected A and waited 0.266 seconds.
-
-Evidence: `providers/key_pool.py:280-288,377-383`.
-
-Required test: an older saturated key and newer ready key must select the newer key immediately.
-
-### P1 — NIM 403 can cool the full pool
-
-Every `PermissionDeniedError` is classified as a key failure. The pool then walks all keys and applies a five-minute cooldown. NIM can use 403 for a model/request/policy refusal, so a forbidden request can sideline healthy credentials and make the next valid request fail pool-wide.
-
-Evidence: `providers/key_pool.py:120-144,325-332,377-394`; `README.md:323`.
-
-Required test: identical NIM 403 responses across a pool must return a request error without sidelining keys.
-
 ### P1 — Mid-stream recovery ignores admission backoff
 
 The first output chunk marks an attempt successful. A later retryable error creates recovery streams without entering admission retry/backoff or its shared recovery episode. A partially streamed timeout can therefore retry immediately, ignoring `Retry-After` and exponential delay.
@@ -83,18 +67,6 @@ Admin access trusts the immediate TCP peer being loopback and has no Admin authe
 Evidence: `api/admin_routes.py:73-86`.
 
 Required test: reverse-proxy topology must be denied without explicit trusted-proxy/Admin-auth configuration.
-
-### P2 — Hedge attempts bypass physical accounting
-
-One logical request acquires one admission permit, but hedging can open two physical upstream requests. With nonzero `KEY_HEDGE_DELAY_SECONDS`—1.5 seconds on the live server—actual upstream concurrency and RPM can approach double the configured limit.
-
-Evidence: `providers/openai_chat/provider.py:444-453`, `providers/key_pool.py:435-467`.
-
-### P2 — Admission never follows usable key count
-
-Aggregate admission is calculated once from configured pool size. Its retuning method has no caller when keys cool or recover, so traffic is admitted at the old N-key rate and waits inside a degraded pool.
-
-Evidence: `providers/runtime/factory.py:128-153`, `providers/admission.py:237-245`.
 
 ### P2 — NIM capability cache is global
 

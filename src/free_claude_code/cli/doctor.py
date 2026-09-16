@@ -1,9 +1,9 @@
 """Diagnose a Free Claude Code install before it fails mid-session.
 
 The checks here are the ones that otherwise only surface as confusing runtime
-behaviour: a model that quietly left a provider's free tier, a credential that
-expired, a pool that parsed to nothing. Each check reports one line so the
-output stays readable when everything is fine.
+behaviour: a model that quietly left a provider's free tier or a credential
+that expired. Each check reports one line so the output stays readable when
+everything is fine.
 
 This module stays inside the ``cli -> config, core`` import boundary. It never
 constructs a provider, so an offline run spends no credentials and cannot be
@@ -21,10 +21,8 @@ from enum import StrEnum
 import httpx
 from pydantic import ValidationError
 
-from free_claude_code.config.admin.manifest import FIELDS
 from free_claude_code.config.admin.status import provider_config_status
 from free_claude_code.config.admin.values import load_value_state
-from free_claude_code.config.api_keys import parse_api_key_list
 from free_claude_code.config.context_windows import (
     CONTEXT_WINDOWS_FILENAME,
     recorded_route_windows,
@@ -191,29 +189,6 @@ def check_context_window(settings: Settings) -> Iterator[Finding]:
     )
 
 
-def check_key_pools(settings: Settings) -> Iterator[Finding]:
-    """Report the parsed size of every configured credential pool."""
-    env_names = {field.settings_attr: field.key for field in FIELDS}
-    for descriptor in PROVIDER_CATALOG.values():
-        attr = descriptor.credential_pool_attr
-        if attr is None:
-            continue
-        raw = getattr(settings, attr, "") or ""
-        env_name = env_names.get(attr, attr.upper())
-        if not raw.strip():
-            continue
-        keys = parse_api_key_list(raw, env_name=env_name)
-        if len(keys) == 1:
-            yield Finding(
-                Level.WARN,
-                env_name,
-                "1 key, so no pool is built",
-                "Pools need two or more keys; the single key is used directly.",
-            )
-        else:
-            yield Finding(Level.OK, env_name, f"{len(keys)} keys pooled")
-
-
 def check_models_still_exist(settings: Settings) -> Iterator[Finding]:
     """Confirm each routed model is still advertised by its provider.
 
@@ -278,7 +253,6 @@ def collect_findings(settings: Settings, *, offline: bool) -> list[Finding]:
         *check_claude_cli(),
         *check_providers(settings),
         *check_context_window(settings),
-        *check_key_pools(settings),
     ]
     if not offline:
         findings.extend(check_models_still_exist(settings))

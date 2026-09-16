@@ -40,23 +40,24 @@ def test_routable_refs_are_the_pinned_list_plus_the_configured_routes() -> None:
     )
 
 
-def test_a_pool_supplies_the_probe_credentials_before_the_single_key() -> None:
+def test_the_single_key_is_used_for_probes() -> None:
+    settings = _settings(NVIDIA_NIM_API_KEY="single")
+
+    assert context_scan.nim_keys(settings) == ("single",)
+
+
+def test_a_nim_pool_supplies_probe_credentials_before_the_single_key() -> None:
     settings = _settings(
-        nvidia_nim_api_key="single", NVIDIA_NIM_API_KEYS='["pool-a", "pool-b"]'
+        NVIDIA_NIM_API_KEY="single",
+        NVIDIA_NIM_API_KEYS='["pool-a", "pool-b"]',
     )
 
     assert context_scan.nim_keys(settings) == ("pool-a", "pool-b")
 
 
-def test_the_single_key_is_used_when_no_pool_is_configured() -> None:
-    settings = _settings(nvidia_nim_api_key="single", NVIDIA_NIM_API_KEYS="")
-
-    assert context_scan.nim_keys(settings) == ("single",)
-
-
 def test_non_chat_models_are_never_probed() -> None:
     # Embedding and safety endpoints reject a chat prompt, so probing them
-    # only burns rate limit that pooled keys need for real models.
+    # only burns rate limit needed for real models.
     assert not context_scan.is_chat_model("nvidia/nv-embedqa-e5-v5")
     assert not context_scan.is_chat_model("meta/llama-guard-4-12b")
     assert context_scan.is_chat_model("deepseek-ai/deepseek-v4-pro")
@@ -212,9 +213,7 @@ def test_an_already_measured_model_is_not_probed_again(
     monkeypatch.setattr(
         context_scan,
         "Settings",
-        lambda: _settings(
-            model="nvidia_nim/known/model", NVIDIA_NIM_API_KEYS='["a", "b"]'
-        ),
+        lambda: _settings(model="nvidia_nim/known/model", nvidia_nim_api_key="a"),
     )
     with respx.mock:
         chat = respx.post(NIM_CHAT_URL).mock(return_value=httpx.Response(400, json={}))
@@ -242,7 +241,7 @@ def test_a_hand_written_window_is_kept_verbatim(
         context_scan,
         "Settings",
         lambda: _settings(
-            model="nvidia_nim/unmeasurable/model", NVIDIA_NIM_API_KEYS='["a", "b"]'
+            model="nvidia_nim/unmeasurable/model", nvidia_nim_api_key="a"
         ),
     )
     with respx.mock:
@@ -266,9 +265,7 @@ def test_refresh_re_probes_a_recorded_model(
     monkeypatch.setattr(
         context_scan,
         "Settings",
-        lambda: _settings(
-            model="nvidia_nim/known/model", NVIDIA_NIM_API_KEYS='["a", "b"]'
-        ),
+        lambda: _settings(model="nvidia_nim/known/model", nvidia_nim_api_key="a"),
     )
     with respx.mock:
         respx.post(NIM_CHAT_URL).mock(
@@ -425,7 +422,7 @@ def test_no_probe_leaves_new_models_unresolved(
     monkeypatch.setattr(
         context_scan,
         "Settings",
-        lambda: _settings(model="nvidia_nim/new/model", NVIDIA_NIM_API_KEYS='["a"]'),
+        lambda: _settings(model="nvidia_nim/new/model", nvidia_nim_api_key="a"),
     )
     with respx.mock:
         chat = respx.post(NIM_CHAT_URL).mock(
@@ -442,7 +439,7 @@ def test_no_probe_leaves_new_models_unresolved(
     assert "| `new/model` | unknown | not probed (--no-probe) |" in written
 
 
-def test_a_rate_limited_probe_waits_and_retries_on_another_key(
+def test_a_rate_limited_probe_waits_and_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A 429 is the scan's own pacing, not the model's ceiling: recording it as
@@ -463,7 +460,7 @@ def test_a_rate_limited_probe_waits_and_retries_on_another_key(
 
         row = context_scan.nim_rows(
             _nim_args(),
-            _settings(NVIDIA_NIM_API_KEYS='["a", "b"]'),
+            _settings(nvidia_nim_api_key="a"),
             {},
             frozenset({"model"}),
         )[0]

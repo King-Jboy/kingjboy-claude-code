@@ -33,7 +33,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 - **Dynamic 1M Context Auto-Resolution**: Automatic per-model context allocation (1,048,576 tokens for DeepSeek V4 & Kimi K3, 262,144 for MiniMax M3) with instant 0.0s `fcc-context` lookups.
 - **Multi-Agent Launchers**: Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, Pi with `fcc-pi`, Hermes with `fcc-hermes`, DeepSeek Harness with `fcc-dsh`, or Grok Build with `fcc-grok`.
 - **Desktop Launcher**: Run FCC in the background on Windows/macOS with native system tray control.
-- **Provider Switching & Key Pooling**: Switch among 14 cloud and local providers from the Admin UI, and pool multiple NVIDIA NIM or OpenRouter keys into one self-healing virtual key.
+- **Provider Switching**: Switch among 14 cloud and local providers from the Admin UI.
 - **Diagnostics**: Inspect your entire environment and model catalogs in one command with `fcc-doctor`.
 - **Chrome Side Panel**: Debug active tabs from a side panel with `fcc-extension`.
 - **Integrations**: Discord and Telegram bridge with voice-note transcription.
@@ -301,35 +301,6 @@ Open **Admin UI → Model Config → Reasoning** and select the behavior you wan
 
 Providers that do not support a selected control retain their own behavior.
 
-### Key Pools (NVIDIA NIM and OpenRouter)
-
-If you hold several API keys for NVIDIA NIM or OpenRouter, FCC can treat them as one virtual key. Open **Admin UI → Providers**, find **NVIDIA NIM API Key Pool** or **OpenRouter API Key Pool**, and paste a JSON list:
-
-```json
-["key-one", "key-two", "key-three"]
-```
-
-Click **Validate**, then **Apply**. There is no limit on how many keys you add, and the pool replaces the single API key field for that provider.
-
-Each key gets its own rate-limit window, and all keys run at the same time, so the pool's throughput is the sum of its keys rather than one key's ceiling. Per request, FCC picks the least-recently-used available key, which keeps the pool evenly distributed.
-
-| Upstream response | What FCC does |
-| --- | --- |
-| `401` | Cools that key for 5 minutes, then immediately tries another. Three refusals in a row lengthen the cooldown to 20 minutes; it is never permanent. |
-| `403` | Cools that key for 60 seconds and tries another, but does **not** treat it as a dead key. |
-| `429` | Cools that key until the reset time the provider reported (60 seconds if it reported none), then immediately tries another. |
-| `5xx`, timeout, connection error | Treats it as a backend problem, not a key problem, and applies the normal shared backoff. |
-
-`401` and `403` are handled differently because providers disagree about which one means "bad key". OpenRouter answers `401`, which is unambiguous. NVIDIA NIM answers `403` — but other providers use `403` to refuse the *request* (content policy, or a model the account cannot reach). Retiring on `403` would let a single refused prompt walk the pool and kill every key. So a `403` only sidelines its key; the error is reported to you unchanged once **every** key has refused the same request alike, which is the only proof that the request, not the keys, was at fault.
-
-Before an upstream request, FCC also enforces each key's independent RPM window: `NVIDIA_NIM_KEY_RATE_LIMIT` defaults to 40 and `OPENROUTER_KEY_RATE_LIMIT` defaults to 20. A saturated key waits only for its own next slot; it does not spend or throttle another key's budget. When a provider states its own reset time (`Retry-After` or `X-RateLimit-Reset`) FCC also cools that key for exactly that long. Any successful request clears a key's failure streak, so a key that starts working again returns to rotation on its own.
-
-For OpenRouter you can also give each key a daily usage budget (`OPENROUTER_KEY_USAGE_LIMIT`, default 1000 uses per key per 24h; `0` disables it). A key that reaches its budget sits out until the window rolls over, which models the free-tier daily cap locally instead of paying a `429` for the surplus requests.
-
-One key alone behaves exactly as before, so there is nothing to change if you only have one. Key health is held in memory and resets when FCC restarts. Live pool health appears on each provider card in **Admin UI → Providers** (`Key pool: 14 keys · 12 ready · 2 cooling`), and `fcc-doctor` reports the configured pool sizes.
-
-> **OpenRouter note:** OpenRouter applies free-tier limits per *account*. Keys minted from separate accounts therefore multiply your throughput; several keys on one account give you redundancy rather than more headroom.
-
 ### Web Search
 
 Claude Code's WebSearch tool works through FCC on every provider: the proxy
@@ -351,12 +322,11 @@ fcc-doctor
 [  ok  ] server port: 8082 is free
 [  ok  ] claude cli: /home/you/.local/bin/claude
 [  ok  ] MODEL: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
-[  ok  ] NVIDIA_NIM_API_KEYS: 13 keys pooled
 [ FAIL ] MODEL catalog: open_router no longer advertises moonshotai/kimi-k2.6:free
          -> Pick a current model in the Admin UI; providers retire these silently.
 ```
 
-It checks that your managed env file exists, that every routed model points at a configured provider, that each key pool parses to the size you expect, whether the port is already serving, and whether the Claude Code CLI is on PATH. It also asks each provider whether your configured model is *still* in its catalog — providers move models off their free tiers without warning, and otherwise you only find out when a request fails mid-session.
+It checks that your managed env file exists, that every routed model points at a configured provider, whether the port is already serving, and whether the Claude Code CLI is on PATH. It also asks each provider whether your configured model is *still* in its catalog — providers move models off their free tiers without warning, and otherwise you only find out when a request fails mid-session.
 
 | Flag | Effect |
 | --- | --- |
@@ -738,13 +708,7 @@ Everything below is additional to upstream [Alishahryar1/free-claude-code](https
 
 **A Chrome side panel.** `fcc-extension` ships a Manifest V3 extension that talks to your local proxy from a panel beside the page you are developing, with tools that read the DOM and that tab's console — so debugging a page no longer means pasting a stack trace into a terminal. Optionally it runs shell commands too, through the `fcc-bridge` native messaging host. That path is gated behind a per-extension registration, a `BROWSER_SHELL_ENABLED` switch, per-command approval in the panel, and a directory confinement — because an HTTP exec endpoint would create an unnecessary network execution surface. See [Connect Your Client](#connect-your-client).
 
-**Credential pooling.** `NVIDIA_NIM_API_KEYS` and `OPENROUTER_API_KEYS` accept a JSON list of keys that behave as one high-throughput, self-healing virtual key. Requests rotate across the pool, dead keys are walked past and probed again later, and rate-limited keys are cooled for exactly as long as the provider asked. See [Key Pools](#key-pools-nvidia-nim-and-openrouter).
-
-Verified live against both providers: 20 concurrent requests spread across all 14 OpenRouter keys, and a request still succeeded with three dead keys sitting in front of the working ones.
-
-**`fcc-doctor`.** A one-command health check for config, pools, ports, and — the useful part — whether your configured model is still in its provider's catalog. See [Checking Your Setup](#checking-your-setup).
-
-**Pool visibility in the Admin UI.** Each pooled provider card shows live key health, so silent capacity loss is visible instead of showing up as unexplained slowness.
+**`fcc-doctor`.** A one-command health check for configuration, ports, and — the useful part — whether your configured model is still in its provider's catalog. See [Checking Your Setup](#checking-your-setup).
 
 **Admin saves no longer delete unrecognised variables.** Upstream rewrites `~/.fcc/.env` from its field manifest alone, which silently dropped any variable it did not own. Hand-added variables are now preserved; genuinely retired settings are still cleaned up.
 

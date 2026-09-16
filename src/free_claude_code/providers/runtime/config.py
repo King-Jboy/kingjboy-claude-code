@@ -3,10 +3,23 @@
 from math import ceil
 
 from free_claude_code.application.errors import ApplicationUnavailableError
-from free_claude_code.config.api_keys import parse_api_key_list
+from free_claude_code.config.api_key_pool import parse_api_key_pool
 from free_claude_code.config.provider_catalog import ProviderDescriptor
 from free_claude_code.config.settings import Settings
 from free_claude_code.providers.base import ProviderConfig
+
+_POOL_SETTINGS_BY_PROVIDER = {
+    "nvidia_nim": (
+        "nvidia_nim_api_keys",
+        "nvidia_nim_key_rate_limit",
+        40,
+    ),
+    "open_router": (
+        "open_router_api_keys",
+        "open_router_key_rate_limit",
+        20,
+    ),
+}
 
 
 def string_setting(settings: Settings, attr_name: str | None, default: str = "") -> str:
@@ -15,17 +28,6 @@ def string_setting(settings: Settings, attr_name: str | None, default: str = "")
         return default
     value = getattr(settings, attr_name, default)
     return value if isinstance(value, str) else default
-
-
-def provider_credential_pool(
-    descriptor: ProviderDescriptor, settings: Settings
-) -> tuple[str, ...]:
-    """Return the configured pool of interchangeable keys, if this provider has one."""
-    if descriptor.credential_pool_attr is None:
-        return ()
-    raw = string_setting(settings, descriptor.credential_pool_attr)
-    env_name = descriptor.credential_pool_attr.upper()
-    return parse_api_key_list(raw, env_name=env_name)
 
 
 def numeric_setting(settings: Settings, attr_name: str, default: float) -> float:
@@ -72,15 +74,14 @@ def rate_with_margin(limit: int, margin: float) -> int:
 def resolve_rate_policy(
     descriptor: ProviderDescriptor, settings: Settings
 ) -> tuple[int, float]:
-    """Return the per-key request quota and window to pace this provider at.
+    """Return the request quota and window to pace this provider at.
 
     Precedence is operator, then provider, then global default: an explicitly
     configured setting always wins, otherwise the provider's own published quota
     beats a shared default that cannot be right for every provider at once.
 
-    The margin is applied here, to the per-key figure, because the provider-wide
-    gate is built as ``per_key * pool_size``. Shaving once at this level keeps
-    both tiers agreeing on capacity instead of cushioning the total twice.
+    The margin is applied once at this provider-wide gate so the local limit
+    leaves room for transport latency and clock skew.
     """
     limit = int(numeric_setting(settings, "provider_rate_limit", 40))
     window = numeric_setting(settings, "provider_rate_window", 60.0)
@@ -96,69 +97,35 @@ def resolve_rate_policy(
     return rate_with_margin(limit, margin), window
 
 
-def resolve_key_usage_policy(
-    descriptor: ProviderDescriptor, settings: Settings
-) -> tuple[int, float | None]:
-    """Return the usage budget per pooled key and its rolling window.
-
-    Providers meter keys differently, so the budget follows the provider: a
-    provider whose free tier caps calls per key on a schedule (OpenRouter's
-    daily quota) counts uses against a window; one rate-limited per minute
-    instead (NVIDIA NIM) needs no local budget at all because the reactive
-    ``429`` cooldowns already model it. Zero meters nothing.
-    """
-    limits: dict[str, tuple[str, float | None]] = {
-        # OpenRouter: 1000 calls per key per day on the free tier.
-        "open_router": ("open_router_key_usage_limit", 86400.0),
-        # NIM's free tier is rate-limited per minute, not by a consumable
-        # budget, so the reactive cooldowns carry it alone.
-        "nvidia_nim": ("nvidia_nim_key_usage_limit", None),
-    }
-    entry = limits.get(descriptor.provider_id)
-    if entry is None:
-        return 0, None
-    attr, window = entry
-    limit = numeric_setting(settings, attr, 0.0)
-    if limit <= 0:
-        return 0, None
-    return int(limit), window
-
-
-def resolve_key_rate_policy(
-    descriptor: ProviderDescriptor, settings: Settings
-) -> tuple[int, float]:
-    """Return the proactive request budget for one key in a configured pool.
-
-    Pool-level admission protects the aggregate provider budget.  It cannot
-    guarantee that one credential stays inside its own upstream RPM allowance,
-    so the two providers with supported credential pools retain independent
-    key windows just as the original pool implementation did.
-    """
-    limits = {
-        "open_router": ("open_router_key_rate_limit", 20),
-        "nvidia_nim": ("nvidia_nim_key_rate_limit", 40),
-    }
-    entry = limits.get(descriptor.provider_id)
-    if entry is None:
-        return 0, 60.0
-    attr, default = entry
-    return max(0, int(numeric_setting(settings, attr, default))), 60.0
-
-
 def provider_credential(descriptor: ProviderDescriptor, settings: Settings) -> str:
-    """Return the configured credential for a provider descriptor.
-
-    A pool stands in for the single credential when only the pool is configured,
-    so the shared client and preflight paths always hold a usable key.
-    """
+    """Return the configured credential for a provider descriptor."""
     if descriptor.static_credential is not None:
         return descriptor.static_credential
+    credentials = provider_credentials(descriptor, settings)
+    if credentials:
+        return credentials[0]
     if descriptor.credential_attr:
         credential = string_setting(settings, descriptor.credential_attr)
         if credential.strip():
             return credential
-    pool = provider_credential_pool(descriptor, settings)
-    return pool[0] if pool else ""
+    return ""
+
+
+def provider_credentials(
+    descriptor: ProviderDescriptor, settings: Settings
+) -> tuple[str, ...]:
+    """Return configured NIM/OpenRouter credentials in rotation order."""
+    pool_settings = _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id)
+    if pool_settings is None:
+        return ()
+    pool_value = string_setting(settings, pool_settings[0])
+    if pool_value.strip():
+        return parse_api_key_pool(pool_value)
+    if descriptor.credential_attr:
+        credential = string_setting(settings, descriptor.credential_attr)
+        if credential.strip():
+            return (credential,)
+    return ()
 
 
 def has_provider_configuration(
@@ -174,12 +141,12 @@ def has_provider_configuration(
 def _attr_configured(
     descriptor: ProviderDescriptor, settings: Settings, attr: str
 ) -> bool:
-    if string_setting(settings, attr).strip():
-        return True
-    # A configured key pool makes its singular credential attribute redundant.
-    return attr == descriptor.credential_attr and bool(
-        provider_credential_pool(descriptor, settings)
-    )
+    if (
+        attr == descriptor.credential_attr
+        and descriptor.provider_id in _POOL_SETTINGS_BY_PROVIDER
+    ):
+        return bool(provider_credentials(descriptor, settings))
+    return bool(string_setting(settings, attr).strip())
 
 
 def require_provider_credential(
@@ -200,7 +167,8 @@ def build_provider_config(
     descriptor: ProviderDescriptor, settings: Settings
 ) -> ProviderConfig:
     """Build shared provider configuration for one provider descriptor."""
-    credential = provider_credential(descriptor, settings)
+    api_keys = provider_credentials(descriptor, settings)
+    credential = api_keys[0] if api_keys else provider_credential(descriptor, settings)
     require_provider_credential(descriptor, credential)
     base_url = string_setting(
         settings, descriptor.base_url_attr, descriptor.default_base_url or ""
@@ -217,20 +185,18 @@ def build_provider_config(
             f"{env_name} is not set. Add it to your .env file."
         )
     proxy = string_setting(settings, descriptor.proxy_attr)
-    # A single configured key is not a pool: leaving it empty keeps single-key
-    # setups on the existing provider-wide admission path unchanged.
-    pool = provider_credential_pool(descriptor, settings)
     rate_limit, rate_window = resolve_rate_policy(descriptor, settings)
-    key_usage_limit, key_usage_window = resolve_key_usage_policy(descriptor, settings)
-    key_rate_limit, key_rate_window = resolve_key_rate_policy(descriptor, settings)
+    key_rate_limit: int | None = None
+    if pool_settings := _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id):
+        key_rate_limit = int(numeric_setting(settings, pool_settings[1], pool_settings[2]))
+        rate_limit = key_rate_limit * len(api_keys)
+        rate_window = 60.0
     return ProviderConfig(
         api_key=credential,
         base_url=resolved_base_url,
-        api_keys=pool if len(pool) > 1 else (),
-        key_usage_limit=key_usage_limit,
-        key_usage_window_seconds=key_usage_window,
+        api_keys=api_keys,
         key_rate_limit=key_rate_limit,
-        key_rate_window=key_rate_window,
+        key_rate_window=60.0,
         rate_limit=rate_limit,
         rate_window=rate_window,
         max_concurrency=settings.provider_max_concurrency,
@@ -240,5 +206,4 @@ def build_provider_config(
         proxy=proxy,
         log_raw_sse_events=settings.log_raw_sse_events,
         log_api_error_tracebacks=settings.log_api_error_tracebacks,
-        key_hedge_delay_seconds=settings.key_hedge_delay_seconds,
     )

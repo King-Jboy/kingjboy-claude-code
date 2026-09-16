@@ -54,9 +54,6 @@ const ui = {
   model: document.getElementById("model"),
   pageTools: document.getElementById("page-tools"),
   shellState: document.getElementById("shell-state"),
-  pools: document.getElementById("pools"),
-  poolsBody: document.getElementById("pools-body"),
-  poolsRefresh: document.getElementById("pools-refresh"),
   transcript: document.getElementById("transcript"),
   usage: document.getElementById("usage"),
   pinBar: document.getElementById("pin-bar"),
@@ -249,61 +246,7 @@ async function connect(settings) {
   await saveSettings({ ...settings, model: ui.model.value });
   setStatus("connected", "ok");
   setNote("");
-  void refreshPools({ ...settings, model: ui.model.value });
   return true;
-}
-
-// ---------- pool health ----------
-
-function poolRow(id, pool) {
-  const row = document.createElement("p");
-  row.className = "pools-row";
-  const main = document.createElement("span");
-  main.textContent = `${id}  ${pool.ready}/${pool.size} ready`;
-  row.append(main);
-
-  const notes = [];
-  if (pool.cooling) {
-    notes.push(`${pool.cooling} cooling${pool.soonest_ready_in ? ` (${Math.ceil(pool.soonest_ready_in)}s)` : ""}`);
-  }
-  if (pool.retired) notes.push(`${pool.retired} retired`);
-  if (notes.length) {
-    const detail = document.createElement("span");
-    detail.className = "pools-note";
-    detail.textContent = ` · ${notes.join(" · ")}`;
-    row.append(detail);
-  }
-  return row;
-}
-
-function renderPools(pools) {
-  const entries = Object.entries(pools ?? {});
-  ui.pools.hidden = !entries.length;
-  ui.poolsBody.replaceChildren();
-  for (const [id, pool] of entries) ui.poolsBody.append(poolRow(id, pool));
-}
-
-/**
- * Key-pool counts from the proxy, in the settings sheet.
- *
- * Failure hides the section rather than reporting it: a proxy without the
- * endpoint (older release) or one that is down is already covered by the
- * connection status, and a broken-looking pools block would only duplicate
- * that signal in the wrong place.
- */
-async function refreshPools(settings) {
-  try {
-    const response = await fetch(`${settings.baseUrl}/api/pool-status`, {
-      headers: authHeaders(settings),
-    });
-    if (!response.ok) {
-      ui.pools.hidden = true;
-      return;
-    }
-    renderPools((await response.json()).key_pools);
-  } catch {
-    ui.pools.hidden = true;
-  }
 }
 
 // ---------- transcript ----------
@@ -623,8 +566,8 @@ function formatTokens(count) {
  * What this conversation has spent, from each request's final usage frame.
  *
  * Input is summed across requests rather than read from the last one, because
- * every round replays the whole history: the sum is what actually billed
- * against the key pool, which is the number the user watches.
+ * every round replays the whole history: the sum is the total work done in
+ * the conversation, which is the number the user watches.
  */
 function renderUsage() {
   if (!usageTotals.input && !usageTotals.output) {
@@ -985,8 +928,6 @@ ui.clear.addEventListener("click", () => {
 });
 
 ui.stop.addEventListener("click", () => stopController?.abort());
-
-ui.poolsRefresh.addEventListener("click", () => void refreshPools(currentSettings()));
 
 ui.rePin.addEventListener("click", () => void pinActiveTab());
 

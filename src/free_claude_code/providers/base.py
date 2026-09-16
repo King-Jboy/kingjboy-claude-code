@@ -15,7 +15,6 @@ from free_claude_code.core.diagnostics import (
 )
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
 from free_claude_code.core.trace import trace_event
-from free_claude_code.providers.key_pool import KeyPoolStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +27,9 @@ class ProviderConfig:
 
     api_key: str
     base_url: str
+    api_keys: tuple[str, ...] = ()
+    key_rate_limit: int | None = None
+    key_rate_window: float = 60.0
     rate_limit: int | None = None
     rate_window: float = 60.0
     max_concurrency: int = 5
@@ -37,21 +39,6 @@ class ProviderConfig:
     proxy: str = ""
     log_raw_sse_events: bool = False
     log_api_error_tracebacks: bool = False
-    # Interchangeable credentials for providers whose catalog entry declares a
-    # key pool. Empty for every provider configured with a single credential,
-    # and populated only when two or more keys make a pool meaningful.
-    api_keys: tuple[str, ...] = ()
-    # Usage budget per pooled key, in served requests. Zero meters nothing;
-    # providers whose free tier caps calls per key (OpenRouter's daily quota)
-    # set a positive limit, optionally rolling over on a window.
-    key_usage_limit: int = 0
-    key_usage_window_seconds: float | None = None
-    # Requests-per-window budget for each individual key in a pool.  This is
-    # intentionally distinct from the provider admission budget, which is the
-    # sum of every usable key's budget.
-    key_rate_limit: int = 0
-    key_rate_window: float = 60.0
-    key_hedge_delay_seconds: float = 0.0
 
 
 class BaseProvider(ABC):
@@ -115,10 +102,6 @@ class BaseProvider(ABC):
     @abstractmethod
     async def cleanup(self) -> None:
         """Release any resources held by this provider."""
-
-    def key_pool_status(self) -> KeyPoolStatus | None:
-        """Return pooled-credential health, or ``None`` when not pooled."""
-        return None
 
     @abstractmethod
     async def list_model_infos(self) -> frozenset[ProviderModelInfo]:

@@ -5,7 +5,6 @@ from collections.abc import Callable, MutableMapping
 
 from free_claude_code.config.settings import Settings
 from free_claude_code.providers.base import BaseProvider
-from free_claude_code.providers.key_pool import KeyPoolStatus
 
 from .factory import create_provider
 
@@ -29,15 +28,6 @@ class ProviderRuntime:
     def is_cached(self, provider_id: str) -> bool:
         """Return whether a provider for this id is already cached."""
         return provider_id in self._providers
-
-    def key_pool_status(self) -> dict[str, KeyPoolStatus]:
-        """Return pool health per already-constructed provider."""
-        statuses: dict[str, KeyPoolStatus] = {}
-        for provider_id, provider in self._providers.items():
-            status = provider.key_pool_status()
-            if status is not None:
-                statuses[provider_id] = status
-        return statuses
 
     def resolve_provider(self, provider_id: str) -> BaseProvider:
         """Return an existing provider or create it lazily."""

@@ -4,7 +4,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import openai
 import pytest
+from httpx2 import Request, Response
 
 from free_claude_code.application.errors import InvalidRequestError
 from free_claude_code.config.constants import ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS
@@ -329,6 +331,53 @@ async def test_stream_maps_reasoning_content_and_details(open_router_provider):
     assert "opaque" in event_text
     assert text_content(parsed) == "done"
     assert stream.closed
+
+
+@pytest.mark.asyncio
+async def test_stream_rotates_to_the_next_pool_key_after_a_rate_limit():
+    """A 429 on one OpenRouter key must not block a healthy pool peer."""
+    provider = OpenRouterProvider(
+        ProviderConfig(
+            api_key="router-first",
+            api_keys=("router-first", "router-second"),
+            key_rate_limit=20,
+            base_url="https://openrouter.ai/api/v1",
+            rate_limit=40,
+            rate_window=60,
+        ),
+        admission=immediate_admission(),
+    )
+    response = Response(
+        status_code=429,
+        request=Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+    )
+    first = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(
+                    side_effect=openai.RateLimitError(
+                        "rate limited", response=response, body={}
+                    )
+                )
+            )
+        )
+    )
+    second_stream = AsyncStream([_chunk(content="rotated", finish_reason="stop")])
+    second = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock(return_value=second_stream))
+        )
+    )
+    clients = {"router-first": first, "router-second": second}
+    provider._client.with_options = MagicMock(
+        side_effect=lambda *, api_key: clients[api_key]
+    )
+
+    events = [event async for event in provider.stream_response(make_request())]
+
+    assert text_content(parse_sse_text("".join(events))) == "rotated"
+    first.chat.completions.create.assert_awaited_once()
+    second.chat.completions.create.assert_awaited_once()
 
 
 @pytest.mark.asyncio

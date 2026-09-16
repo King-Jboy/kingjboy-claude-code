@@ -10,7 +10,13 @@ from typing import Any
 
 import httpx2
 from loguru import logger
-from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
+from openai import (
+    AsyncOpenAI,
+    AuthenticationError,
+    DefaultAsyncHttpx2Client,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
 from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.core.anthropic import (
@@ -54,7 +60,7 @@ from free_claude_code.providers.http import (
     close_provider_stream,
     maybe_await_aclose,
 )
-from free_claude_code.providers.key_pool import KeyPool, KeyPoolStatus
+from free_claude_code.providers.key_pool import ApiKeyPool
 from free_claude_code.providers.model_listing import extract_openai_model_infos
 from free_claude_code.providers.stream_recovery import (
     RecoveryController,
@@ -241,17 +247,15 @@ class OpenAIChatProvider(BaseProvider):
         self._admission = admission
         self._default_headers = default_headers
         self._client = self._build_client(api_key_provider or self._api_key)
-        self._key_pool = self._build_key_pool(config.api_keys)
-        pool = self._key_pool
-        if pool is not None:
-            per_key_rate = config.rate_limit or 40
-            self._admission.set_rate_limit_supplier(
-                lambda: per_key_rate * pool.usable_key_count()
+        self._key_pool = (
+            ApiKeyPool(
+                config.api_keys,
+                rate_limit=config.key_rate_limit,
+                rate_window=config.key_rate_window,
             )
-
-    def _client_for_key(self, key: str) -> AsyncOpenAI:
-        """Return a client view bound to ``key`` reusing the underlying connection pool."""
-        return self._client.with_options(api_key=key)
+            if config.api_keys and config.key_rate_limit is not None
+            else None
+        )
 
     def _build_client(
         self, credential: str | OpenAIAsyncCredentialProvider
@@ -284,39 +288,11 @@ class OpenAIChatProvider(BaseProvider):
             http_client=http_client,
         )
 
-    def _build_key_pool(self, api_keys: tuple[str, ...]) -> KeyPool | None:
-        """Build a pool only when more than one credential is configured."""
-        if len(api_keys) < 2:
-            return None
-        config = self._config
-        return KeyPool(
-            api_keys,
-            provider_name=self._provider_name,
-            client_factory=self._client_for_key,
-            usage_limit=config.key_usage_limit,
-            usage_window_seconds=config.key_usage_window_seconds,
-            key_rate_limit=config.key_rate_limit,
-            key_rate_window=config.key_rate_window,
-            hedge_delay_seconds=config.key_hedge_delay_seconds,
-            hedge_permit_factory=self._admission.open_hedge_permit,
-            rotate_on_permission_denied=self._rotate_on_permission_denied(),
-        )
-
-    def key_pool_status(self) -> KeyPoolStatus | None:
-        """Return pooled-credential health when this provider pools keys."""
-        pool = getattr(self, "_key_pool", None)
-        return None if pool is None else pool.status()
-
     async def cleanup(self) -> None:
         """Release HTTP client resources."""
-        try:
-            client = getattr(self, "_client", None)
-            if client is not None:
-                await client.close()
-        finally:
-            pool = getattr(self, "_key_pool", None)
-            if pool is not None:
-                await pool.aclose()
+        client = getattr(self, "_client", None)
+        if client is not None:
+            await client.close()
 
     async def list_model_infos(self) -> frozenset[ProviderModelInfo]:
         """Return model metadata from the OpenAI-compatible models endpoint."""
@@ -327,16 +303,8 @@ class OpenAIChatProvider(BaseProvider):
 
     async def _list_models_payload(self) -> Any:
         """Fetch one OpenAI-compatible model-list payload with shared retries."""
-        pool = self._key_pool
-        operation = (
-            self._client.models.list
-            if pool is None
-            else lambda: pool.run_key_local(
-                lambda client: client.models.list(), proves_credential=False
-            )
-        )
         payload = await self._admission.run_with_retry(
-            operation,
+            self._client.models.list,
             provider_failure_override=self._provider_failure_override,
         )
         return payload
@@ -404,10 +372,6 @@ class OpenAIChatProvider(BaseProvider):
     def _provider_failure_override(self, error: Exception) -> ExecutionFailure | None:
         """Return provider-specific failure semantics, or defer to shared policy."""
         return None
-
-    def _rotate_on_permission_denied(self) -> bool:
-        """Return whether a 403 is reliable evidence that this key is unusable."""
-        return True
 
     def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """Return the body passed to the upstream OpenAI-compatible client."""
@@ -493,18 +457,35 @@ class OpenAIChatProvider(BaseProvider):
         raise RuntimeError("provider retry session exhausted without a final error")
 
     async def _open_chat_stream(self, create_body: dict[str, Any]) -> Any:
-        """Open one upstream stream, hopping past key-local failures when pooled."""
-        pool = self._key_pool
-        if pool is None:
-            return await self._client.chat.completions.create(
-                **create_body,
-                stream=True,
-            )
-        return await pool.run_key_local(
-            lambda client: client.chat.completions.create(
-                **create_body,
-                stream=True,
-            )
+        """Open one upstream stream."""
+        if self._key_pool is not None:
+            last_error: Exception | None = None
+            for _ in self._config.api_keys:
+                key = self._key_pool.get_next_key()
+                if key is None:
+                    break
+                try:
+                    stream = await self._client.with_options(
+                        api_key=key
+                    ).chat.completions.create(
+                        **create_body,
+                        stream=True,
+                    )
+                except (AuthenticationError, PermissionDeniedError) as error:
+                    self._key_pool.mark_failed(key)
+                    last_error = error
+                except RateLimitError as error:
+                    self._key_pool.mark_rate_limited(key)
+                    last_error = error
+                else:
+                    self._key_pool.mark_succeeded(key)
+                    return stream
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No API key in the configured pool is currently available.")
+        return await self._client.chat.completions.create(
+            **create_body,
+            stream=True,
         )
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
@@ -700,7 +681,7 @@ class _OpenAIChatStreamRunner:
             try:
                 # Opening the stream is the other place this request can go
                 # quiet, and the longer of the two: it covers admission, the
-                # pooled-key wait, the connect, and however long the model takes
+                # connect, and however long the model takes
                 # to return response headers. Measured at 209s on a loaded NIM
                 # model, against a client that gives up at 20.
                 create_task = asyncio.ensure_future(
@@ -996,7 +977,7 @@ class _OpenAIChatStreamRunner:
                         name="fcc-provider-midstream-recovery",
                     )
                     try:
-                        # Recovery can wait on upstream admission or a pooled key.
+                        # Recovery can wait on upstream admission.
                         # Keep-alive frames are only safe once this response is
                         # already committed; before that, the HTTP boundary must
                         # stay free to report a failure as typed non-2xx JSON.

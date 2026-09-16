@@ -234,12 +234,16 @@ def test_create_provider_instantiates_each_builtin():
 
             assert isinstance(provider, provider_cls)
             assert provider._admission is sentinel_admission
+            expected_rate, expected_window = {
+                # Pool providers keep their published per-key RPM even when a
+                # shared non-pool override is configured.
+                "nvidia_nim": (40, 60.0),
+                "open_router": (20, 60.0),
+            }.get(provider_id, (6, 11))
             admission_factory.assert_called_once_with(
                 provider_name=provider_id,
-                # An explicitly configured quota overrides the provider's own,
-                # then the safety margin holds back one whole request from it.
-                rate_limit=6,
-                rate_window=11,
+                rate_limit=expected_rate,
+                rate_window=expected_window,
                 max_concurrency=3,
             )
             admission_factory.reset_mock()

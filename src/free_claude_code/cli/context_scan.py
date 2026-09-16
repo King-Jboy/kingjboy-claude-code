@@ -47,7 +47,7 @@ from pathlib import Path
 import httpx
 from pydantic import ValidationError
 
-from free_claude_code.config.api_keys import parse_api_key_list
+from free_claude_code.config.api_key_pool import parse_api_key_pool
 from free_claude_code.config.context_windows import context_windows_path
 from free_claude_code.config.curated_contexts import (
     CURATED_CONTEXT_WINDOWS,
@@ -157,10 +157,8 @@ def routable_model_refs(settings: Settings) -> tuple[str, ...]:
 
 
 def nim_keys(settings: Settings) -> tuple[str, ...]:
-    """Return every configured NVIDIA NIM credential, pool first."""
-    pool = parse_api_key_list(
-        settings.nvidia_nim_api_keys, env_name="NVIDIA_NIM_API_KEYS"
-    )
+    """Return the configured NVIDIA NIM credentials, with the pool first."""
+    pool = parse_api_key_pool(settings.nvidia_nim_api_keys)
     if pool:
         return pool
     single = settings.nvidia_nim_api_key.strip()
@@ -597,11 +595,11 @@ def nim_rows(
         row = probe_nim_model(model, keys[index % len(keys)], timeout=args.timeout)
         if row.context is None and row.source.startswith("HTTP 429"):
             # A rate limit is the scan's own fault, not the model's: wait out
-            # what the provider asked and try once more on another key before
-            # recording an unknown that is really a throttle.
+            # what the provider asked and retry before recording an unknown
+            # that is really a throttle.
             wait = _retry_wait_s(row.source)
             print(
-                f"    {model:<48} rate limited; retrying on another key in {wait:.0f}s",
+                f"    {model:<48} rate limited; retrying in {wait:.0f}s",
                 file=sys.stderr,
             )
             time.sleep(wait)

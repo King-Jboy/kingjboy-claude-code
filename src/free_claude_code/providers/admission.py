@@ -9,7 +9,6 @@ from typing import TypeVar
 
 from loguru import logger
 
-from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.rate_limit import StrictSlidingWindowLimiter
 from free_claude_code.core.trace import trace_event
 from free_claude_code.providers.failure_policy import (
@@ -204,20 +203,6 @@ class ProviderAttempt:
             self._controller._release_concurrency()
 
 
-class ProviderHedgePermit:
-    """The short-lived extra bulkhead slot consumed while opening a hedge."""
-
-    def __init__(self, controller: ProviderAdmissionController) -> None:
-        self._controller = controller
-        self._closed = False
-
-    async def aclose(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._controller._release_concurrency()
-
-
 class ProviderAdmissionController:
     """Coordinate one provider's rate, concurrency, and recovery state.
 
@@ -266,7 +251,6 @@ class ProviderAdmissionController:
         self._condition = asyncio.Condition()
         self._episode: _RecoveryEpisode | None = None
         self._next_generation = 1
-        self._rate_limit_supplier: Callable[[], int] | None = None
         logger.info(
             "Provider admission initialized for {} ({} req / {}s, "
             "max_concurrency={}, max_attempts={})",
@@ -276,33 +260,6 @@ class ProviderAdmissionController:
             max_concurrency,
             max_attempts,
         )
-
-    def set_rate_limit(self, rate_limit: int) -> None:
-        """Retune the provider-wide window, in requests per window.
-
-        A pooled provider's total is the sum of the quotas its usable keys
-        carry, so it has to follow the pool: a gate fixed at the configured key
-        count keeps admitting at full rate into a pool that has lost keys, and
-        the surplus then queues inside the pool instead of being held here.
-        """
-        self._proactive_limiter.set_rate_limit(rate_limit)
-
-    def set_rate_limit_supplier(self, supplier: Callable[[], int]) -> None:
-        """Refresh aggregate admission from currently usable pooled keys."""
-        self._rate_limit_supplier = supplier
-
-    async def open_hedge_permit(self) -> ProviderHedgePermit | None:
-        """Reserve an immediately available extra slot for a physical hedge.
-
-        A hedge is an optimization, so it must yield to the configured bulkhead
-        rather than waiting behind its own primary request.
-        """
-        if not self._refresh_rate_limit():
-            return None
-        if self._concurrency_sem.locked() or not self._proactive_limiter.try_acquire():
-            return None
-        await self._concurrency_sem.acquire()
-        return ProviderHedgePermit(self)
 
     def new_retry_session(
         self,
@@ -319,14 +276,6 @@ class ProviderAdmissionController:
         """Wait for provider admission and hold one active-operation slot."""
         if not session.can_attempt:
             raise RuntimeError("provider retry session is exhausted")
-        if not self._refresh_rate_limit():
-            raise ExecutionFailure(
-                kind=FailureKind.RATE_LIMIT,
-                status_code=429,
-                message=f"Every {self._provider_name} API key in the pool is cooling or exhausted.",
-                retryable=True,
-            )
-
         while True:
             permit = await self._wait_for_gate(session)
             slot_acquired = False
@@ -351,15 +300,6 @@ class ProviderAdmissionController:
                     self._concurrency_sem.release()
                 await self._abandon_probe_permit(session, permit)
                 raise
-
-    def _refresh_rate_limit(self) -> bool:
-        if self._rate_limit_supplier is None:
-            return True
-        rate_limit = self._rate_limit_supplier()
-        if rate_limit <= 0:
-            return False
-        self._proactive_limiter.set_rate_limit(rate_limit)
-        return True
 
     async def run_with_retry(
         self,

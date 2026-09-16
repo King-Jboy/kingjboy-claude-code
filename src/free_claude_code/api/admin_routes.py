@@ -226,16 +226,6 @@ async def local_provider_status(
     return {"providers": list(checks)}
 
 
-@router.get("/admin/api/providers/key-pools")
-async def key_pool_status(
-    request: Request,
-    services: ApiServices = Depends(get_services),
-):
-    """Report pooled-credential health so silent capacity loss is visible."""
-    require_loopback_admin(request)
-    return {"key_pools": services.admin.key_pool_status()}
-
-
 @router.post("/admin/api/providers/{provider_id}/test")
 async def test_provider(
     provider_id: str,

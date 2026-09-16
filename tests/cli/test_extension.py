@@ -262,7 +262,7 @@ def test_unloadable_config_reports_the_directory_and_fails(
     # The URL comes from config, so bad config means we cannot answer in full --
     # but the directory is static, and it is half of what the user came for.
     monkeypatch.setattr(
-        extension, "Settings", lambda: _settings(NVIDIA_NIM_API_KEYS="a, b")
+        extension, "Settings", lambda: _settings(HTTP_CONNECT_TIMEOUT="invalid")
     )
 
     assert extension.run([]) == 1
@@ -303,9 +303,9 @@ def test_every_css_variable_the_panel_uses_is_defined() -> None:
     # and the element keeps whatever it inherited. That is how --warn-soft went
     # unnoticed while the approval card - the one place a shell command gets
     # authorised - rendered with no background and read as ordinary text.
-    # Checked against the base :root alone, not every block pooled together: a
+    # Checked against the base :root alone, not every block combined together: a
     # token defined only under the dark media query is still undefined in light
-    # mode, so pooling them would report a half-broken palette as healthy.
+    # mode, so combining them would report a half-broken palette as healthy.
     css = _sidepanel_css()
     used = set(re.findall(r"var\((--[a-z-]+)\)", css))
     base = set(re.findall(r"(--[a-z-]+)\s*:", _css_custom_property_blocks(css)[0]))
