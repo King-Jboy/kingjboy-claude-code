@@ -1,7 +1,7 @@
 """Runtime capabilities consumed by the HTTP API adapter."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from free_claude_code.application.connected_accounts import (
@@ -11,6 +11,7 @@ from free_claude_code.application.connected_accounts import (
 from free_claude_code.application.model_metadata import ProviderModelRefreshResult
 from free_claude_code.application.ports import RequestRuntimePort, TaskController
 from free_claude_code.config.admin.values import ValueState
+from free_claude_code.core.openai_responses import ResponsesStore
 
 
 class AdminRuntimePort(Protocol):
@@ -64,3 +65,4 @@ class ApiServices:
     requests: RequestRuntimePort
     admin: AdminRuntimePort
     tasks: TaskController
+    responses_store: ResponsesStore = field(default_factory=ResponsesStore)

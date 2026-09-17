@@ -494,25 +494,25 @@ class TestManagedClaudeSession:
         mock_process = MagicMock()
         mock_process.returncode = None
 
-        # First wait times out
-        async def wait_side_effect():
-            if not mock_process.kill.called:
-                await asyncio.sleep(6)  # Should be > 5.0 timeout
-            return 0
-
         # We can simulate timeout by raising TimeoutError directly on first call
         mock_process.wait = AsyncMock(side_effect=[asyncio.TimeoutError, 0])
 
         session.process = mock_process
 
-        with patch(
-            "free_claude_code.cli.managed.session.kill_pid_tree_best_effort"
-        ) as kill_tree:
+        with (
+            patch(
+                "free_claude_code.cli.managed.session.kill_pid_tree_best_effort"
+            ) as kill_tree,
+            patch(
+                "free_claude_code.cli.managed.session.force_kill_pid_tree_best_effort"
+            ) as force_kill_tree,
+        ):
             stopped = await session.stop()
 
         assert stopped is True
         kill_tree.assert_called_once_with(mock_process.pid)
-        mock_process.kill.assert_called()
+        force_kill_tree.assert_called_once_with(mock_process.pid)
+        mock_process.kill.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_start_task_split_buffer(self):

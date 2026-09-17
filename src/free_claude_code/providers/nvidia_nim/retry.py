@@ -18,7 +18,7 @@ def clone_body_without_chat_template(body: dict[str, Any]) -> dict[str, Any] | N
 def clone_body_without_reasoning_content(
     body: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Clone a request body and strip assistant message ``reasoning_content`` fields."""
+    """Clone a request body and replay rejected reasoning as assistant context."""
     cloned_body = deepcopy(body)
     if not _strip_message_reasoning_content(cloned_body):
         return None
@@ -64,9 +64,18 @@ def _strip_message_reasoning_content(body: dict[str, Any]) -> bool:
     if not isinstance(messages, list):
         return False
     for message in messages:
-        if (
-            isinstance(message, dict)
-            and message.pop("reasoning_content", None) is not None
-        ):
-            removed = True
+        if not isinstance(message, dict):
+            continue
+        reasoning_content = message.pop("reasoning_content", None)
+        if not isinstance(reasoning_content, str) or not reasoning_content:
+            continue
+        removed = True
+        replay = f"[Assistant reasoning from the previous turn]\n{reasoning_content}"
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = f"{replay}\n\n{content}" if content else replay
+        elif isinstance(content, list):
+            message["content"] = [{"type": "text", "text": replay}, *content]
+        elif content is None:
+            message["content"] = replay
     return removed

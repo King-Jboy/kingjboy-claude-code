@@ -11,6 +11,7 @@ FCC_LOGS_DIRNAME = "logs"
 SERVER_LOG_FILENAME = "server.log"
 BRIDGE_LOG_FILENAME = "bridge.log"
 CODEX_MODEL_CATALOG_FILENAME = "codex-model-catalog.json"
+RESPONSES_STATE_FILENAME = "responses.json"
 AUTH_DIRNAME = "auth"
 OPENAI_AUTH_FILENAME = "openai.json"
 OPENAI_AUTH_LOCK_FILENAME = "openai.lock"
@@ -60,6 +61,12 @@ def codex_model_catalog_path() -> Path:
     """Return the generated Codex model catalog path."""
 
     return config_dir_path() / CODEX_MODEL_CATALOG_FILENAME
+
+
+def responses_state_path() -> Path:
+    """Return the durable Responses continuation-state path."""
+
+    return config_dir_path() / RESPONSES_STATE_FILENAME
 
 
 def openai_auth_path() -> Path:

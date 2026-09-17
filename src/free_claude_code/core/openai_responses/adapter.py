@@ -8,6 +8,7 @@ from .events import OPENAI_RESPONSES_SSE_HEADERS
 from .input import convert_request_to_anthropic_payload
 from .models import OpenAIResponsesRequest
 from .stream import (
+    CompletedResponseObserver,
     PostStartTerminalFailureObserver,
     iter_responses_sse_from_anthropic,
 )
@@ -28,11 +29,13 @@ class OpenAIResponsesAdapter:
         request: OpenAIResponsesRequest,
         *,
         on_post_start_terminal_failure: PostStartTerminalFailureObserver | None = None,
+        on_completed_response: CompletedResponseObserver | None = None,
     ) -> AsyncIterator[str]:
         return iter_responses_sse_from_anthropic(
             chunks,
             request,
             on_post_start_terminal_failure=on_post_start_terminal_failure,
+            on_completed_response=on_completed_response,
         )
 
     def error_payload(self, *, message: str, error_type: str) -> dict[str, Any]:

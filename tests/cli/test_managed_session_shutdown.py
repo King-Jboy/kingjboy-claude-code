@@ -227,6 +227,28 @@ async def test_failed_stop_keeps_pid_registered_until_retry_confirms_exit() -> N
 
 
 @pytest.mark.asyncio
+async def test_force_stop_timeout_keeps_pid_registered_for_later_cleanup() -> None:
+    session = ManagedClaudeSession("/tmp", "http://127.0.0.1:8082")
+    process = MagicMock()
+    process.pid = 252
+    process.returncode = None
+    process.wait = AsyncMock(side_effect=[TimeoutError, TimeoutError])
+    session.process = process
+
+    with (
+        patch("free_claude_code.cli.managed.session.kill_pid_tree_best_effort"),
+        patch(
+            "free_claude_code.cli.managed.session.force_kill_pid_tree_best_effort"
+        ) as force_kill,
+        patch("free_claude_code.cli.managed.session.unregister_pid") as unregister,
+    ):
+        assert await session.stop() is False
+
+    force_kill.assert_called_once_with(252)
+    unregister.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_stop_keeps_pid_registered_and_can_be_retried() -> None:
     session = ManagedClaudeSession("/tmp", "http://127.0.0.1:8082")
     process = MagicMock()

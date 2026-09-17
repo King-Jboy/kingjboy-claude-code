@@ -374,6 +374,18 @@ class OpenAIChatProvider(BaseProvider):
         """Return provider-specific failure semantics, or defer to shared policy."""
         return None
 
+    def _stream_failure_override(
+        self,
+        error: Exception,
+        *,
+        attempts_started: int,
+        stream_opened: bool,
+        accepted: bool,
+    ) -> ExecutionFailure | None:
+        """Return stream-specific retry semantics before shared recovery runs."""
+        del attempts_started, stream_opened, accepted
+        return self._provider_failure_override(error)
+
     def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """Return the body passed to the upstream OpenAI-compatible client."""
         return body
@@ -905,19 +917,59 @@ class _OpenAIChatStreamRunner:
             except asyncio.CancelledError, GeneratorExit:
                 raise
             except Exception as error:
+                retry_body = None
+                if attempt is not None and not attempt.accepted:
+                    retry_body = self._provider._get_retry_request_body(error, body)
+                if retry_body is not None and attempt is not None:
+                    await attempt.retry_immediately()
+                    body = retry_body
+                    trace_event(
+                        stage="provider",
+                        event="provider.recovery.request_corrected",
+                        source="provider",
+                        provider=tag,
+                        request_id=self._request_id,
+                        attempts_started=retry_session.attempts_started,
+                        max_attempts=retry_session.max_attempts,
+                    )
+                    ledger = self._new_ledger()
+                    recovery = RecoveryController()
+                    think_parser = ThinkTagParser()
+                    function_tag_parser = FunctionTagToolParser(self._request)
+                    heuristic_parser = HeuristicToolParser()
+                    finish_reason = None
+                    usage_info = None
+                    tool_argument_aliases = {}
+                    tool_argument_alias_buffers = {}
+                    tool_name_buffers = {}
+                    continue
                 if attempt is not None:
                     if attempt.accepted:
                         await attempt.retry_after_acceptance(
                             error,
                             provider_failure_override=(
-                                self._provider._provider_failure_override
+                                lambda stream_error, attempts_started=retry_session.attempts_started, stream_was_opened=stream_opened: (
+                                    self._provider._stream_failure_override(
+                                        stream_error,
+                                        attempts_started=attempts_started,
+                                        stream_opened=stream_was_opened,
+                                        accepted=True,
+                                    )
+                                )
                             ),
                         )
                     else:
                         await attempt.retry(
                             error,
                             provider_failure_override=(
-                                self._provider._provider_failure_override
+                                lambda stream_error, attempts_started=retry_session.attempts_started, stream_was_opened=stream_opened: (
+                                    self._provider._stream_failure_override(
+                                        stream_error,
+                                        attempts_started=attempts_started,
+                                        stream_opened=stream_was_opened,
+                                        accepted=False,
+                                    )
+                                )
                             ),
                         )
                 generated_output = has_committed_sse_output(ledger)

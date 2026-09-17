@@ -10,12 +10,14 @@ from .errors import (
 from .models import OpenAIResponsesRequest
 from .provider_input import build_responses_provider_request
 from .provider_stream import ResponsesProviderStream, ResponsesStreamFailure
+from .state import ResponsesStore
 
 __all__ = [
     "OpenAIResponsesAdapter",
     "OpenAIResponsesRequest",
     "ResponsesConversionError",
     "ResponsesProviderStream",
+    "ResponsesStore",
     "ResponsesStreamFailure",
     "build_responses_provider_request",
     "openai_error_payload",

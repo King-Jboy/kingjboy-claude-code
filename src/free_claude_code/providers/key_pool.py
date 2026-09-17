@@ -34,13 +34,14 @@ class ApiKeyPool:
         rate_window: float,
     ) -> None:
         self._lock = threading.RLock()
+        unique_keys = tuple(dict.fromkeys(key for key in keys if key))
         self._keys = tuple(
             _KeyState(
                 key=key,
                 limiter=StrictSlidingWindowLimiter(rate_limit, rate_window),
-                last_used_at=-float(len(keys) - index),
+                last_used_at=-float(len(unique_keys) - index),
             )
-            for index, key in enumerate(keys)
+            for index, key in enumerate(unique_keys)
         )
         self._by_key = {state.key: state for state in self._keys}
 

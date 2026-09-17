@@ -10,7 +10,7 @@ from loguru import logger
 
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.core.anthropic.models import MessagesRequest
-from free_claude_code.core.failures import ExecutionFailure
+from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
 from free_claude_code.providers.admission import ProviderAdmissionController
 from free_claude_code.providers.base import ProviderConfig
@@ -44,6 +44,7 @@ _NEGATIVE_MAX_TOKENS_PATTERN = re.compile(
     r"\bmax_tokens must be at least 1,\s*got\s+-[1-9]\d*\b",
     re.IGNORECASE,
 )
+_OPAQUE_STREAM_INTERNAL_ERROR_ATTEMPTS = 2
 _PROFILE = OpenAIChatProfile(
     NIM_REQUEST_POLICY,
     NO_REASONING,
@@ -137,16 +138,22 @@ class NvidiaNimProvider(OpenAIChatProvider):
             )
             return retry_body
 
-        if not bad_request_like:
-            return None
-
-        if "chat_template" in error_text:
-            self._unsupported_chat_template_models.add(model)
+        opaque_internal_error = _is_opaque_internal_server_error(error)
+        if (bad_request_like and "chat_template" in error_text) or (
+            opaque_internal_error and _has_chat_template_controls(body)
+        ):
             retry_body = clone_body_without_chat_template(body)
             if retry_body is None:
                 return None
-            logger.warning("NIM_STREAM: retrying without chat_template after 400 error")
+            self._unsupported_chat_template_models.add(model)
+            logger.warning(
+                "NIM_STREAM: retrying without chat_template controls after {}",
+                "opaque 500" if opaque_internal_error else "400 error",
+            )
             return retry_body
+
+        if not bad_request_like:
+            return None
 
         if "reasoning_content" in error_text:
             self._unsupported_reasoning_content_models.add(model)
@@ -174,6 +181,32 @@ class NvidiaNimProvider(OpenAIChatProvider):
             _is_degraded_function(body) for body in bodies
         ):
             return overloaded_provider_failure()
+        return None
+
+    def _stream_failure_override(
+        self,
+        error: Exception,
+        *,
+        attempts_started: int,
+        stream_opened: bool,
+        accepted: bool,
+    ) -> ExecutionFailure | None:
+        """Bound opaque pre-output NIM failures without changing the request body."""
+        override = self._provider_failure_override(error)
+        if override is not None:
+            return override
+        if (
+            stream_opened
+            and not accepted
+            and attempts_started >= _OPAQUE_STREAM_INTERNAL_ERROR_ATTEMPTS
+            and _is_opaque_internal_server_error(error)
+        ):
+            return ExecutionFailure(
+                kind=FailureKind.UPSTREAM,
+                status_code=500,
+                message="NVIDIA NIM returned an internal server error.",
+                retryable=False,
+            )
         return None
 
 
@@ -213,6 +246,32 @@ def _is_degraded_function(body: Mapping[str, Any]) -> bool:
         and function_ref.startswith("function id ")
         and function_id
         and state.strip() == _DEGRADED_FUNCTION_STATE
+    )
+
+
+def _is_opaque_internal_server_error(error: Exception) -> bool:
+    """Return whether NIM provided no request-shape correction to make."""
+    if not isinstance(error, openai.InternalServerError):
+        return False
+    if getattr(error, "status_code", None) != 500:
+        return False
+    error_text = str(error)
+    error_body = getattr(error, "body", None)
+    if error_body is not None:
+        error_text = f"{error_text} {json.dumps(error_body, default=str)}"
+    error_text = error_text.lower()
+    return (
+        not _is_reasoning_budget_rejection(error_text)
+        and "reasoning_content" not in error_text
+        and "chat_template" not in error_text
+    )
+
+
+def _has_chat_template_controls(body: Mapping[str, Any]) -> bool:
+    """Return whether the request carries optional NIM chat-template controls."""
+    extra_body = body.get("extra_body")
+    return isinstance(extra_body, Mapping) and (
+        "chat_template" in extra_body or "chat_template_kwargs" in extra_body
     )
 
 

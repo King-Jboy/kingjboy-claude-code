@@ -84,6 +84,7 @@ async def _create_responses_response(
             lease.settings,
             provider_resolver=_provider_resolver(lease),
             generation_id=lease.generation_id,
+            responses_store=services.responses_store,
         )
         response = await handler.create(request_data, request_id=request_id)
     except ApplicationError as exc:

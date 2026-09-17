@@ -1247,6 +1247,11 @@ async def test_stream_response_retries_without_reasoning_content(nim_provider):
     second_call = mock_create.await_args_list[1].kwargs
     assert first_call["messages"][0]["reasoning_content"] == "Need the tool."
     assert "reasoning_content" not in second_call["messages"][0]
+    assert "Need the tool." in second_call["messages"][0]["content"]
+    assert (
+        "Assistant reasoning from the previous turn"
+        in second_call["messages"][0]["content"]
+    )
     assert second_call["messages"][0]["tool_calls"][0]["id"] == "toolu_reasoning"
     assert any("Recovered" in event for event in events)
     assert any("message_stop" in event for event in events)
@@ -1292,6 +1297,105 @@ async def test_stream_response_unrelated_internal_error_does_not_downgrade(
         for call in mock_create.await_args_list
     )
     assert "Provider API request failed" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_stream_response_stops_after_one_opaque_midstream_500_retry(
+    nim_provider,
+):
+    """Do not replay the same opened NIM stream five times after an opaque 500."""
+    req = make_request()
+    error = _make_internal_server_error("unrelated internal provider failure")
+
+    async def failed_stream():
+        raise error
+        yield None
+
+    with patch.object(
+        nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+    ) as mock_create:
+        mock_create.side_effect = [failed_stream(), failed_stream()]
+
+        with pytest.raises(ExecutionFailure) as exc_info:
+            [event async for event in nim_provider.stream_response(req)]
+
+    assert mock_create.await_count == 2
+    assert (
+        mock_create.await_args_list[0].kwargs == mock_create.await_args_list[1].kwargs
+    )
+    assert "Provider API request failed" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_stream_response_learns_from_an_opaque_500_with_thinking_options(
+    nim_provider,
+):
+    req = make_request(model="a-changing-nim-model")
+    error = _make_internal_server_error("Internal server error")
+
+    async def failed_stream():
+        raise error
+        yield None
+
+    async def recovered_stream():
+        yield _content_chunk("Recovered", finish_reason="stop")
+
+    with patch.object(
+        nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+    ) as mock_create:
+        mock_create.side_effect = [failed_stream(), recovered_stream()]
+
+        events = [
+            event
+            async for event in nim_provider.stream_response(
+                req, reasoning=ReasoningPolicy.on()
+            )
+        ]
+
+    assert mock_create.await_count == 2
+    assert "chat_template_kwargs" in mock_create.await_args_list[0].kwargs["extra_body"]
+    assert "chat_template_kwargs" not in mock_create.await_args_list[1].kwargs.get(
+        "extra_body", {}
+    )
+    assert any("Recovered" in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_stream_response_corrects_streamed_reasoning_budget_rejection(
+    nim_provider,
+):
+    req = make_request(model="meta/llama-3.3-70b-instruct")
+    error = _make_internal_server_error(
+        "ValueError: thinking_token_budget is set but reasoning_config is not "
+        "configured. Please set --reasoning-config to use thinking_token_budget."
+    )
+
+    async def failed_stream():
+        raise error
+        yield None
+
+    async def recovered_stream():
+        yield _content_chunk("Recovered", finish_reason="stop")
+
+    with patch.object(
+        nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+    ) as mock_create:
+        mock_create.side_effect = [failed_stream(), recovered_stream()]
+
+        events = [
+            event
+            async for event in nim_provider.stream_response(
+                req, reasoning=ReasoningPolicy.on(budget_tokens=77)
+            )
+        ]
+
+    assert mock_create.await_count == 2
+    first_call = mock_create.await_args_list[0].kwargs
+    second_call = mock_create.await_args_list[1].kwargs
+    assert first_call["extra_body"]["chat_template_kwargs"]["reasoning_budget"] == 77
+    assert "reasoning_budget" not in second_call["extra_body"]
+    assert "reasoning_budget" not in second_call["extra_body"]["chat_template_kwargs"]
+    assert any("Recovered" in event for event in events)
 
 
 @pytest.mark.asyncio

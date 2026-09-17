@@ -20,6 +20,7 @@ _POOL_SETTINGS_BY_PROVIDER = {
         20,
     ),
 }
+_NIM_MINIMUM_HTTP_READ_TIMEOUT_SECONDS = 300.0
 
 
 def string_setting(settings: Settings, attr_name: str | None, default: str = "") -> str:
@@ -186,6 +187,12 @@ def build_provider_config(
         )
     proxy = string_setting(settings, descriptor.proxy_attr)
     rate_limit, rate_window = resolve_rate_policy(descriptor, settings)
+    http_read_timeout = settings.http_read_timeout
+    if descriptor.provider_id == "nvidia_nim":
+        http_read_timeout = max(
+            http_read_timeout,
+            _NIM_MINIMUM_HTTP_READ_TIMEOUT_SECONDS,
+        )
     key_rate_limit: int | None = None
     if pool_settings := _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id):
         key_rate_limit = int(
@@ -202,7 +209,7 @@ def build_provider_config(
         rate_limit=rate_limit,
         rate_window=rate_window,
         max_concurrency=settings.provider_max_concurrency,
-        http_read_timeout=settings.http_read_timeout,
+        http_read_timeout=http_read_timeout,
         http_write_timeout=settings.http_write_timeout,
         http_connect_timeout=settings.http_connect_timeout,
         proxy=proxy,

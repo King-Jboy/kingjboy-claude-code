@@ -1,5 +1,8 @@
 """OpenAI Responses API product flow for Codex clients."""
 
+from collections.abc import Mapping
+from typing import Any
+
 from fastapi.responses import JSONResponse
 
 from free_claude_code.api.request_errors import (
@@ -24,9 +27,11 @@ from free_claude_code.core.failures import ExecutionFailure, find_execution_fail
 from free_claude_code.core.openai_responses import (
     OpenAIResponsesAdapter,
     OpenAIResponsesRequest,
+    ResponsesStore,
     openai_error_type_for_failure,
     openai_failure_payload,
 )
+from free_claude_code.core.trace import trace_event
 
 
 class ResponsesHandler:
@@ -39,12 +44,14 @@ class ResponsesHandler:
         *,
         model_router: ModelRouter | None = None,
         responses_adapter: OpenAIResponsesAdapter | None = None,
+        responses_store: ResponsesStore | None = None,
         provider_executor: ProviderExecutor | None = None,
         generation_id: int | None = None,
     ) -> None:
         self._settings = settings
         self._model_router = model_router or ModelRouter(settings)
         self._responses_adapter = responses_adapter or OpenAIResponsesAdapter()
+        self._responses_store = responses_store or ResponsesStore()
         self._provider_executor = provider_executor or ProviderExecutor(
             provider_resolver,
             progress_timeout_seconds=settings.provider_progress_timeout,
@@ -64,6 +71,7 @@ class ResponsesHandler:
             )
 
         try:
+            request_data = self._responses_store.resolve(request_data)
             anthropic_payload = self._responses_adapter.to_anthropic_payload(
                 request_data
             )
@@ -86,6 +94,12 @@ class ResponsesHandler:
                         self._trace_post_start_terminal_failure(
                             exc,
                             request_id=request_id,
+                        )
+                    ),
+                    on_completed_response=lambda response: (
+                        self._record_completed_response(
+                            request_data,
+                            response,
                         )
                     ),
                 ),
@@ -163,6 +177,21 @@ class ResponsesHandler:
             status_code=failure.status_code,
             content=openai_failure_payload(failure),
         )
+
+    def _record_completed_response(
+        self,
+        request_data: OpenAIResponsesRequest,
+        response: Mapping[str, Any],
+    ) -> None:
+        try:
+            self._responses_store.record(request_data, response)
+        except Exception as exc:
+            trace_event(
+                stage="responses",
+                event="responses.state.persist_failed",
+                source="openai_responses",
+                exc_type=type(exc).__name__,
+            )
 
     @staticmethod
     def _trace_post_start_terminal_failure(

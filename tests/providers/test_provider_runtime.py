@@ -173,6 +173,22 @@ def test_build_provider_config_huggingface_uses_api_key_and_proxy() -> None:
     assert config.proxy == "http://proxy.test:8080"
 
 
+def test_nim_uses_a_read_timeout_that_covers_slow_model_startup() -> None:
+    settings = _make_settings(http_read_timeout=120.0)
+
+    config = build_provider_config(PROVIDER_CATALOG["nvidia_nim"], settings)
+
+    assert config.http_read_timeout == 300.0
+
+
+def test_openrouter_keeps_the_operator_read_timeout() -> None:
+    settings = _make_settings(http_read_timeout=120.0)
+
+    config = build_provider_config(PROVIDER_CATALOG["open_router"], settings)
+
+    assert config.http_read_timeout == 120.0
+
+
 def test_create_provider_uses_openai_chat_openrouter_by_default():
     with patch("free_claude_code.providers.openai_chat.provider.AsyncOpenAI"):
         provider = create_provider("open_router", _make_settings())

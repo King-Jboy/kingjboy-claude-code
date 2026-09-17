@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from loguru import logger
 
 from free_claude_code.cli.process_registry import (
+    force_kill_pid_tree_best_effort,
     kill_pid_tree_best_effort,
     register_pid,
     unregister_pid,
@@ -26,6 +27,8 @@ from .diagnostics import classify_managed_claude_stderr
 # Cap stderr capture so a runaway child cannot exhaust memory; pipe is still drained.
 _MAX_STDERR_CAPTURE_BYTES = 256 * 1024
 _MAX_STDOUT_LINE_BYTES = 256 * 1024
+_STOP_GRACE_SECONDS = 5.0
+_STOP_FORCE_WAIT_SECONDS = 5.0
 
 
 class ManagedClaudeSession:
@@ -293,10 +296,19 @@ class ManagedClaudeSession:
                 logger.info(f"Stopping Claude CLI process {process.pid}")
                 kill_pid_tree_best_effort(process.pid)
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                    await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
                 except TimeoutError:
-                    process.kill()
-                    await process.wait()
+                    force_kill_pid_tree_best_effort(process.pid)
+                    try:
+                        await asyncio.wait_for(
+                            process.wait(), timeout=_STOP_FORCE_WAIT_SECONDS
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "Claude CLI process {} did not exit after forced tree termination.",
+                            process.pid,
+                        )
+                        return False
                 if process.pid:
                     unregister_pid(process.pid)
                 return True

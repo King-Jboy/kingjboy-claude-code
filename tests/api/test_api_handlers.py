@@ -15,13 +15,18 @@ from free_claude_code.application.errors import InvalidRequestError
 from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic.models import (
+    ContentBlockText,
     Message,
     MessagesRequest,
     TokenCountRequest,
 )
+from free_claude_code.core.anthropic.stream_contracts import parse_sse_text
 from free_claude_code.core.anthropic.streaming import format_sse_event
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
-from free_claude_code.core.openai_responses import OpenAIResponsesRequest
+from free_claude_code.core.openai_responses import (
+    OpenAIResponsesRequest,
+    ResponsesStore,
+)
 from free_claude_code.core.reasoning import ReasoningPolicy
 
 _CLASSIFIER_SYSTEM = (
@@ -619,6 +624,59 @@ async def test_responses_handler_does_not_apply_safety_classifier_policy() -> No
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_responses_handler_replays_a_stored_response_continuation() -> None:
+    provider = FakeProvider(
+        [
+            format_sse_event("message_start", {"type": "message_start"}),
+            format_sse_event(
+                "content_block_start",
+                {"index": 0, "content_block": {"type": "text", "text": ""}},
+            ),
+            format_sse_event(
+                "content_block_delta",
+                {"index": 0, "delta": {"type": "text_delta", "text": "Prior"}},
+            ),
+            format_sse_event("content_block_stop", {"index": 0}),
+            format_sse_event("message_stop", {"type": "message_stop"}),
+        ]
+    )
+    handler = ResponsesHandler(
+        Settings(),
+        provider_resolver=lambda _: provider,
+        responses_store=ResponsesStore(),
+    )
+
+    first_response = await handler.create(
+        OpenAIResponsesRequest(model="nvidia_nim/test-model", input="First")
+    )
+    assert isinstance(first_response, StreamingResponse)
+    first_events = parse_sse_text(await _streaming_body_text(first_response))
+    response_id = first_events[-1].data["response"]["id"]
+
+    second_response = await handler.create(
+        OpenAIResponsesRequest(
+            model="nvidia_nim/test-model",
+            input="Continue",
+            previous_response_id=response_id,
+        )
+    )
+    assert isinstance(second_response, StreamingResponse)
+    await _streaming_body_text(second_response)
+
+    assert [message.role for message in provider.requests[1].messages] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert provider.requests[1].messages[0].content == "First"
+    prior_content = provider.requests[1].messages[1].content
+    assert isinstance(prior_content, list)
+    assert isinstance(prior_content[0], ContentBlockText)
+    assert prior_content[0].text == "Prior"
+    assert provider.requests[1].messages[2].content == "Continue"
 
 
 def test_token_count_handler_routes_and_counts_tokens() -> None:
