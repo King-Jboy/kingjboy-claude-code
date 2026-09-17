@@ -185,6 +185,13 @@ class TestBuildRequestBody:
         body = build_request_body(req, nim, reasoning=REASONING_ON)
         assert body["parallel_tool_calls"] is False
 
+    def test_request_parallel_tool_calls_overrides_provider_default(self, req):
+        req.parallel_tool_calls = False
+
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_ON)
+
+        assert body["parallel_tool_calls"] is False
+
     def test_tool_schema_boolean_subschemas_are_removed_without_mutating_request(
         self, req
     ):

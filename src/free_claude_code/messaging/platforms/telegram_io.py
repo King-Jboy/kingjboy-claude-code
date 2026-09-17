@@ -255,6 +255,7 @@ class TelegramMessenger:
         text: str,
         parse_mode: str | None = "MarkdownV2",
         fire_and_forget: bool = True,
+        on_delivered: Callable[[], None] | None = None,
     ) -> None:
         """Queue a Telegram edit."""
         await self._outbox.queue_edit_message(
@@ -263,6 +264,7 @@ class TelegramMessenger:
             text,
             parse_mode,
             fire_and_forget,
+            on_delivered,
         )
 
     async def queue_delete_messages(

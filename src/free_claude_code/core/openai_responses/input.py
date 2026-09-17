@@ -99,6 +99,8 @@ def convert_request_to_anthropic_payload(
     tool_choice = convert_tool_choice(raw_tool_choice)
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
+    if request.parallel_tool_calls is not None:
+        payload["parallel_tool_calls"] = request.parallel_tool_calls
 
     return payload
 

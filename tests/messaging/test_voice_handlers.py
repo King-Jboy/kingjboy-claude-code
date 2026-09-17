@@ -9,8 +9,14 @@ from free_claude_code.messaging.platforms.discord import (
     DISCORD_AVAILABLE,
     DiscordRuntime,
 )
-from free_claude_code.messaging.platforms.discord_inbound import get_audio_attachment
+from free_claude_code.messaging.platforms.discord_inbound import (
+    discord_voice_request_from_event,
+    get_audio_attachment,
+)
 from free_claude_code.messaging.platforms.telegram import TelegramRuntime
+from free_claude_code.messaging.platforms.telegram_inbound import (
+    telegram_voice_request_from_update,
+)
 
 
 @pytest.fixture
@@ -117,6 +123,25 @@ async def test_telegram_voice_success_invokes_handler(telegram_platform):
     assert incoming.status_message_id == "999"
 
 
+def test_telegram_voice_request_carries_declared_attachment_size() -> None:
+    update = MagicMock()
+    update.message.voice = MagicMock(file_id="f1", mime_type="audio/ogg", file_size=123)
+    update.message.message_id = 42
+    update.message.message_thread_id = None
+    update.message.reply_to_message = None
+    update.effective_user.id = 12345
+    update.effective_chat.id = 6789
+
+    request = telegram_voice_request_from_update(
+        update,
+        MagicMock(),
+        allowed_user_id="12345",
+    )
+
+    assert request is not None
+    assert request.size_bytes == 123
+
+
 @pytest.mark.asyncio
 async def test_telegram_bulk_voice_cancellation_delegates(telegram_platform) -> None:
     platform, _transcriber = telegram_platform
@@ -159,6 +184,20 @@ class TestDiscordGetAudioAttachment:
         att.filename = "voice.ogg"
         msg.attachments = [att]
         assert get_audio_attachment(msg) is att
+
+
+@pytest.mark.skipif(not DISCORD_AVAILABLE, reason="discord.py not installed")
+def test_discord_voice_request_carries_declared_attachment_size() -> None:
+    message = MagicMock()
+    message.id = 42
+    message.reference = None
+    message.author.id = 12345
+    message.author.display_name = "tester"
+    attachment = MagicMock(content_type="audio/ogg", filename="voice.ogg", size=456)
+
+    request = discord_voice_request_from_event(message, attachment, "6789")
+
+    assert request.size_bytes == 456
 
 
 @pytest.mark.skipif(not DISCORD_AVAILABLE, reason="discord.py not installed")

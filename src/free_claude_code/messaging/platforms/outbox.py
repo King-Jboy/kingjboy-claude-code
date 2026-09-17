@@ -68,12 +68,15 @@ class PlatformOutbox:
         text: str,
         parse_mode: str | None = None,
         fire_and_forget: bool = True,
+        on_delivered: Callable[[], None] | None = None,
     ) -> None:
         """Queue or immediately edit a platform message."""
         self._require_open()
 
         async def _edit() -> None:
             await self._edit(chat_id, message_id, text, parse_mode)
+            if on_delivered is not None:
+                on_delivered()
 
         dedup_key = f"edit:{chat_id}:{message_id}"
         if fire_and_forget:

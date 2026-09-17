@@ -6,7 +6,11 @@ from telegram.ext import ContextTypes
 
 from ..models import IncomingMessage
 from ..rendering.telegram_markdown import format_status
-from .voice_flow import VoiceNoteRequest, audio_suffix_from_metadata
+from .voice_flow import (
+    VoiceNoteRequest,
+    audio_size_from_metadata,
+    audio_suffix_from_metadata,
+)
 
 
 def telegram_text_message_from_update(
@@ -130,4 +134,5 @@ def telegram_voice_request_from_update(
         username=None,
         download_to=_download_to,
         reply_text=_reply_text,
+        size_bytes=audio_size_from_metadata(getattr(voice, "file_size", None)),
     )

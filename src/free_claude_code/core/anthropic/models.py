@@ -128,6 +128,7 @@ class MessagesRequest(BaseModel):
     metadata: dict[str, Any] | None = None
     tools: list[Tool] | None = None
     tool_choice: dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
     thinking: ThinkingConfig | None = None
     context_management: dict[str, Any] | None = None
     output_config: dict[str, Any] | None = None

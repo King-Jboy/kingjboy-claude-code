@@ -50,6 +50,7 @@ class OutboundMessenger(Protocol):
         text: str,
         parse_mode: str | None = None,
         fire_and_forget: bool = True,
+        on_delivered: Callable[[], None] | None = None,
     ) -> None: ...
 
     async def queue_delete_messages(

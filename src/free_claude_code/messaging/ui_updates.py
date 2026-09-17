@@ -84,13 +84,13 @@ class ThrottledTranscriptEditor:
             )
             if self._debug_platform_edits:
                 logger.debug("PLATFORM_EDIT_TEXT:\n{}", display)
-            self._last_displayed_text = display
             try:
                 await self._outbound.queue_edit_message(
                     self._chat_id,
                     self._status_msg_id,
                     display,
                     parse_mode=self._parse_mode,
+                    on_delivered=lambda display=display: self._mark_displayed(display),
                 )
             except Exception as e:
                 logger.warning(
@@ -100,3 +100,7 @@ class ThrottledTranscriptEditor:
                         e, log_full_message=self._log_messaging_error_details
                     ),
                 )
+
+    def _mark_displayed(self, display: str) -> None:
+        """Remember a platform edit only after the outbox confirms delivery."""
+        self._last_displayed_text = display

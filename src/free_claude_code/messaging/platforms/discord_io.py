@@ -135,6 +135,7 @@ class DiscordMessenger:
         text: str,
         parse_mode: str | None = None,
         fire_and_forget: bool = True,
+        on_delivered: Callable[[], None] | None = None,
     ) -> None:
         """Queue a Discord edit."""
         await self._outbox.queue_edit_message(
@@ -143,6 +144,7 @@ class DiscordMessenger:
             text,
             parse_mode,
             fire_and_forget,
+            on_delivered,
         )
 
     async def queue_delete_messages(

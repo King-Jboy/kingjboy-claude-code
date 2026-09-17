@@ -859,5 +859,6 @@ def build_base_request_body(
         body["tool_choice"] = AnthropicToOpenAIConverter.convert_tool_choice(
             tool_choice
         )
+    set_if_not_none(body, "parallel_tool_calls", request_data.parallel_tool_calls)
 
     return body

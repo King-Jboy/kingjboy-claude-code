@@ -133,6 +133,25 @@ def test_responses_messages_tools_and_tool_results_convert() -> None:
     assert payload["tool_choice"] == {"type": "tool", "name": "echo"}
 
 
+def test_responses_parallel_tool_calls_is_preserved_for_the_provider() -> None:
+    payload = _to_anthropic_payload(
+        {
+            "model": "nvidia_nim/test-model",
+            "input": "Use one tool at a time.",
+            "parallel_tool_calls": False,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "echo",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        }
+    )
+
+    assert payload["parallel_tool_calls"] is False
+
+
 @pytest.mark.parametrize(
     "item_type", ["function_call_output", "custom_tool_call_output"]
 )

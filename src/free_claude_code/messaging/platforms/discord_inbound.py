@@ -8,6 +8,7 @@ from ..models import IncomingMessage
 from ..rendering.discord_markdown import format_status_discord
 from .voice_flow import (
     VoiceNoteRequest,
+    audio_size_from_metadata,
     audio_suffix_from_metadata,
     is_audio_metadata,
 )
@@ -109,4 +110,5 @@ def discord_voice_request_from_event(
         username=message.author.display_name,
         download_to=_download_to,
         reply_text=_reply_text,
+        size_bytes=audio_size_from_metadata(getattr(attachment, "size", None)),
     )

@@ -47,6 +47,7 @@ class VoiceNoteRequest:
     status_text: str
     download_to: Callable[[Path], Awaitable[None]]
     reply_text: Callable[[str], Awaitable[None]]
+    size_bytes: int | None = None
     reply_to_message_id: str | None = None
     status_parse_mode: str | None = None
     message_thread_id: str | None = None
@@ -91,6 +92,11 @@ def audio_suffix_from_metadata(
         if normalized_filename.endswith(extension):
             return extension
     return default
+
+
+def audio_size_from_metadata(value: object) -> int | None:
+    """Return a usable non-negative attachment size, when the platform provides one."""
+    return value if isinstance(value, int) and value >= 0 else None
 
 
 class VoiceNoteFlow:
@@ -155,6 +161,13 @@ class VoiceNoteFlow:
 
         if message_handler is None:
             return False
+
+        if request.size_bytes is not None:
+            try:
+                _validate_audio_size(request.size_bytes)
+            except ValueError as exc:
+                await request.reply_text(str(exc))
+                return True
 
         claim = await self._pending_voice.reserve(
             request.scope,
@@ -381,7 +394,10 @@ class VoiceNoteFlow:
 def _validate_audio_file(file_path: Path) -> None:
     if not file_path.exists():
         raise FileNotFoundError(f"Audio file not found: {file_path}")
-    size = file_path.stat().st_size
+    _validate_audio_size(file_path.stat().st_size)
+
+
+def _validate_audio_size(size: int) -> None:
     if size > MAX_AUDIO_SIZE_BYTES:
         raise ValueError(
             f"Audio file too large ({size} bytes). Max {MAX_AUDIO_SIZE_BYTES} bytes."

@@ -56,6 +56,7 @@ def _request(
     download_to=None,
     reply_text=None,
     message_id: str = "voice",
+    size_bytes: int | None = None,
 ) -> VoiceNoteRequest:
     async def default_download_to(path: Path) -> None:
         path.write_bytes(b"voice")
@@ -74,6 +75,7 @@ def _request(
         reply_to_message_id="reply",
         download_to=download_to or default_download_to,
         reply_text=reply_text or AsyncMock(),
+        size_bytes=size_bytes,
     )
 
 
@@ -901,6 +903,42 @@ async def test_voice_flow_rejects_oversized_audio_before_transcription(
     assert handled is True
     transcriber.run.assert_not_awaited()
     queue_delete.assert_awaited_once_with("chat", ["status"])
+    assert reply_text.await_args is not None
+    assert "too large" in reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_voice_flow_rejects_declared_oversized_audio_before_download(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "free_claude_code.messaging.platforms.voice_flow.MAX_AUDIO_SIZE_BYTES",
+        3,
+    )
+    flow, transcriber = _flow()
+    download = AsyncMock()
+    reply_text = AsyncMock()
+    queue_send = AsyncMock()
+    queue_delete = AsyncMock()
+    handler = AsyncMock()
+
+    handled = await flow.handle(
+        _request(
+            download_to=download,
+            reply_text=reply_text,
+            size_bytes=4,
+        ),
+        message_handler=handler,
+        queue_send_message=queue_send,
+        queue_delete_messages=queue_delete,
+    )
+
+    assert handled is True
+    download.assert_not_awaited()
+    transcriber.run.assert_not_awaited()
+    handler.assert_not_awaited()
+    queue_send.assert_not_awaited()
+    queue_delete.assert_not_awaited()
     assert reply_text.await_args is not None
     assert "too large" in reply_text.await_args.args[0]
 

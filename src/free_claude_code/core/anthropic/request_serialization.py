@@ -18,6 +18,7 @@ _MESSAGES_REQUEST_FIELDS = (
     "metadata",
     "tools",
     "tool_choice",
+    "parallel_tool_calls",
     "thinking",
     "context_management",
     "output_config",
