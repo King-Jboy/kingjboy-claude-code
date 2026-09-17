@@ -1144,6 +1144,54 @@ async def test_stream_response_retries_without_budget_for_thinking_token_error(
 
 
 @pytest.mark.asyncio
+async def test_stream_response_retries_without_budget_for_v2_runner_rejection(
+    nim_provider,
+):
+    """A NIM V2 runner rejection must downgrade only the optional budget."""
+    req = make_request(model="nvidia/nemotron-3-ultra-550b-a55b")
+
+    mock_chunk = MagicMock()
+    mock_chunk.choices = [
+        MagicMock(
+            delta=MagicMock(content="Recovered", reasoning_content=""),
+            finish_reason="stop",
+        )
+    ]
+    mock_chunk.usage = MagicMock(completion_tokens=5)
+
+    async def mock_stream():
+        yield mock_chunk
+
+    error = _make_bad_request_error(
+        "ValueError: thinking_token_budget is not yet supported by the V2 model "
+        "runner. Run vLLM with VLLM_USE_V2_MODEL_RUNNER=0 to use "
+        "thinking_token_budget."
+    )
+
+    with patch.object(
+        nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+    ) as mock_create:
+        mock_create.side_effect = [error, mock_stream()]
+
+        events = [
+            event
+            async for event in nim_provider.stream_response(
+                req, reasoning=ReasoningPolicy.on(budget_tokens=77)
+            )
+        ]
+
+    assert mock_create.await_count == 2
+    first_call = mock_create.await_args_list[0].kwargs
+    second_call = mock_create.await_args_list[1].kwargs
+    assert first_call["extra_body"]["chat_template_kwargs"]["reasoning_budget"] == 77
+    assert "reasoning_budget" not in second_call["extra_body"]
+    assert "reasoning_budget" not in second_call["extra_body"]["chat_template_kwargs"]
+    assert second_call["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+    assert any("Recovered" in event for event in events)
+    assert any("message_stop" in event for event in events)
+
+
+@pytest.mark.asyncio
 async def test_stream_response_retries_without_reasoning_content(nim_provider):
     req = make_request(
         system=None,

@@ -121,7 +121,7 @@ async def test_nim_stream_retries_on_pre_stream_connection_error_then_streams():
 
 
 @pytest.mark.asyncio
-async def test_nim_stream_connection_error_exhausted_emits_cause_chain():
+async def test_nim_stream_connection_error_exhausted_emits_cause_chain(caplog):
     config = ProviderConfig(
         api_key="test_key",
         base_url="https://test.api.nvidia.com/v1",
@@ -159,7 +159,13 @@ async def test_nim_stream_connection_error_exhausted_emits_cause_chain():
     ]
     assert error_traces[-1]["request_id"] == "req_conn"
     assert error_traces[-1]["exc_type"] == "APIConnectionError"
+    assert error_traces[-1]["downstream_model"] == req.model
+    assert error_traces[-1]["attempts_started"] == 5
+    assert error_traces[-1]["max_attempts"] == 5
+    assert "body" not in error_traces[-1]
     assert "error_message" not in error_traces[-1]
+    assert "downstream_model=test-model" in caplog.text
+    assert "attempts_started=5/5" in caplog.text
     assert "Caused by:\nConnectError: upstream disconnected" in exc_info.value.message
 
 

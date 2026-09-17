@@ -220,4 +220,8 @@ def _is_reasoning_budget_rejection(error_text: str) -> bool:
     """Return whether NIM rejected optional thinking budget control."""
     if "reasoning_budget" in error_text:
         return True
-    return "thinking_token_budget" in error_text and "reasoning_config" in error_text
+    if "thinking_token_budget" not in error_text:
+        return False
+    return "reasoning_config" in error_text or (
+        "not yet supported" in error_text and "v2 model runner" in error_text
+    )

@@ -63,6 +63,9 @@ class BaseProvider(ABC):
         error: Exception,
         *,
         request_id: str | None = None,
+        downstream_model: str | None = None,
+        attempts_started: int | None = None,
+        max_attempts: int | None = None,
     ) -> None:
         """Log streaming transport failures (metadata-only unless verbose is enabled)."""
         response = getattr(error, "response", None)
@@ -76,27 +79,38 @@ class BaseProvider(ABC):
             source="provider",
             provider=tag,
             request_id=request_id,
+            downstream_model=downstream_model,
+            attempts_started=attempts_started,
+            max_attempts=max_attempts,
             exc_type=type(error).__name__,
             http_status=http_status,
             cause_types=cause_types,
         )
+        retry_metadata = (
+            f" downstream_model={downstream_model} "
+            f"attempts_started={attempts_started}/{max_attempts}"
+            if downstream_model is not None
+            else ""
+        )
 
         if self._config.log_api_error_tracebacks:
             logger.error(
-                "{}_ERROR:{} exc_type={}\n{}",
+                "{}_ERROR:{} exc_type={}{}\n{}",
                 tag,
                 req_tag,
                 type(error).__name__,
+                retry_metadata,
                 redacted_exception_traceback(error),
             )
             return
         logger.error(
-            "{}_ERROR:{} exc_type={} http_status={} cause_types={}",
+            "{}_ERROR:{} exc_type={} http_status={} cause_types={}{}",
             tag,
             req_tag,
             type(error).__name__,
             http_status,
             ",".join(cause_types) if cause_types else None,
+            retry_metadata,
         )
 
     @abstractmethod

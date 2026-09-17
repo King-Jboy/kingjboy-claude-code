@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .constants import DEFAULT_CLIENT_CONTEXT_WINDOW
+from .curated_contexts import curated_context_window
 from .model_refs import ChatModelConfig, configured_chat_model_refs
 from .paths import config_dir_path
 
@@ -95,20 +96,25 @@ def resolve_client_context_window(
     """Return the window to advertise to a launched client CLI.
 
     An explicit ``CLIENT_CONTEXT_WINDOW`` always wins. Otherwise the smallest
-    recorded window across every configured route is used: Claude Code compacts
-    against one number for the whole session but can be pointed at any routed
-    tier, so the largest safe value is the smallest route's ceiling.
+    recorded or curated window across every configured route is used: Claude
+    Code compacts against one number for the whole session but can be pointed
+    at any routed tier, so the largest safe value is the smallest route's
+    ceiling.
     """
     if configured is not None:
         return ResolvedContextWindow(configured, "CLIENT_CONTEXT_WINDOW")
 
     recorded = load_context_windows() if windows is None else windows
-    known = [
-        (recorded[ref.model_ref], ref.model_ref)
-        for ref in configured_chat_model_refs(settings)
-        if ref.model_ref in recorded
-    ]
+    known: list[tuple[int, str, str]] = []
+    for ref in configured_chat_model_refs(settings):
+        if ref.model_ref in recorded:
+            known.append(
+                (recorded[ref.model_ref], CONTEXT_WINDOWS_FILENAME, ref.model_ref)
+            )
+            continue
+        if curated := curated_context_window(ref.provider_id, ref.model_id):
+            known.append((curated, "curated", ref.model_ref))
     if not known:
         return ResolvedContextWindow(DEFAULT_CLIENT_CONTEXT_WINDOW, "default")
-    value, model_ref = min(known)
-    return ResolvedContextWindow(value, CONTEXT_WINDOWS_FILENAME, model_ref)
+    value, source, model_ref = min(known)
+    return ResolvedContextWindow(value, source, model_ref)

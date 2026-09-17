@@ -138,6 +138,32 @@ def test_an_unmeasured_route_does_not_drag_the_window_down() -> None:
     assert resolved.value == 262_144
 
 
+def test_a_known_nim_route_uses_its_curated_window_without_a_table() -> None:
+    resolved = resolve_client_context_window(
+        _settings(model="nvidia_nim/meta/llama-3.3-70b-instruct"),
+        configured=None,
+        windows={},
+    )
+
+    assert resolved.value == 131_072
+    assert resolved.source == "curated"
+    assert resolved.model_ref == "nvidia_nim/meta/llama-3.3-70b-instruct"
+
+
+def test_a_recorded_window_wins_over_a_curated_window() -> None:
+    model_ref = "nvidia_nim/meta/llama-3.3-70b-instruct"
+
+    resolved = resolve_client_context_window(
+        _settings(model=model_ref),
+        configured=None,
+        windows={model_ref: 120_000},
+    )
+
+    assert resolved.value == 120_000
+    assert resolved.source == "context.md"
+    assert resolved.model_ref == model_ref
+
+
 def test_nothing_recorded_falls_back_to_the_conservative_default() -> None:
     resolved = resolve_client_context_window(
         _settings(model="nvidia_nim/never/measured"),

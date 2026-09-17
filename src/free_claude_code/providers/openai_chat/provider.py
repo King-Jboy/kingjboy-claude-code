@@ -1023,7 +1023,13 @@ class _OpenAIChatStreamRunner:
 
                 reported_error = underlying_provider_error(error)
                 self._provider._log_stream_transport_error(
-                    tag, req_tag, reported_error, request_id=self._request_id
+                    tag,
+                    req_tag,
+                    reported_error,
+                    request_id=self._request_id,
+                    downstream_model=body.get("model"),
+                    attempts_started=retry_session.attempts_started,
+                    max_attempts=retry_session.max_attempts,
                 )
                 failure = classify_provider_failure(
                     reported_error,
@@ -1040,6 +1046,9 @@ class _OpenAIChatStreamRunner:
                     "source": "provider",
                     "provider": tag,
                     "request_id": self._request_id,
+                    "downstream_model": body.get("model"),
+                    "attempts_started": retry_session.attempts_started,
+                    "max_attempts": retry_session.max_attempts,
                     "exc_type": type(reported_error).__name__,
                     "failure_kind": failure.kind.value,
                     "status_code": failure.status_code,
