@@ -8,6 +8,7 @@ from free_claude_code.api.app import create_app
 from free_claude_code.api.ports import ApiServices
 from free_claude_code.config.logging_config import configure_logging
 from free_claude_code.config.paths import responses_state_path, server_log_path
+from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.openai_responses import ResponsesStore
 from free_claude_code.messaging.transcription import TranscriptionService
@@ -20,6 +21,7 @@ from free_claude_code.providers.openai_codex import (
     OpenAICodexProvider,
 )
 from free_claude_code.providers.runtime import ProviderRuntime
+from free_claude_code.providers.runtime.config import provider_credential
 from free_claude_code.providers.runtime.factory import create_provider
 
 from .application import ApplicationRuntime, RestartCallback, StopCallback
@@ -88,7 +90,7 @@ def _create_transcriber(settings: Settings) -> Transcriber | None:
     if settings.whisper_device == "nvidia_nim":
         return NvidiaNimTranscriber(
             model=settings.whisper_model,
-            api_key=settings.nvidia_nim_api_key,
+            api_key=provider_credential(PROVIDER_CATALOG["nvidia_nim"], settings),
         )
     return TranscriptionService(
         model=settings.whisper_model,
