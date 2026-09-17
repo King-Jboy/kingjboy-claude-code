@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Callable
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -274,16 +275,23 @@ class TestMessagingRateLimiter:
     async def test_fire_and_forget_failure_logged(self, caplog):
         """fire_and_forget with failing task logs error and does not re-raise."""
         limiter = self.create_limiter(rate_limit=1, rate_window=1.0)
+        on_failure = MagicMock()
 
         async def fail_task():
             raise ValueError("fire_and_forget failed")
 
-        limiter.fire_and_forget(fail_task, dedup_key="fire_fail")
+        limiter.fire_and_forget(
+            fail_task,
+            dedup_key="fire_fail",
+            on_failure=on_failure,
+        )
         await asyncio.sleep(1.5)
 
         joined = " ".join(str(r.message) for r in caplog.records)
         assert "ValueError" in joined
         assert "fire_and_forget failed" not in joined
+        on_failure.assert_called_once()
+        assert isinstance(on_failure.call_args.args[0], ValueError)
 
     @pytest.mark.asyncio
     async def test_shutdown_settles_active_queued_and_background_work(self):

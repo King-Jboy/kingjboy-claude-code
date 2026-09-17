@@ -69,6 +69,7 @@ class PlatformOutbox:
         parse_mode: str | None = None,
         fire_and_forget: bool = True,
         on_delivered: Callable[[], None] | None = None,
+        on_delivery_failed: Callable[[Exception], None] | None = None,
     ) -> None:
         """Queue or immediately edit a platform message."""
         self._require_open()
@@ -80,7 +81,11 @@ class PlatformOutbox:
 
         dedup_key = f"edit:{chat_id}:{message_id}"
         if fire_and_forget:
-            self._limiter.fire_and_forget(_edit, dedup_key=dedup_key)
+            self._limiter.fire_and_forget(
+                _edit,
+                dedup_key=dedup_key,
+                on_failure=on_delivery_failed,
+            )
         else:
             await self._limiter.enqueue(_edit, dedup_key=dedup_key)
 

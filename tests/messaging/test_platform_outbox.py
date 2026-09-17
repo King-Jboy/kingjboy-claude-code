@@ -79,6 +79,22 @@ async def test_queue_edit_awaits_limiter_with_dedup_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_queue_edit_passes_delivery_failure_callback_to_limiter() -> None:
+    limiter = MagicMock()
+    outbox = _noop_outbox(limiter=limiter)
+    on_delivery_failed = MagicMock()
+
+    await outbox.queue_edit_message(
+        "chat",
+        "message",
+        "updated",
+        on_delivery_failed=on_delivery_failed,
+    )
+
+    assert limiter.fire_and_forget.call_args.kwargs["on_failure"] is on_delivery_failed
+
+
+@pytest.mark.asyncio
 async def test_queue_delete_many_skips_empty_batches() -> None:
     limiter = MagicMock()
     outbox = _noop_outbox(limiter=limiter)

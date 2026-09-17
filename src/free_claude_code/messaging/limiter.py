@@ -283,7 +283,11 @@ class MessagingRateLimiter:
         return await future
 
     def fire_and_forget(
-        self, func: Callable[[], Awaitable[Any]], dedup_key: str | None = None
+        self,
+        func: Callable[[], Awaitable[Any]],
+        dedup_key: str | None = None,
+        *,
+        on_failure: Callable[[Exception], None] | None = None,
     ) -> None:
         """Enqueue a task without waiting for the result."""
         self._require_running()
@@ -329,6 +333,15 @@ class MessagingRateLimiter:
                             log_full_message=self._log_error_details,
                         ),
                     )
+                    if on_failure is not None:
+                        try:
+                            on_failure(e)
+                        except Exception as callback_error:
+                            logger.error(
+                                "Failure callback for key {} raised: exc_type={}",
+                                dedup_key,
+                                type(callback_error).__name__,
+                            )
                     break
 
         task = asyncio.create_task(_wrapped(), name=f"msg-limiter:{dedup_key}")

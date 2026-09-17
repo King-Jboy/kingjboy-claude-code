@@ -9,6 +9,8 @@ from .platforms.ports import OutboundMessenger
 from .safe_diagnostics import format_exception_for_log
 from .transcript import RenderCtx, TranscriptBuffer
 
+_MAX_TERMINAL_DELIVERY_RECOVERY_ATTEMPTS = 1
+
 
 class ThrottledTranscriptEditor:
     """Rate-limited status message edits from a growing transcript."""
@@ -40,6 +42,8 @@ class ThrottledTranscriptEditor:
         self._last_ui_update = 0.0
         self._last_displayed_text: str | None = None
         self._last_status: str | None = None
+        self._pending_display: str | None = None
+        self._terminal_recovery_attempts = 0
 
     @property
     def last_status(self) -> str | None:
@@ -73,6 +77,9 @@ class ThrottledTranscriptEditor:
             )
             return
         if display and display != self._last_displayed_text:
+            if display != self._pending_display:
+                self._pending_display = display
+                self._terminal_recovery_attempts = 0
             logger.debug(
                 "PLATFORM_EDIT: node_id={} chat_id={} msg_id={} force={} status={!r} chars={}",
                 self._node_id,
@@ -91,6 +98,13 @@ class ThrottledTranscriptEditor:
                     display,
                     parse_mode=self._parse_mode,
                     on_delivered=lambda display=display: self._mark_displayed(display),
+                    on_delivery_failed=(
+                        lambda error, display=display: (
+                            self._retry_failed_terminal_edit(display, error)
+                            if force
+                            else None
+                        )
+                    ),
                 )
             except Exception as e:
                 logger.warning(
@@ -104,3 +118,48 @@ class ThrottledTranscriptEditor:
     def _mark_displayed(self, display: str) -> None:
         """Remember a platform edit only after the outbox confirms delivery."""
         self._last_displayed_text = display
+        if self._pending_display == display:
+            self._pending_display = None
+            self._terminal_recovery_attempts = 0
+
+    def _retry_failed_terminal_edit(self, display: str, error: Exception) -> None:
+        """Give a terminal status one fresh outbox cycle after delivery recovers."""
+        if self._pending_display != display:
+            return
+        if self._terminal_recovery_attempts >= _MAX_TERMINAL_DELIVERY_RECOVERY_ATTEMPTS:
+            logger.warning(
+                "Terminal platform edit remains undelivered for node {}: exc_type={}",
+                self._node_id,
+                type(error).__name__,
+            )
+            return
+        self._terminal_recovery_attempts += 1
+        recovery = self._retry_display(display)
+        try:
+            self._outbound.fire_and_forget(recovery)
+        except Exception as callback_error:
+            recovery.close()
+            logger.warning(
+                "Could not schedule terminal platform edit recovery for node {}: exc_type={}",
+                self._node_id,
+                type(callback_error).__name__,
+            )
+
+    async def _retry_display(self, display: str) -> None:
+        try:
+            await self._outbound.queue_edit_message(
+                self._chat_id,
+                self._status_msg_id,
+                display,
+                parse_mode=self._parse_mode,
+                on_delivered=lambda: self._mark_displayed(display),
+            )
+        except Exception as error:
+            logger.warning(
+                "Failed to queue terminal platform edit recovery for node {}: {}",
+                self._node_id,
+                format_exception_for_log(
+                    error,
+                    log_full_message=self._log_messaging_error_details,
+                ),
+            )

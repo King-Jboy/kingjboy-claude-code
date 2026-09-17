@@ -418,6 +418,7 @@ class FakePlatform:
         parse_mode: str | None = None,
         fire_and_forget: bool = True,
         on_delivered: Callable[[], None] | None = None,
+        on_delivery_failed: Callable[[Exception], None] | None = None,
     ) -> None:
         await self.edit_message(chat_id, message_id, text, parse_mode=parse_mode)
         if on_delivered is not None:
