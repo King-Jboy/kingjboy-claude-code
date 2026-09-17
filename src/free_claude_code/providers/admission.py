@@ -409,6 +409,11 @@ class ProviderAdmissionController:
                         and episode.leader is session
                         and not episode.probe_active
                     ):
+                        # Event-loop timers can wake marginally before their
+                        # deadline on coarse clocks. Recalculate instead of
+                        # admitting a recovery probe before ``ready_at``.
+                        if time.monotonic() < episode.ready_at:
+                            continue
                         episode.probe_active = True
                         return self._probe_permit(session, episode)
             except asyncio.CancelledError:

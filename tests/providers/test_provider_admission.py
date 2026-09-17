@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -418,12 +419,7 @@ async def test_cancelled_backoff_leader_transfers_to_a_waiter() -> None:
     follower_session = controller.new_retry_session()
     leader = await controller.open_attempt(leader_session)
     follower = await controller.open_attempt(follower_session)
-
-    assert await leader.retry(_status_error(503))
-    assert await follower.retry(_status_error(503))
-    await leader.aclose()
-    await follower.aclose()
-
+    clock = 0.0
     real_sleep = asyncio.sleep
     first_sleep_started = asyncio.Event()
     second_sleep_started = asyncio.Event()
@@ -431,19 +427,31 @@ async def test_cancelled_backoff_leader_transfers_to_a_waiter() -> None:
     sleep_calls = 0
 
     async def controlled_sleep(delay: float) -> None:
-        nonlocal sleep_calls
-        assert 1.9 <= delay <= 2.0
+        nonlocal clock, sleep_calls
+        assert delay == pytest.approx(2.0)
         sleep_calls += 1
         if sleep_calls == 1:
             first_sleep_started.set()
             await asyncio.Event().wait()
         second_sleep_started.set()
         await release_second_sleep.wait()
+        clock += delay
 
-    with patch(
-        "free_claude_code.providers.admission.asyncio.sleep",
-        side_effect=controlled_sleep,
+    with (
+        patch(
+            "free_claude_code.providers.admission.time",
+            SimpleNamespace(monotonic=lambda: clock),
+        ),
+        patch(
+            "free_claude_code.providers.admission.asyncio.sleep",
+            side_effect=controlled_sleep,
+        ),
     ):
+        assert await leader.retry(_status_error(503))
+        assert await follower.retry(_status_error(503))
+        await leader.aclose()
+        await follower.aclose()
+
         leader_task = asyncio.create_task(controller.open_attempt(leader_session))
         await first_sleep_started.wait()
         follower_task = asyncio.create_task(controller.open_attempt(follower_session))
@@ -722,6 +730,7 @@ async def test_late_in_flight_failure_keeps_exhausted_generation_outcome() -> No
 async def test_retry_after_is_a_minimum_backoff() -> None:
     controller = _controller(max_attempts=2)
     attempts = 0
+    clock = 0.0
 
     async def recover() -> str:
         nonlocal attempts
@@ -730,10 +739,20 @@ async def test_retry_after_is_a_minimum_backoff() -> None:
             raise _status_error(429, retry_after="7")
         return "ok"
 
-    with patch(
-        "free_claude_code.providers.admission.asyncio.sleep",
-        return_value=None,
-    ) as sleep:
+    async def advance_clock(delay: float) -> None:
+        nonlocal clock
+        clock += delay
+
+    with (
+        patch(
+            "free_claude_code.providers.admission.time",
+            SimpleNamespace(monotonic=lambda: clock),
+        ),
+        patch(
+            "free_claude_code.providers.admission.asyncio.sleep",
+            side_effect=advance_clock,
+        ) as sleep,
+    ):
         assert await controller.run_with_retry(recover) == "ok"
 
     sleep.assert_awaited_once()
@@ -747,17 +766,36 @@ async def test_accepted_stream_failure_reenters_admission_recovery() -> None:
     """A post-first-chunk failure uses the same coordinated backoff as an open failure."""
     controller = _controller(max_attempts=2, base_delay=0.01, max_delay=0.01)
     session = controller.new_retry_session()
-    attempt = await controller.open_attempt(session)
-    await attempt.succeeded()
+    clock = 0.0
+    delays: list[float] = []
 
-    assert await attempt.retry_after_acceptance(_status_error(503))
-    await attempt.aclose()
+    async def early_sleep(delay: float) -> None:
+        """Advance part way through the first sleep, like a coarse event-loop clock."""
+        nonlocal clock
+        delays.append(delay)
+        clock += delay / 2 if len(delays) == 1 else delay
 
-    started = time.monotonic()
-    recovery_attempt = await controller.open_attempt(session)
-    assert time.monotonic() - started >= 0.008
-    await recovery_attempt.succeeded()
-    await recovery_attempt.aclose()
+    with (
+        patch(
+            "free_claude_code.providers.admission.time",
+            SimpleNamespace(monotonic=lambda: clock),
+        ),
+        patch(
+            "free_claude_code.providers.admission.asyncio.sleep",
+            side_effect=early_sleep,
+        ),
+    ):
+        attempt = await controller.open_attempt(session)
+        await attempt.succeeded()
+
+        assert await attempt.retry_after_acceptance(_status_error(503))
+        await attempt.aclose()
+
+        recovery_attempt = await controller.open_attempt(session)
+        await recovery_attempt.succeeded()
+        await recovery_attempt.aclose()
+
+    assert delays == pytest.approx([0.01, 0.005])
 
 
 def test_retry_after_accepts_http_date_and_rejects_invalid_values() -> None:
