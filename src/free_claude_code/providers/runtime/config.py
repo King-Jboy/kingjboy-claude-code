@@ -188,7 +188,9 @@ def build_provider_config(
     rate_limit, rate_window = resolve_rate_policy(descriptor, settings)
     key_rate_limit: int | None = None
     if pool_settings := _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id):
-        key_rate_limit = int(numeric_setting(settings, pool_settings[1], pool_settings[2]))
+        key_rate_limit = int(
+            numeric_setting(settings, pool_settings[1], pool_settings[2])
+        )
         rate_limit = key_rate_limit * len(api_keys)
         rate_window = 60.0
     return ProviderConfig(

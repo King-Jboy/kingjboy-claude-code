@@ -482,7 +482,9 @@ class OpenAIChatProvider(BaseProvider):
                     return stream
             if last_error is not None:
                 raise last_error
-            raise RuntimeError("No API key in the configured pool is currently available.")
+            raise RuntimeError(
+                "No API key in the configured pool is currently available."
+            )
         return await self._client.chat.completions.create(
             **create_body,
             stream=True,

@@ -153,12 +153,8 @@ class Settings(BaseSettings):
     )
 
     # ==================== NVIDIA NIM Config ====================
-    nvidia_nim_api_keys: str = Field(
-        default="", validation_alias="NVIDIA_NIM_API_KEYS"
-    )
-    nvidia_nim_api_key: str = Field(
-        default="", validation_alias="NVIDIA_NIM_API_KEY"
-    )
+    nvidia_nim_api_keys: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEYS")
+    nvidia_nim_api_key: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEY")
     nvidia_nim_key_rate_limit: int = Field(
         default=40, gt=0, validation_alias="NVIDIA_NIM_KEY_RATE_LIMIT"
     )
