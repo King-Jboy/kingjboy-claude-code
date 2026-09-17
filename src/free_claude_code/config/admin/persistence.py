@@ -172,6 +172,9 @@ def prepare_admin_update(updates: Mapping[str, Any]) -> PreparedAdminUpdate:
 
     target_values = target_values_with_updates(updates)
     effective_values = effective_values_for_validation(target_values)
+    unmanaged_values = unmanaged_values_from_managed_file()
+    for key, value in unmanaged_values.items():
+        effective_values.setdefault(key, value)
     settings, errors = settings_from_values(effective_values)
     pending_fields = (
         tuple(changed_pending_fields(updates, settings=settings))
@@ -184,7 +187,7 @@ def prepare_admin_update(updates: Mapping[str, Any]) -> PreparedAdminUpdate:
         errors=tuple(errors),
         pending_fields=pending_fields,
         path=managed_env_path(),
-        unmanaged_values=unmanaged_values_from_managed_file(),
+        unmanaged_values=unmanaged_values,
     )
 
 

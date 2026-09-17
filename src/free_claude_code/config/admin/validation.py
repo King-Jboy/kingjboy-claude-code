@@ -23,6 +23,10 @@ def settings_from_values(
     """Build the prospective Settings snapshot without reading dotenv files."""
 
     kwargs: dict[str, Any] = {"_env_file": None}
+    for setting in Settings.model_fields.values():
+        input_key = setting.validation_alias
+        if isinstance(input_key, str) and input_key in values:
+            kwargs[input_key] = values[input_key]
     for field in FIELDS:
         input_key = field_input_key(field)
         if input_key is None:

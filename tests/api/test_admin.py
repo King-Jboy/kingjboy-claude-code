@@ -720,6 +720,37 @@ def test_admin_apply_hot_publishes_provider_progress_timeout(monkeypatch, tmp_pa
     assert "PROVIDER_PROGRESS_TIMEOUT=900" in managed_env.read_text(encoding="utf-8")
 
 
+def test_admin_model_change_keeps_unmanaged_provider_key_pools_live(
+    monkeypatch, tmp_path
+):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    env_file = tmp_path / ".fcc" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "\n".join(
+            [
+                "MODEL=nvidia_nim/original-model",
+                'NVIDIA_NIM_API_KEYS=["nim-one", "nim-two"]',
+                'OPENROUTER_API_KEYS=["or-one", "or-two"]',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    app = create_test_app()
+
+    response = _local_client(app).post(
+        "/admin/api/config/apply",
+        json={"values": {"MODEL": "open_router/updated-model"}},
+    )
+
+    assert response.status_code == 200
+    settings = provider_manager_for_app(app).current_settings()
+    assert settings.nvidia_nim_api_keys == '["nim-one", "nim-two"]'
+    assert settings.open_router_api_keys == '["or-one", "or-two"]'
+
+
 def test_admin_rejects_invalid_provider_progress_timeout_without_writing(
     monkeypatch,
     tmp_path,
