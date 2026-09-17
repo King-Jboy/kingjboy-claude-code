@@ -523,15 +523,16 @@ async def test_openai_chat_stream_retries_without_usage_when_option_is_rejected(
                 "stream_options is unsupported",
                 {"error": {"message": "stream_options is unsupported"}},
             ),
-            object(),
+            _stream(()),
         ]
     )
 
     with patch.object(provider._client.chat.completions, "create", create):
-        _stream_obj, used_body, attempt = await provider._create_stream(
+        stream, used_body, attempt = await provider._create_stream(
             body,
             provider._admission.new_retry_session(),
         )
+        await stream.aclose()
         await attempt.aclose()
 
     assert create.await_count == 2

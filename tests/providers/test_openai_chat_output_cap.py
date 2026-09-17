@@ -28,6 +28,19 @@ class _BadRequest(Exception):
         self.body = body
 
 
+class _EmptyStream:
+    """Minimal OpenAI SDK stream double for request-opening tests."""
+
+    def __aiter__(self) -> _EmptyStream:
+        return self
+
+    async def __anext__(self) -> object:
+        raise StopAsyncIteration
+
+    async def close(self) -> None:
+        pass
+
+
 # --------------------------------------------------------------------------- #
 # Pure helpers
 # --------------------------------------------------------------------------- #
@@ -137,13 +150,14 @@ async def test_create_stream_clamps_and_learns_on_cap_rejection(groq_provider):
     model = body["model"]
 
     error = _BadRequest("max_completion_tokens must be less than or equal to 40960")
-    create = AsyncMock(side_effect=[error, object()])
+    create = AsyncMock(side_effect=[error, _EmptyStream()])
 
     with patch.object(groq_provider._client.chat.completions, "create", create):
-        _stream, used_body, attempt = await groq_provider._create_stream(
+        stream, used_body, attempt = await groq_provider._create_stream(
             body,
             groq_provider._admission.new_retry_session(),
         )
+        await stream.aclose()
         await attempt.aclose()
 
     assert create.call_count == 2
@@ -164,12 +178,13 @@ async def test_learned_cap_clamps_next_request_without_a_400(groq_provider):
     model = body["model"]
     groq_provider._model_output_caps[model] = 40960
 
-    create = AsyncMock(return_value=object())
+    create = AsyncMock(return_value=_EmptyStream())
     with patch.object(groq_provider._client.chat.completions, "create", create):
-        _stream, used_body, attempt = await groq_provider._create_stream(
+        stream, used_body, attempt = await groq_provider._create_stream(
             body,
             groq_provider._admission.new_retry_session(),
         )
+        await stream.aclose()
         await attempt.aclose()
 
     assert create.call_count == 1

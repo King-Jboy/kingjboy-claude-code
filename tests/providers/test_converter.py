@@ -397,6 +397,26 @@ def test_openai_build_omits_tool_choice_when_tools_are_absent():
     assert "tool_choice" not in body
 
 
+@pytest.mark.parametrize(
+    "tool_choice", [{"type": "auto"}, {"type": "any"}, {"type": "none"}]
+)
+def test_openai_build_omits_explicit_tool_choice_when_tools_are_absent(
+    tool_choice,
+):
+    request = MessagesRequest.model_validate(
+        {
+            "model": "model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tool_choice": tool_choice,
+        }
+    )
+
+    body = build_base_request_body(request)
+
+    assert "tools" not in body
+    assert "tool_choice" not in body
+
+
 # --- Message Conversion Tests: User ---
 
 

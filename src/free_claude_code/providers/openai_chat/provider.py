@@ -62,6 +62,7 @@ from free_claude_code.providers.http import (
 )
 from free_claude_code.providers.key_pool import ApiKeyPool
 from free_claude_code.providers.model_listing import extract_openai_model_infos
+from free_claude_code.providers.openai_stream import OpenAIStreamAdapter
 from free_claude_code.providers.stream_recovery import (
     RecoveryController,
     RecoveryFailureAction,
@@ -479,15 +480,17 @@ class OpenAIChatProvider(BaseProvider):
                     last_error = error
                 else:
                     self._key_pool.mark_succeeded(key)
-                    return stream
+                    return OpenAIStreamAdapter(stream)
             if last_error is not None:
                 raise last_error
             raise RuntimeError(
                 "No API key in the configured pool is currently available."
             )
-        return await self._client.chat.completions.create(
-            **create_body,
-            stream=True,
+        return OpenAIStreamAdapter(
+            await self._client.chat.completions.create(
+                **create_body,
+                stream=True,
+            )
         )
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:

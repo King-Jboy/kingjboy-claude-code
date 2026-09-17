@@ -43,11 +43,11 @@ def resolve_anthropic_tool_choice(
     tool_choice: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Materialize Anthropic's automatic choice when tools are available."""
+    if not tools:
+        return None
     if tool_choice is not None:
         return tool_choice
-    if tools:
-        return {"type": "auto"}
-    return None
+    return {"type": "auto"}
 
 
 def _reasoning_replay_field(mode: ReasoningReplayMode) -> str | None:

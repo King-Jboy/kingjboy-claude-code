@@ -29,17 +29,19 @@ from tests.providers.support import (
 
 class AsyncStream:
     def __init__(self, chunks):
-        self._chunks = chunks
+        self._chunks = iter(chunks)
         self.closed = False
 
     def __aiter__(self):
-        return self._iter()
+        return self
 
-    async def _iter(self):
-        for chunk in self._chunks:
-            yield chunk
+    async def __anext__(self):
+        try:
+            return next(self._chunks)
+        except StopIteration as error:
+            raise StopAsyncIteration from error
 
-    async def aclose(self):
+    async def close(self):
         self.closed = True
 
 
