@@ -15,7 +15,10 @@ _PROVIDER_FIELD_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "NVIDIA_NIM_API_KEY": {
         "label": "NVIDIA NIM API Key",
-        "description": "Used by NVIDIA NIM chat and optional NIM voice transcription.",
+        "description": (
+            "Used by NVIDIA NIM chat and optional NIM voice transcription. "
+            "For a chat pool, configure NVIDIA_NIM_API_KEYS in .env."
+        ),
     },
     "HUGGINGFACE_API_KEY": {
         "label": "Hugging Face API Key",
