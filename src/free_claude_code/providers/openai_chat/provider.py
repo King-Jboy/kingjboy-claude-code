@@ -484,7 +484,12 @@ class OpenAIChatProvider(BaseProvider):
                         **create_body,
                         stream=True,
                     )
-                except (AuthenticationError, PermissionDeniedError) as error:
+                except AuthenticationError as error:
+                    self._key_pool.mark_failed(key)
+                    last_error = error
+                except PermissionDeniedError as error:
+                    if not self._rotate_on_permission_denied():
+                        raise
                     self._key_pool.mark_failed(key)
                     last_error = error
                 except RateLimitError as error:
@@ -508,6 +513,10 @@ class OpenAIChatProvider(BaseProvider):
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Return the provider-specific stream view consumed by the base runner."""
         return stream
+
+    def _rotate_on_permission_denied(self) -> bool:
+        """Return whether a 403 identifies one credential rather than the request."""
+        return True
 
     def _next_create_retry_body(
         self,

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
@@ -10,6 +11,7 @@ from free_claude_code.config.provider_catalog import NVIDIA_NIM_DEFAULT_BASE
 from free_claude_code.core.failures import ExecutionFailure
 from free_claude_code.core.reasoning import ReasoningEffort, ReasoningPolicy
 from free_claude_code.providers.admission import UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
+from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
 from free_claude_code.providers.nvidia_nim.tool_schema import (
     NIM_TOOL_ARGUMENT_ALIASES_KEY,
@@ -127,6 +129,16 @@ def _make_internal_server_error(message: str) -> openai.InternalServerError:
     return openai.InternalServerError(message, response=response, body=body)
 
 
+def _make_permission_denied_error() -> openai.PermissionDeniedError:
+    response = Response(
+        status_code=403,
+        request=Request("POST", f"{NVIDIA_NIM_DEFAULT_BASE}/chat/completions"),
+    )
+    return openai.PermissionDeniedError(
+        "model access denied", response=response, body={}
+    )
+
+
 @pytest.mark.asyncio
 async def test_init(provider_config):
     """Test provider initialization."""
@@ -141,6 +153,46 @@ async def test_init(provider_config):
         assert provider._api_key == "test_key"
         assert provider._base_url == "https://test.api.nvidia.com/v1"
         mock_openai.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pool_permission_denial_does_not_cool_nim_keys() -> None:
+    provider = NvidiaNimProvider(
+        ProviderConfig(
+            api_key="nim-first",
+            api_keys=("nim-first", "nim-second"),
+            key_rate_limit=40,
+            base_url=NVIDIA_NIM_DEFAULT_BASE,
+            rate_limit=80,
+            rate_window=60,
+        ),
+        nim_settings=NimSettings(),
+        admission=immediate_admission(),
+    )
+    first = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(side_effect=_make_permission_denied_error())
+            )
+        )
+    )
+    second = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock()))
+    )
+    provider._client.with_options = MagicMock(
+        side_effect=lambda *, api_key: {"nim-first": first, "nim-second": second}[
+            api_key
+        ]
+    )
+
+    with pytest.raises(openai.PermissionDeniedError, match="model access denied"):
+        await provider._open_chat_stream({"model": "test-model"})
+
+    first.chat.completions.create.assert_awaited_once()
+    second.chat.completions.create.assert_not_awaited()
+    assert provider._key_pool is not None
+    assert provider._key_pool.get_next_key() == "nim-second"
+    assert provider._key_pool.get_next_key() == "nim-first"
 
 
 @pytest.mark.asyncio

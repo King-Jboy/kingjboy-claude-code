@@ -108,6 +108,10 @@ class NvidiaNimProvider(OpenAIChatProvider):
         """Repair model-native MiniMax tool markup leaked by NVIDIA NIM."""
         return normalize_nim_native_tool_stream(stream, _body)
 
+    def _rotate_on_permission_denied(self) -> bool:
+        """Treat NIM 403s as model/request denials, not pool-key failures."""
+        return False
+
     def _tool_argument_aliases(self, body: dict[str, Any]) -> dict[str, dict[str, str]]:
         """Return NIM tool argument aliases captured while building this request."""
         return nim_tool_argument_aliases_from_body(body)
