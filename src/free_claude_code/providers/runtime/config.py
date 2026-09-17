@@ -158,7 +158,12 @@ def require_provider_credential(
         return
     if credential and credential.strip():
         return
-    message = f"{descriptor.credential_env} is not set. Add it to your .env file."
+    env_names = [descriptor.credential_env]
+    if pool_settings := _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id):
+        pool_env = Settings.model_fields[pool_settings[0]].validation_alias
+        if isinstance(pool_env, str):
+            env_names.insert(0, pool_env)
+    message = f"{' or '.join(env_names)} is not set. Add it to your .env file."
     if descriptor.credential_url:
         message = f"{message} Get a key at {descriptor.credential_url}"
     raise ApplicationUnavailableError(message)

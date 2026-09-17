@@ -103,6 +103,28 @@ class TestSettings:
         assert config.api_keys == ()
         assert config.key_rate_limit is None
 
+    @pytest.mark.parametrize(
+        ("provider_id", "expected_pool_env", "expected_single_env"),
+        (
+            ("nvidia_nim", "NVIDIA_NIM_API_KEYS", "NVIDIA_NIM_API_KEY"),
+            ("open_router", "OPENROUTER_API_KEYS", "OPENROUTER_API_KEY"),
+        ),
+    )
+    def test_pool_provider_missing_credential_names_both_supported_variables(
+        self, provider_id, expected_pool_env, expected_single_env
+    ):
+        from free_claude_code.application.errors import ApplicationUnavailableError
+        from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
+        from free_claude_code.providers.runtime.config import (
+            require_provider_credential,
+        )
+
+        with pytest.raises(ApplicationUnavailableError) as exc_info:
+            require_provider_credential(PROVIDER_CATALOG[provider_id], "")
+
+        assert expected_pool_env in exc_info.value.message
+        assert expected_single_env in exc_info.value.message
+
     def test_settings_loads(self):
         """Ensure Settings can be instantiated."""
         from free_claude_code.config.settings import Settings
