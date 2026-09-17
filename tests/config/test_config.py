@@ -772,6 +772,20 @@ class TestSettingsOptionalStr:
         s = Settings()
         assert s.whisper_device == device
 
+    def test_nim_voice_accepts_a_pool_without_a_singular_key(self, monkeypatch):
+        """The NIM voice backend shares the provider's plural credential pool."""
+        from free_claude_code.config.settings import Settings
+
+        monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+        monkeypatch.setenv("NVIDIA_NIM_API_KEYS", "pool-key")
+        monkeypatch.setenv("VOICE_NOTE_ENABLED", "true")
+        monkeypatch.setenv("WHISPER_DEVICE", "nvidia_nim")
+
+        settings = Settings(_env_file=None)
+
+        assert settings.nvidia_nim_api_key == ""
+        assert settings.nvidia_nim_api_keys == "pool-key"
+
 
 class TestPerModelMapping:
     """Test per-model settings and model-ref helpers."""

@@ -20,6 +20,7 @@ from pydantic_settings import (
 # loudly if a pydantic-settings upgrade moves this or the hook below it.
 from pydantic_settings.sources.providers.dotenv import parse_env_vars
 
+from .api_key_pool import parse_api_key_pool
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
@@ -522,10 +523,11 @@ class Settings(BaseSettings):
             self.voice_note_enabled
             and self.whisper_device == "nvidia_nim"
             and not self.nvidia_nim_api_key.strip()
+            and not parse_api_key_pool(self.nvidia_nim_api_keys)
         ):
             raise ValueError(
-                "NVIDIA_NIM_API_KEY is required when WHISPER_DEVICE is 'nvidia_nim'. "
-                "Set it in your .env file."
+                "NVIDIA_NIM_API_KEYS or NVIDIA_NIM_API_KEY is required when "
+                "WHISPER_DEVICE is 'nvidia_nim'. Set it in your .env file."
             )
         return self
 
