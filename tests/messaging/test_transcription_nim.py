@@ -108,7 +108,7 @@ async def test_nvidia_nim_transcriber_validates_key_and_model_before_import(
     wav = tmp_path / "stub.wav"
     wav.write_bytes(b"audio")
 
-    with pytest.raises(ValueError, match="non-empty"):
+    with pytest.raises(ValueError, match="NVIDIA_NIM_API_KEYS"):
         await NvidiaNimTranscriber(
             model="openai/whisper-large-v3",
             api_key="",

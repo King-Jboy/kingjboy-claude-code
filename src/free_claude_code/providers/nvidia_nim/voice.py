@@ -56,8 +56,8 @@ class NvidiaNimTranscriber:
     def _transcribe_sync(self, file_path: Path) -> str:
         if not self._key:
             raise ValueError(
-                "NVIDIA NIM transcription requires a non-empty "
-                "nvidia_nim_api_key (configure NVIDIA_NIM_API_KEY)."
+                "NVIDIA NIM transcription requires an API key "
+                "(configure NVIDIA_NIM_API_KEYS or NVIDIA_NIM_API_KEY)."
             )
         model_config = _NIM_ASR_MODEL_MAP.get(self._model)
         if model_config is None:
