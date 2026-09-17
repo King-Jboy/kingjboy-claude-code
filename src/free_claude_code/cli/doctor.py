@@ -138,11 +138,24 @@ def check_providers(settings: Settings) -> Iterator[Finding]:
         if status["status"] == "configured":
             yield Finding(Level.OK, env_name, model_ref)
         else:
+            credential_remedy = (
+                f"Set credentials for {status['display_name']} in the Admin UI."
+            )
+            if provider_id == "nvidia_nim":
+                credential_remedy = (
+                    "Set NVIDIA_NIM_API_KEY in Admin UI, or configure "
+                    "NVIDIA_NIM_API_KEYS in .env."
+                )
+            elif provider_id == "open_router":
+                credential_remedy = (
+                    "Set OPENROUTER_API_KEY in Admin UI, or configure "
+                    "OPENROUTER_API_KEYS in .env."
+                )
             yield Finding(
                 Level.FAIL,
                 env_name,
                 f"{model_ref} routes to {provider_id}, which is {status['label']!r}",
-                f"Set credentials for {status['display_name']} in the Admin UI.",
+                credential_remedy,
             )
 
 

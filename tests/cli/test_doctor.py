@@ -113,19 +113,19 @@ def test_a_model_routed_to_an_unconfigured_provider_fails(monkeypatch) -> None:
         "provider_config_status",
         lambda _state: [
             {
-                "provider_id": "groq",
-                "display_name": "Groq",
+                "provider_id": "nvidia_nim",
+                "display_name": "NVIDIA NIM",
                 "status": "missing_key",
                 "label": "Missing key",
             }
         ],
     )
-    settings = _settings(model="groq/some-model")
+    settings = _settings(model="nvidia_nim/some-model")
 
     findings = [f for f in doctor.check_providers(settings) if f.check == "MODEL"]
 
     assert findings[0].level is Level.FAIL
-    assert "Groq" in findings[0].remedy
+    assert "NVIDIA_NIM_API_KEYS" in findings[0].remedy
 
 
 @respx.mock
