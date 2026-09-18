@@ -101,7 +101,7 @@ def test_missing_provider_credential_is_protocol_specific_503_without_terminal_h
     payload: dict[str, object],
 ) -> None:
     message = (
-        "OPENROUTER_API_KEY is not set. Add it to your .env file. "
+        "OPENROUTER_API_KEYS or OPENROUTER_API_KEY is not set. Add it to your .env file. "
         "Get a key at https://openrouter.ai/keys"
     )
     app = create_test_app(

@@ -66,10 +66,12 @@ def _strip_message_reasoning_content(body: dict[str, Any]) -> bool:
     for message in messages:
         if not isinstance(message, dict):
             continue
-        reasoning_content = message.pop("reasoning_content", None)
-        if not isinstance(reasoning_content, str) or not reasoning_content:
+        if "reasoning_content" not in message:
             continue
         removed = True
+        reasoning_content = message.pop("reasoning_content")
+        if not isinstance(reasoning_content, str) or not reasoning_content:
+            continue
         replay = f"[Assistant reasoning from the previous turn]\n{reasoning_content}"
         content = message.get("content")
         if isinstance(content, str):

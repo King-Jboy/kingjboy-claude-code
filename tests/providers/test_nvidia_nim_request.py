@@ -687,3 +687,22 @@ class TestBuildRequestBody:
         body = {"model": "test", "messages": [{"role": "user", "content": "hi"}]}
 
         assert clone_body_without_reasoning_content(body) is None
+
+    def test_clone_body_without_reasoning_content_removes_an_empty_field(self):
+        body = {
+            "model": "test",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "",
+                    "tool_calls": [],
+                }
+            ],
+        }
+
+        cloned = clone_body_without_reasoning_content(body)
+
+        assert cloned is not None
+        assert "reasoning_content" not in cloned["messages"][0]
+        assert cloned["messages"][0]["content"] == ""
