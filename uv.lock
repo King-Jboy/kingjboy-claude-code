@@ -632,7 +632,7 @@ wheels = [
 
 [[package]]
 name = "free-claude-code"
-version = "6.20.17"
+version = "6.20.18"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
