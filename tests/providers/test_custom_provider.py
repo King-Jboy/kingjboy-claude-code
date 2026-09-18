@@ -87,3 +87,16 @@ async def test_model_discovery(custom_provider):
             ProviderModelInfo("deepseek-ai/deepseek-r1"),
         }
     )
+
+
+def test_reasoning_delta_supports_reasoning_and_reasoning_content(custom_provider):
+    delta_content = SimpleNamespace(reasoning_content="Thinking with reasoning_content")
+    delta_reasoning = SimpleNamespace(reasoning="Thinking with reasoning (ZenMux)")
+    delta_neither = SimpleNamespace(content="Just content")
+
+    profile = custom_provider._profile
+    assert profile.reasoning_delta(delta_content) == "Thinking with reasoning_content"
+    assert (
+        profile.reasoning_delta(delta_reasoning) == "Thinking with reasoning (ZenMux)"
+    )
+    assert profile.reasoning_delta(delta_neither) is None

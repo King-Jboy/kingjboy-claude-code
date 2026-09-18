@@ -62,7 +62,15 @@ class OpenAIChatProfile:
 
     def reasoning_delta(self, delta: Any) -> str | None:
         value = getattr(delta, self.reasoning_delta_field, None)
-        return value if isinstance(value, str) else None
+        if isinstance(value, str):
+            return value
+        alt_field = (
+            "reasoning"
+            if self.reasoning_delta_field == "reasoning_content"
+            else "reasoning_content"
+        )
+        alt_value = getattr(delta, alt_field, None)
+        return alt_value if isinstance(alt_value, str) else None
 
     def apply_reasoning(
         self,
