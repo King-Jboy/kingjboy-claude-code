@@ -1,7 +1,7 @@
 import json
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -677,6 +677,28 @@ async def test_responses_handler_replays_a_stored_response_continuation() -> Non
     assert isinstance(prior_content[0], ContentBlockText)
     assert prior_content[0].text == "Prior"
     assert provider.requests[1].messages[2].content == "Continue"
+
+
+@pytest.mark.asyncio
+async def test_responses_handler_persists_completed_response_off_the_event_loop() -> (
+    None
+):
+    store = MagicMock(spec=ResponsesStore)
+    handler = ResponsesHandler(
+        Settings(),
+        provider_resolver=lambda _: FakeProvider(),
+        responses_store=store,
+    )
+    request = OpenAIResponsesRequest(model="nvidia_nim/test-model", input="First")
+    response = {"id": "resp_saved", "status": "completed", "output": []}
+
+    with patch(
+        "free_claude_code.api.handlers.responses.asyncio.to_thread",
+        new_callable=AsyncMock,
+    ) as to_thread:
+        await handler._record_completed_response(request, response)
+
+    to_thread.assert_awaited_once_with(store.record, request, response)
 
 
 def test_token_count_handler_routes_and_counts_tokens() -> None:

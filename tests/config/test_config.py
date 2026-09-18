@@ -1306,6 +1306,47 @@ def test_progress_timeout_can_cover_http_read_timeout(
     assert settings.provider_progress_timeout == 600
 
 
+@pytest.mark.parametrize(
+    ("model", "pinned_models"),
+    (
+        ("nvidia_nim/test-model", "[]"),
+        ("open_router/test-model", '["nvidia_nim/test-model"]'),
+    ),
+)
+def test_nim_route_requires_progress_timeout_to_cover_its_effective_read_timeout(
+    model: str, pinned_models: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NIM enforces a 300-second read budget even when HTTP_READ_TIMEOUT is lower."""
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("MODEL", model)
+    monkeypatch.setenv("PINNED_MODELS", pinned_models)
+    monkeypatch.setenv("HTTP_READ_TIMEOUT", "120")
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "300")
+    for name in ("MODEL_FABLE", "MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(ValidationError, match="PROVIDER_PROGRESS_TIMEOUT"):
+        Settings(_env_file=None)
+
+
+def test_openrouter_route_keeps_its_configured_progress_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("MODEL", "open_router/test-model")
+    monkeypatch.setenv("PINNED_MODELS", "[]")
+    monkeypatch.setenv("HTTP_READ_TIMEOUT", "120")
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "300")
+    for name in ("MODEL_FABLE", "MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU"):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.provider_progress_timeout == 300
+
+
 def test_empty_numeric_settings_use_defaults(tmp_path: Path) -> None:
     """Empty numeric strings in .env must not crash Settings initialization."""
     from free_claude_code.config.settings import Settings

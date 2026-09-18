@@ -37,6 +37,14 @@ def _fake_riva_client(
     return riva, client, asr_service, auth
 
 
+class _RivaCredentialError(Exception):
+    def __init__(self, status: str) -> None:
+        self._status = status
+
+    def code(self) -> str:
+        return self._status
+
+
 @pytest.mark.asyncio
 async def test_nvidia_nim_transcriber_calls_riva_with_owned_configuration(
     tmp_path: Path,
@@ -74,6 +82,67 @@ async def test_nvidia_nim_transcriber_calls_riva_with_owned_configuration(
         client.RecognitionConfig.return_value,
     )
     auth.channel.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "should_recover"),
+    (
+        ("UNAUTHENTICATED", True),
+        ("RESOURCE_EXHAUSTED", True),
+        ("PERMISSION_DENIED", False),
+    ),
+)
+async def test_nvidia_nim_transcriber_rotates_only_for_key_errors(
+    tmp_path: Path,
+    status: str,
+    should_recover: bool,
+) -> None:
+    wav = tmp_path / "stub.wav"
+    wav.write_bytes(b"audio bytes")
+    transcriber = NvidiaNimTranscriber(
+        model="openai/whisper-large-v3",
+        api_keys=("first-nim-key", "second-nim-key"),
+        key_rate_limit=40,
+    )
+    first_auth = MagicMock()
+    second_auth = MagicMock()
+    first_service = MagicMock()
+    first_service.offline_recognize.side_effect = _RivaCredentialError(status)
+    second_response = SimpleNamespace(
+        results=[
+            SimpleNamespace(alternatives=[SimpleNamespace(transcript="recovered")])
+        ]
+    )
+    second_service = MagicMock()
+    second_service.offline_recognize.return_value = second_response
+    client = SimpleNamespace(
+        Auth=MagicMock(side_effect=[first_auth, second_auth]),
+        ASRService=MagicMock(side_effect=[first_service, second_service]),
+        RecognitionConfig=MagicMock(return_value=object()),
+    )
+    riva = SimpleNamespace(__path__=[], client=client)
+
+    with patch.dict("sys.modules", {"riva": riva, "riva.client": client}):
+        if should_recover:
+            result = await transcriber.transcribe(wav)
+        else:
+            with pytest.raises(_RivaCredentialError):
+                await transcriber.transcribe(wav)
+            result = None
+
+    expected_keys = ["Bearer first-nim-key"]
+    if should_recover:
+        expected_keys.append("Bearer second-nim-key")
+    assert result == ("recovered" if should_recover else None)
+    assert [
+        call.kwargs["metadata_args"][1][1] for call in client.Auth.call_args_list
+    ] == expected_keys
+    first_auth.channel.close.assert_called_once_with()
+    if should_recover:
+        second_auth.channel.close.assert_called_once_with()
+    else:
+        second_auth.channel.close.assert_not_called()
 
 
 @pytest.mark.asyncio

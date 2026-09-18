@@ -941,8 +941,9 @@ class _OpenAIChatStreamRunner:
                         attempts_started=retry_session.attempts_started,
                         max_attempts=retry_session.max_attempts,
                     )
-                    ledger = self._new_ledger()
-                    recovery = RecoveryController()
+                    if not recovery.committed:
+                        ledger = self._new_ledger()
+                        recovery = RecoveryController()
                     think_parser = ThinkTagParser()
                     function_tag_parser = FunctionTagToolParser(self._request)
                     heuristic_parser = HeuristicToolParser()

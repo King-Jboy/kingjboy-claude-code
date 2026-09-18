@@ -149,7 +149,8 @@ class NvidiaNimProvider(OpenAIChatProvider):
             retry_body = clone_body_without_chat_template(body)
             if retry_body is None:
                 return None
-            self._unsupported_chat_template_models.add(model)
+            if bad_request_like and "chat_template" in error_text:
+                self._unsupported_chat_template_models.add(model)
             logger.warning(
                 "NIM_STREAM: retrying without chat_template controls after {}",
                 "opaque 500" if opaque_internal_error else "400 error",

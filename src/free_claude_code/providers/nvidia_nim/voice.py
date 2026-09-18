@@ -2,8 +2,11 @@
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
+
+from free_claude_code.providers.key_pool import ApiKeyPool
 
 # NVIDIA NIM Whisper model mapping: (function_id, language_code)
 _NIM_ASR_MODEL_MAP: dict[str, tuple[str, str]] = {
@@ -22,14 +25,36 @@ _NIM_ASR_MODEL_MAP: dict[str, tuple[str, str]] = {
 }
 
 _RIVA_SERVER = "grpc.nvcf.nvidia.com:443"
+_NIM_VOICE_KEY_RATE_WINDOW_SECONDS = 60.0
+_ROTATABLE_NIM_VOICE_STATUS_CODES = frozenset({"UNAUTHENTICATED", "RESOURCE_EXHAUSTED"})
 
 
 class NvidiaNimTranscriber:
     """Own configured NVIDIA NIM / Riva transcription."""
 
-    def __init__(self, *, model: str, api_key: str) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str = "",
+        api_keys: tuple[str, ...] = (),
+        key_rate_limit: int = 40,
+    ) -> None:
         self._model = model
-        self._key = api_key.strip()
+        keys = tuple(key.strip() for key in api_keys if key.strip())
+        if not keys and api_key.strip():
+            keys = (api_key.strip(),)
+        self._keys = tuple(dict.fromkeys(keys))
+        self._key = self._keys[0] if self._keys else ""
+        self._key_pool = (
+            ApiKeyPool(
+                self._keys,
+                rate_limit=key_rate_limit,
+                rate_window=_NIM_VOICE_KEY_RATE_WINDOW_SECONDS,
+            )
+            if self._keys
+            else None
+        )
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -52,9 +77,11 @@ class NvidiaNimTranscriber:
         self._closed = True
         async with self._lock:
             self._key = ""
+            self._keys = ()
+            self._key_pool = None
 
     def _transcribe_sync(self, file_path: Path) -> str:
-        if not self._key:
+        if self._key_pool is None:
             raise ValueError(
                 "NVIDIA NIM transcription requires an API key "
                 "(configure NVIDIA_NIM_API_KEYS or NVIDIA_NIM_API_KEY)."
@@ -74,32 +101,98 @@ class NvidiaNimTranscriber:
                 "Install with: uv sync --extra voice"
             ) from exc
 
-        auth = riva.client.Auth(
-            use_ssl=True,
-            uri=_RIVA_SERVER,
-            metadata_args=[
-                ["function-id", function_id],
-                ["authorization", f"Bearer {self._key}"],
-            ],
-        )
-        try:
-            asr_service = riva.client.ASRService(auth)
-            config = riva.client.RecognitionConfig(
-                language_code=language_code,
-                max_alternatives=1,
-                verbatim_transcripts=True,
-            )
-            data = file_path.read_bytes()
-            response = asr_service.offline_recognize(data, config)
+        last_key_error: Exception | None = None
+        for _ in self._keys:
+            key = self._key_pool.get_next_key()
+            if key is None:
+                break
+            try:
+                transcript = _transcribe_with_riva(
+                    riva.client,
+                    file_path,
+                    function_id=function_id,
+                    language_code=language_code,
+                    api_key=key,
+                )
+            except Exception as error:
+                if not _is_rotatable_key_error(error):
+                    raise
+                last_key_error = error
+                if _is_rate_limited_key_error(error):
+                    self._key_pool.mark_rate_limited(key)
+                else:
+                    self._key_pool.mark_failed(key)
+                continue
+            self._key_pool.mark_succeeded(key)
+            return transcript
 
-            transcript = ""
-            results = getattr(response, "results", None)
-            if results and results[0].alternatives:
-                transcript = results[0].alternatives[0].transcript
-            logger.debug("NIM transcription: {} chars", len(transcript))
-            return transcript or "(no speech detected)"
-        finally:
-            auth.channel.close()
+        if last_key_error is not None:
+            raise last_key_error
+        raise RuntimeError(
+            "No NVIDIA NIM transcription API key is currently available."
+        )
+
+
+def _transcribe_with_riva(
+    client: Any,
+    file_path: Path,
+    *,
+    function_id: str,
+    language_code: str,
+    api_key: str,
+) -> str:
+    """Transcribe once with one credential, always closing its Riva channel."""
+    auth = client.Auth(
+        use_ssl=True,
+        uri=_RIVA_SERVER,
+        metadata_args=[
+            ["function-id", function_id],
+            ["authorization", f"Bearer {api_key}"],
+        ],
+    )
+    try:
+        asr_service = client.ASRService(auth)
+        config = client.RecognitionConfig(
+            language_code=language_code,
+            max_alternatives=1,
+            verbatim_transcripts=True,
+        )
+        data = file_path.read_bytes()
+        response = asr_service.offline_recognize(data, config)
+
+        transcript = ""
+        results = getattr(response, "results", None)
+        if results and results[0].alternatives:
+            transcript = results[0].alternatives[0].transcript
+        logger.debug("NIM transcription: {} chars", len(transcript))
+        return transcript or "(no speech detected)"
+    finally:
+        auth.channel.close()
+
+
+def _is_rotatable_key_error(error: Exception) -> bool:
+    """Return whether Riva identified this as an invalid-key or RPM error."""
+    code = getattr(error, "code", None)
+    if not callable(code):
+        return False
+    try:
+        return any(
+            marker in str(code()).upper()
+            for marker in _ROTATABLE_NIM_VOICE_STATUS_CODES
+        )
+    except Exception:
+        return False
+
+
+def _is_rate_limited_key_error(error: Exception) -> bool:
+    """Return whether Riva explicitly exhausted the selected credential's quota."""
+    code = getattr(error, "code", None)
+    if not callable(code):
+        return False
+    try:
+        return "RESOURCE_EXHAUSTED" in str(code()).upper()
+    except Exception:
+        return False
 
 
 async def _wait_for_thread_exit(worker: asyncio.Task[str]) -> None:

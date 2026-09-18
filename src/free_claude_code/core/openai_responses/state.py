@@ -38,15 +38,9 @@ class ResponsesStore:
             history = copy.deepcopy(record["input"])
             history.extend(copy.deepcopy(record["output"]))
             history.extend(_input_items(request.input))
-            instructions = request.instructions
-            if instructions is None:
-                stored_instructions = record.get("instructions")
-                if isinstance(stored_instructions, str):
-                    instructions = stored_instructions
         return request.model_copy(
             update={
                 "input": history,
-                "instructions": instructions,
                 "previous_response_id": None,
             }
         )

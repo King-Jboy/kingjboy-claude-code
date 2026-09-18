@@ -47,6 +47,7 @@ class ResponsesStreamAssembler:
         self._stop_reason: str | None = None
         self._provisional_error: dict[str, Any] | None = None
         self.terminal = False
+        self.completed_response_pending = False
         self.final_response: dict[str, Any] | None = None
 
     def _next_sequence_number(self) -> int:
@@ -130,8 +131,14 @@ class ResponsesStreamAssembler:
                 self.final_response, sequence_number=self._next_sequence_number()
             )
         )
-        self.terminal = True
+        self.completed_response_pending = True
         return chunks
+
+    def finalize_completed_response(self) -> None:
+        """Commit a completed response after its durable observer succeeds."""
+        if self.completed_response_pending:
+            self.completed_response_pending = False
+            self.terminal = True
 
     def fail_response(self, data: Mapping[str, Any]) -> list[str]:
         chunks = self._flush_active_blocks()
@@ -151,6 +158,7 @@ class ResponsesStreamAssembler:
 
     def _finish_failed_response(self, error: dict[str, Any]) -> list[str]:
         self._provisional_error = None
+        self.completed_response_pending = False
         self.final_response = self.response_payload(status="failed", error=error)
         self.terminal = True
         return [

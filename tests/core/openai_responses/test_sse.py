@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -283,6 +283,43 @@ async def test_response_payload_preserves_explicit_request_options() -> None:
     assert response["temperature"] == 0.0
     assert response["top_p"] == 0.0
     assert response["max_output_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_completed_response_observer_can_be_async() -> None:
+    observer = AsyncMock()
+    request = OpenAIResponsesRequest(model="nvidia_nim/test-model", input="hi")
+
+    text = await _collect_sse(
+        _ADAPTER.iter_sse_from_anthropic(
+            _aiter(_anthropic_text_stream("done")),
+            request,
+            on_completed_response=observer,
+        )
+    )
+
+    events = parse_sse_text(text)
+    assert events[-1].event == "response.completed"
+    observer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_completed_response_observer_failure_replaces_completion() -> None:
+    observer = AsyncMock(side_effect=OSError("state storage is unavailable"))
+    request = OpenAIResponsesRequest(model="nvidia_nim/test-model", input="hi")
+
+    text = await _collect_sse(
+        _ADAPTER.iter_sse_from_anthropic(
+            _aiter(_anthropic_text_stream("done")),
+            request,
+            on_completed_response=observer,
+        )
+    )
+
+    events = parse_sse_text(text)
+    assert events[-1].event == "response.failed"
+    assert all(event.event != "response.completed" for event in events)
+    observer.assert_awaited_once()
 
 
 @pytest.mark.asyncio

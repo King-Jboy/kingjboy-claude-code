@@ -1,8 +1,9 @@
 """Translate Anthropic SSE streams into OpenAI Responses SSE streams."""
 
 import asyncio
+import inspect
 import sys
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 
 from free_claude_code.core.diagnostics import safe_exception_message
@@ -14,7 +15,7 @@ from .models import OpenAIResponsesRequest
 from .streaming import ResponsesStreamAssembler
 
 PostStartTerminalFailureObserver = Callable[[BaseException], None]
-CompletedResponseObserver = Callable[[Mapping[str, Any]], None]
+CompletedResponseObserver = Callable[[Mapping[str, Any]], Awaitable[None] | None]
 
 
 async def iter_responses_sse_from_anthropic(
@@ -32,10 +33,11 @@ async def iter_responses_sse_from_anthropic(
     try:
         async for event in events:
             output_chunks = assembler.process_anthropic_event(event)
-            if assembler.terminal and not completed_observed:
-                _observe_completed_response(
+            if assembler.completed_response_pending and not completed_observed:
+                await _observe_completed_response(
                     on_completed_response, assembler.final_response
                 )
+                assembler.finalize_completed_response()
                 completed_observed = True
             for chunk in output_chunks:
                 yield chunk
@@ -43,8 +45,11 @@ async def iter_responses_sse_from_anthropic(
             if assembler.terminal:
                 return
         output_chunks = assembler.finish_if_needed()
-        if assembler.terminal and not completed_observed:
-            _observe_completed_response(on_completed_response, assembler.final_response)
+        if assembler.completed_response_pending and not completed_observed:
+            await _observe_completed_response(
+                on_completed_response, assembler.final_response
+            )
+            assembler.finalize_completed_response()
         for chunk in output_chunks:
             yield chunk
             emitted_any_chunk = True
@@ -100,7 +105,7 @@ def _observe_post_start_terminal_failure(
         observer(exc)
 
 
-def _observe_completed_response(
+async def _observe_completed_response(
     observer: CompletedResponseObserver | None,
     response: Mapping[str, Any] | None,
 ) -> None:
@@ -109,7 +114,9 @@ def _observe_completed_response(
         and response is not None
         and response.get("status") == "completed"
     ):
-        observer(response)
+        result = observer(response)
+        if inspect.isawaitable(result):
+            await result
 
 
 def _unexpected_error_data(exc: BaseException) -> dict[str, dict[str, str]]:

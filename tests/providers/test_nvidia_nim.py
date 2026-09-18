@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1379,7 +1380,7 @@ async def test_stream_response_stops_after_one_opaque_midstream_500_retry(
 
 
 @pytest.mark.asyncio
-async def test_stream_response_learns_from_an_opaque_500_with_thinking_options(
+async def test_stream_response_recovers_from_an_opaque_500_without_disabling_thinking(
     nim_provider,
 ):
     req = make_request(model="a-changing-nim-model")
@@ -1395,7 +1396,11 @@ async def test_stream_response_learns_from_an_opaque_500_with_thinking_options(
     with patch.object(
         nim_provider._client.chat.completions, "create", new_callable=AsyncMock
     ) as mock_create:
-        mock_create.side_effect = [failed_stream(), recovered_stream()]
+        mock_create.side_effect = [
+            failed_stream(),
+            recovered_stream(),
+            recovered_stream(),
+        ]
 
         events = [
             event
@@ -1403,12 +1408,66 @@ async def test_stream_response_learns_from_an_opaque_500_with_thinking_options(
                 req, reasoning=ReasoningPolicy.on()
             )
         ]
+        future_events = [
+            event
+            async for event in nim_provider.stream_response(
+                req, reasoning=ReasoningPolicy.on()
+            )
+        ]
 
-    assert mock_create.await_count == 2
+    assert mock_create.await_count == 3
     assert "chat_template_kwargs" in mock_create.await_args_list[0].kwargs["extra_body"]
     assert "chat_template_kwargs" not in mock_create.await_args_list[1].kwargs.get(
         "extra_body", {}
     )
+    assert "chat_template_kwargs" in mock_create.await_args_list[2].kwargs["extra_body"]
+    assert any("Recovered" in event for event in events)
+    assert any("Recovered" in event for event in future_events)
+
+
+@pytest.mark.asyncio
+async def test_stream_response_does_not_duplicate_message_start_after_keepalive(
+    nim_provider,
+):
+    """A correction after a keepalive cannot start a second Anthropic stream."""
+    req = make_request(model="a-changing-nim-model")
+    error = _make_internal_server_error("Internal server error")
+
+    async def delayed_failed_stream():
+        await asyncio.sleep(0.02)
+        raise error
+        yield None
+
+    async def recovered_stream():
+        yield _content_chunk("Recovered", finish_reason="stop")
+
+    with (
+        patch(
+            "free_claude_code.providers.openai_chat.provider."
+            "UPSTREAM_QUIET_KEEPALIVE_SECONDS",
+            0.001,
+        ),
+        patch(
+            "free_claude_code.providers.openai_chat.provider."
+            "KEEPALIVE_INTERVAL_SECONDS",
+            0.001,
+        ),
+        patch.object(
+            nim_provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+        ) as mock_create,
+    ):
+        mock_create.side_effect = [delayed_failed_stream(), recovered_stream()]
+        events = [
+            event
+            async for event in nim_provider.stream_response(
+                req, reasoning=ReasoningPolicy.on()
+            )
+        ]
+
+    message_starts = [event for event in events if "event: message_start" in event]
+    assert len(message_starts) == 1
     assert any("Recovered" in event for event in events)
 
 

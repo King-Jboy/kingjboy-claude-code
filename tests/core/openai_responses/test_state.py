@@ -23,7 +23,7 @@ def _completed_response(response_id: str) -> dict[str, object]:
     }
 
 
-def test_continuation_replays_prior_input_and_completed_output() -> None:
+def test_continuation_replays_prior_input_without_carrying_instructions() -> None:
     store = ResponsesStore()
     first = OpenAIResponsesRequest(
         model="nvidia_nim/test-model",
@@ -49,7 +49,30 @@ def test_continuation_replays_prior_input_and_completed_output() -> None:
         },
         "Continue from there.",
     ]
-    assert resolved.instructions == "Keep the project context."
+    assert resolved.instructions is None
+
+
+def test_continuation_uses_its_new_instructions() -> None:
+    store = ResponsesStore()
+    store.record(
+        OpenAIResponsesRequest(
+            model="nvidia_nim/test-model",
+            input="First question",
+            instructions="Old instructions.",
+        ),
+        _completed_response("resp_prior"),
+    )
+
+    resolved = store.resolve(
+        OpenAIResponsesRequest(
+            model="nvidia_nim/test-model",
+            input="Continue from there.",
+            instructions="New instructions.",
+            previous_response_id="resp_prior",
+        )
+    )
+
+    assert resolved.instructions == "New instructions."
 
 
 def test_unknown_continuation_id_is_rejected() -> None:

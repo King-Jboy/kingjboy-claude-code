@@ -449,7 +449,7 @@ def test_bootstrap_selects_nvidia_transcriber_without_loading_riva() -> None:
     assert isinstance(_create_transcriber(settings), NvidiaNimTranscriber)
 
 
-def test_bootstrap_nvidia_transcriber_uses_first_nim_pool_credential() -> None:
+def test_bootstrap_nvidia_transcriber_uses_all_nim_pool_credentials() -> None:
     settings = _settings(
         voice_note_enabled=True,
         whisper_device="nvidia_nim",
@@ -465,7 +465,8 @@ def test_bootstrap_nvidia_transcriber_uses_first_nim_pool_credential() -> None:
 
     transcriber.assert_called_once_with(
         model="openai/whisper-large-v3",
-        api_key="nvapi-first",
+        api_keys=("nvapi-first", "nvapi-second"),
+        key_rate_limit=40,
     )
 
 

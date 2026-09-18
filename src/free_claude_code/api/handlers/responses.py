@@ -1,5 +1,6 @@
 """OpenAI Responses API product flow for Codex clients."""
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
@@ -178,13 +179,17 @@ class ResponsesHandler:
             content=openai_failure_payload(failure),
         )
 
-    def _record_completed_response(
+    async def _record_completed_response(
         self,
         request_data: OpenAIResponsesRequest,
         response: Mapping[str, Any],
     ) -> None:
         try:
-            self._responses_store.record(request_data, response)
+            await asyncio.to_thread(
+                self._responses_store.record,
+                request_data,
+                response,
+            )
         except Exception as exc:
             trace_event(
                 stage="responses",
@@ -192,6 +197,7 @@ class ResponsesHandler:
                 source="openai_responses",
                 exc_type=type(exc).__name__,
             )
+            raise
 
     @staticmethod
     def _trace_post_start_terminal_failure(

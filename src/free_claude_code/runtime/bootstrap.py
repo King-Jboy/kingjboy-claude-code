@@ -21,7 +21,7 @@ from free_claude_code.providers.openai_codex import (
     OpenAICodexProvider,
 )
 from free_claude_code.providers.runtime import ProviderRuntime
-from free_claude_code.providers.runtime.config import provider_credential
+from free_claude_code.providers.runtime.config import provider_credentials
 from free_claude_code.providers.runtime.factory import create_provider
 
 from .application import ApplicationRuntime, RestartCallback, StopCallback
@@ -90,7 +90,8 @@ def _create_transcriber(settings: Settings) -> Transcriber | None:
     if settings.whisper_device == "nvidia_nim":
         return NvidiaNimTranscriber(
             model=settings.whisper_model,
-            api_key=provider_credential(PROVIDER_CATALOG["nvidia_nim"], settings),
+            api_keys=provider_credentials(PROVIDER_CATALOG["nvidia_nim"], settings),
+            key_rate_limit=settings.nvidia_nim_key_rate_limit,
         )
     return TranscriptionService(
         model=settings.whisper_model,
