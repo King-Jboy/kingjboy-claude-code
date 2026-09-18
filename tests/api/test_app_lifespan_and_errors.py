@@ -449,6 +449,90 @@ def test_bootstrap_selects_nvidia_transcriber_without_loading_riva() -> None:
     assert isinstance(_create_transcriber(settings), NvidiaNimTranscriber)
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_nvidia_voice_uses_the_current_chat_key_pool(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(
+        model="nvidia_nim/test-model",
+        voice_note_enabled=True,
+        whisper_device="nvidia_nim",
+        whisper_model="openai/whisper-large-v3",
+        nvidia_nim_api_key="",
+        nvidia_nim_api_keys="nim-shared-key",
+        nvidia_nim_key_rate_limit=1,
+    )
+    with patch("free_claude_code.runtime.bootstrap.configure_logging"):
+        asgi_app = build_asgi_app(settings)
+
+    transcriber = cast(NvidiaNimTranscriber, asgi_app.runtime._transcriber)
+    lease = await asgi_app.runtime.provider_manager.acquire()
+    try:
+        provider = lease.resolve_provider("nvidia_nim")
+        assert isinstance(provider, NvidiaNimProvider)
+        assert provider.api_key_pool is not None
+        assert transcriber._key_pool_provider is not None
+        assert await transcriber._key_pool_provider() is provider.api_key_pool
+    finally:
+        await lease.release()
+
+    audio = tmp_path / "voice.wav"
+    audio.write_bytes(b"audio")
+    observed_pools = []
+
+    def observe_shared_pool(_file_path: Path) -> str:
+        observed_pools.append(transcriber._key_pool)
+        return "transcript"
+
+    try:
+        with patch.object(transcriber, "_transcribe_sync", side_effect=observe_shared_pool):
+            assert await transcriber.transcribe(audio) == "transcript"
+        assert observed_pools == [provider.api_key_pool]
+    finally:
+        await asgi_app.runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_nvidia_voice_follows_a_replacement_nim_generation() -> None:
+    settings = _settings(
+        model="nvidia_nim/test-model",
+        voice_note_enabled=True,
+        whisper_device="nvidia_nim",
+        whisper_model="openai/whisper-large-v3",
+        nvidia_nim_api_key="",
+        nvidia_nim_api_keys="nim-old-key",
+    )
+    with patch("free_claude_code.runtime.bootstrap.configure_logging"):
+        asgi_app = build_asgi_app(settings)
+
+    transcriber = cast(NvidiaNimTranscriber, asgi_app.runtime._transcriber)
+    manager = asgi_app.runtime.provider_manager
+    first_lease = await manager.acquire()
+    try:
+        first_provider = first_lease.resolve_provider("nvidia_nim")
+        assert isinstance(first_provider, NvidiaNimProvider)
+        first_pool = first_provider.api_key_pool
+    finally:
+        await first_lease.release()
+
+    try:
+        await manager.replace(
+            settings.model_copy(update={"nvidia_nim_api_keys": "nim-new-key"}),
+            commit=lambda: None,
+        )
+        second_lease = await manager.acquire()
+        try:
+            second_provider = second_lease.resolve_provider("nvidia_nim")
+            assert isinstance(second_provider, NvidiaNimProvider)
+            assert second_provider.api_key_pool is not first_pool
+            assert transcriber._key_pool_provider is not None
+            assert await transcriber._key_pool_provider() is second_provider.api_key_pool
+        finally:
+            await second_lease.release()
+    finally:
+        await asgi_app.runtime.close()
+
+
 def test_bootstrap_nvidia_transcriber_uses_all_nim_pool_credentials() -> None:
     settings = _settings(
         voice_note_enabled=True,

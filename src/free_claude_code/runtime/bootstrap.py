@@ -1,6 +1,7 @@
 """Single production composition root for the FCC server."""
 
 import os
+from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from free_claude_code.messaging.transcription import TranscriptionService
 from free_claude_code.messaging.voice import Transcriber
 from free_claude_code.providers.admission import ProviderAdmissionController
 from free_claude_code.providers.base import BaseProvider, ProviderConfig
+from free_claude_code.providers.key_pool import ApiKeyPool
+from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
 from free_claude_code.providers.nvidia_nim.voice import NvidiaNimTranscriber
 from free_claude_code.providers.openai_codex import (
     OpenAIAuthManager,
@@ -60,7 +63,12 @@ def build_asgi_app(
     )
     runtime = ApplicationRuntime(
         provider_manager,
-        transcriber=_create_transcriber(settings),
+        transcriber=_create_transcriber(
+            settings,
+            nvidia_nim_key_pool_provider=partial(
+                _current_nvidia_nim_key_pool, provider_manager
+            ),
+        ),
         restart_callback=restart_callback,
         stop_callback=stop_callback,
         connected_accounts={"openai": openai_auth},
@@ -84,14 +92,40 @@ def _create_openai_provider(
     return OpenAICodexProvider(config, auth=auth, admission=admission)
 
 
-def _create_transcriber(settings: Settings) -> Transcriber | None:
+async def _current_nvidia_nim_key_pool(
+    provider_manager: ProviderRuntimeManager,
+) -> ApiKeyPool | None:
+    """Return the NIM pool from the current provider generation."""
+    lease = await provider_manager.acquire()
+    try:
+        provider = lease.resolve_provider("nvidia_nim")
+        if not isinstance(provider, NvidiaNimProvider):
+            raise RuntimeError("NVIDIA NIM provider did not expose its key pool.")
+        return provider.api_key_pool
+    finally:
+        await lease.release()
+
+
+def _create_transcriber(
+    settings: Settings,
+    *,
+    nvidia_nim_key_pool_provider: Callable[[], Awaitable[ApiKeyPool | None]] | None = None,
+) -> Transcriber | None:
     if not settings.voice_note_enabled:
         return None
     if settings.whisper_device == "nvidia_nim":
+        api_keys = provider_credentials(PROVIDER_CATALOG["nvidia_nim"], settings)
+        if nvidia_nim_key_pool_provider is None:
+            return NvidiaNimTranscriber(
+                model=settings.whisper_model,
+                api_keys=api_keys,
+                key_rate_limit=settings.nvidia_nim_key_rate_limit,
+            )
         return NvidiaNimTranscriber(
             model=settings.whisper_model,
-            api_keys=provider_credentials(PROVIDER_CATALOG["nvidia_nim"], settings),
+            api_keys=api_keys,
             key_rate_limit=settings.nvidia_nim_key_rate_limit,
+            key_pool_provider=nvidia_nim_key_pool_provider,
         )
     return TranscriptionService(
         model=settings.whisper_model,

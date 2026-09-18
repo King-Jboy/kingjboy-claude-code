@@ -1,6 +1,7 @@
 """NVIDIA NIM / Riva offline ASR for voice notes (provider-owned transport)."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ _NIM_ASR_MODEL_MAP: dict[str, tuple[str, str]] = {
 _RIVA_SERVER = "grpc.nvcf.nvidia.com:443"
 _NIM_VOICE_KEY_RATE_WINDOW_SECONDS = 60.0
 _ROTATABLE_NIM_VOICE_STATUS_CODES = frozenset({"UNAUTHENTICATED", "RESOURCE_EXHAUSTED"})
+NimKeyPoolProvider = Callable[[], Awaitable[ApiKeyPool | None]]
 
 
 class NvidiaNimTranscriber:
@@ -39,6 +41,7 @@ class NvidiaNimTranscriber:
         api_key: str = "",
         api_keys: tuple[str, ...] = (),
         key_rate_limit: int = 40,
+        key_pool_provider: NimKeyPoolProvider | None = None,
     ) -> None:
         self._model = model
         keys = tuple(key.strip() for key in api_keys if key.strip())
@@ -55,6 +58,7 @@ class NvidiaNimTranscriber:
             if self._keys
             else None
         )
+        self._key_pool_provider = key_pool_provider
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -63,6 +67,8 @@ class NvidiaNimTranscriber:
         async with self._lock:
             if self._closed:
                 raise RuntimeError("NVIDIA NIM transcriber is closed.")
+            if self._key_pool_provider is not None:
+                self._key_pool = await self._key_pool_provider()
             worker = asyncio.create_task(
                 asyncio.to_thread(self._transcribe_sync, file_path)
             )
@@ -79,6 +85,7 @@ class NvidiaNimTranscriber:
             self._key = ""
             self._keys = ()
             self._key_pool = None
+            self._key_pool_provider = None
 
     def _transcribe_sync(self, file_path: Path) -> str:
         if self._key_pool is None:
@@ -102,7 +109,7 @@ class NvidiaNimTranscriber:
             ) from exc
 
         last_key_error: Exception | None = None
-        for _ in self._keys:
+        while True:
             key = self._key_pool.get_next_key()
             if key is None:
                 break

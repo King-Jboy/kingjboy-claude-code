@@ -289,6 +289,11 @@ class OpenAIChatProvider(BaseProvider):
             http_client=http_client,
         )
 
+    @property
+    def api_key_pool(self) -> ApiKeyPool | None:
+        """Return this runtime generation's shared credential pool."""
+        return self._key_pool
+
     async def cleanup(self) -> None:
         """Release HTTP client resources."""
         client = getattr(self, "_client", None)
