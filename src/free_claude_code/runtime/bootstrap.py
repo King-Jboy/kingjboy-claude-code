@@ -109,7 +109,8 @@ async def _current_nvidia_nim_key_pool(
 def _create_transcriber(
     settings: Settings,
     *,
-    nvidia_nim_key_pool_provider: Callable[[], Awaitable[ApiKeyPool | None]] | None = None,
+    nvidia_nim_key_pool_provider: Callable[[], Awaitable[ApiKeyPool | None]]
+    | None = None,
 ) -> Transcriber | None:
     if not settings.voice_note_enabled:
         return None

@@ -485,7 +485,9 @@ async def test_bootstrap_nvidia_voice_uses_the_current_chat_key_pool(
         return "transcript"
 
     try:
-        with patch.object(transcriber, "_transcribe_sync", side_effect=observe_shared_pool):
+        with patch.object(
+            transcriber, "_transcribe_sync", side_effect=observe_shared_pool
+        ):
             assert await transcriber.transcribe(audio) == "transcript"
         assert observed_pools == [provider.api_key_pool]
     finally:
@@ -526,7 +528,9 @@ async def test_bootstrap_nvidia_voice_follows_a_replacement_nim_generation() -> 
             assert isinstance(second_provider, NvidiaNimProvider)
             assert second_provider.api_key_pool is not first_pool
             assert transcriber._key_pool_provider is not None
-            assert await transcriber._key_pool_provider() is second_provider.api_key_pool
+            assert (
+                await transcriber._key_pool_provider() is second_provider.api_key_pool
+            )
         finally:
             await second_lease.release()
     finally:
