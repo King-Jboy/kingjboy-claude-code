@@ -441,4 +441,3 @@ async def test_key_pool_exhaustion_raises_rate_limit_execution_failure():
     assert exc_info.value.kind == FailureKind.RATE_LIMIT
     assert exc_info.value.status_code == 429
     assert exc_info.value.retryable is True
-

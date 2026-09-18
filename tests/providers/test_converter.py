@@ -2093,4 +2093,3 @@ def test_build_base_request_body_parallel_tool_calls_omitted_without_tools() -> 
     )
     body_with_tools = build_base_request_body(request_with_tools)
     assert body_with_tools["parallel_tool_calls"] is False
-

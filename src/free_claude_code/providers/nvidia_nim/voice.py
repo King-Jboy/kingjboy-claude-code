@@ -71,7 +71,10 @@ class NvidiaNimTranscriber:
             chat_pool = await self._key_pool_provider()
             if chat_pool is not None:
                 chat_keys = tuple(state.key for state in chat_pool._keys)
-                if self._key_pool is None or tuple(s.key for s in self._key_pool._keys) != chat_keys:
+                if (
+                    self._key_pool is None
+                    or tuple(s.key for s in self._key_pool._keys) != chat_keys
+                ):
                     self._key_pool = ApiKeyPool(
                         chat_keys,
                         rate_limit=self._key_rate_limit,
@@ -225,4 +228,3 @@ async def _wait_for_thread_exit(
         logger.warning("Timed out waiting for transcription worker thread to exit")
     if not worker.cancelled():
         worker.exception()
-

@@ -1623,5 +1623,3 @@ def test_prepare_create_body_does_not_mutate_input_messages(nim_provider):
     assert orig_msg["content"] == "hi"
     assert "reasoning_content" in body["messages"][0]
     assert body["messages"][0]["content"] == "hi"
-
-

@@ -19,7 +19,9 @@ class _RivaCredentialError(Exception):
 
 
 @pytest.mark.asyncio
-async def test_voice_failure_does_not_disable_shared_chat_key_pool(tmp_path: Path) -> None:
+async def test_voice_failure_does_not_disable_shared_chat_key_pool(
+    tmp_path: Path,
+) -> None:
     wav = tmp_path / "test.wav"
     wav.write_bytes(b"audio data")
 
@@ -40,11 +42,11 @@ async def test_voice_failure_does_not_disable_shared_chat_key_pool(tmp_path: Pat
     first_auth = MagicMock()
     second_auth = MagicMock()
     first_service = MagicMock()
-    first_service.offline_recognize.side_effect = _RivaCredentialError("UNAUTHENTICATED")
+    first_service.offline_recognize.side_effect = _RivaCredentialError(
+        "UNAUTHENTICATED"
+    )
     second_response = SimpleNamespace(
-        results=[
-            SimpleNamespace(alternatives=[SimpleNamespace(transcript="success")])
-        ]
+        results=[SimpleNamespace(alternatives=[SimpleNamespace(transcript="success")])]
     )
     second_service = MagicMock()
     second_service.offline_recognize.return_value = second_response
