@@ -129,6 +129,7 @@ def make_text_recovery_body(
     recovery = make_response_recovery_body(body, partial_text, partial_thinking)
     recovery.pop("tools", None)
     recovery.pop("tool_choice", None)
+    recovery.pop("parallel_tool_calls", None)
     return recovery
 
 

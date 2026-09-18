@@ -49,6 +49,7 @@ class NvidiaNimTranscriber:
             keys = (api_key.strip(),)
         self._keys = tuple(dict.fromkeys(keys))
         self._key = self._keys[0] if self._keys else ""
+        self._key_rate_limit = key_rate_limit
         self._key_pool = (
             ApiKeyPool(
                 self._keys,
@@ -64,19 +65,26 @@ class NvidiaNimTranscriber:
 
     async def transcribe(self, file_path: Path) -> str:
         """Transcribe one audio file without blocking the event loop."""
-        async with self._lock:
-            if self._closed:
-                raise RuntimeError("NVIDIA NIM transcriber is closed.")
-            if self._key_pool_provider is not None:
-                self._key_pool = await self._key_pool_provider()
-            worker = asyncio.create_task(
-                asyncio.to_thread(self._transcribe_sync, file_path)
-            )
-            try:
-                return await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                await _wait_for_thread_exit(worker)
-                raise
+        if self._closed:
+            raise RuntimeError("NVIDIA NIM transcriber is closed.")
+        if self._key_pool_provider is not None:
+            chat_pool = await self._key_pool_provider()
+            if chat_pool is not None:
+                chat_keys = tuple(state.key for state in chat_pool._keys)
+                if self._key_pool is None or tuple(s.key for s in self._key_pool._keys) != chat_keys:
+                    self._key_pool = ApiKeyPool(
+                        chat_keys,
+                        rate_limit=self._key_rate_limit,
+                        rate_window=_NIM_VOICE_KEY_RATE_WINDOW_SECONDS,
+                    )
+        worker = asyncio.create_task(
+            asyncio.to_thread(self._transcribe_sync, file_path)
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await _wait_for_thread_exit(worker)
+            raise
 
     async def close(self) -> None:
         """Close this stateless adapter to future work."""
@@ -202,12 +210,19 @@ def _is_rate_limited_key_error(error: Exception) -> bool:
         return False
 
 
-async def _wait_for_thread_exit(worker: asyncio.Task[str]) -> None:
+async def _wait_for_thread_exit(
+    worker: asyncio.Task[str], *, timeout: float = 5.0
+) -> None:
     """Wait through repeated caller cancellation without cancelling thread work."""
-    while not worker.done():
-        try:
-            await asyncio.shield(asyncio.wait((worker,)))
-        except asyncio.CancelledError:
-            continue
+    try:
+        async with asyncio.timeout(timeout):
+            while not worker.done():
+                try:
+                    await asyncio.shield(asyncio.wait((worker,)))
+                except asyncio.CancelledError:
+                    continue
+    except TimeoutError:
+        logger.warning("Timed out waiting for transcription worker thread to exit")
     if not worker.cancelled():
         worker.exception()
+

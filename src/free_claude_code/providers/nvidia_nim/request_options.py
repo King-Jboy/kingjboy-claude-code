@@ -70,11 +70,12 @@ def apply_nim_request_options(
     if nim.seed is not None:
         body["seed"] = nim.seed
 
-    body["parallel_tool_calls"] = (
-        nim.parallel_tool_calls
-        if request_data.parallel_tool_calls is None
-        else request_data.parallel_tool_calls
-    )
+    if body.get("tools"):
+        body["parallel_tool_calls"] = (
+            nim.parallel_tool_calls
+            if request_data.parallel_tool_calls is None
+            else request_data.parallel_tool_calls
+        )
 
     extra_body: dict[str, Any] = {}
     request_extra = request_data.extra_body

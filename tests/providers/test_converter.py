@@ -2064,3 +2064,33 @@ def test_convert_messages_coalesces_adjacent_assistant_messages() -> None:
     assert converted[0] == {"role": "user", "content": "Hello"}
     assert converted[1]["role"] == "assistant"
     assert converted[1]["content"] == "Part 1\n\nPart 2"
+
+
+def test_build_base_request_body_parallel_tool_calls_omitted_without_tools() -> None:
+    request = MessagesRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "parallel_tool_calls": False,
+        }
+    )
+    body = build_base_request_body(request)
+    assert "parallel_tool_calls" not in body
+
+    request_with_tools = MessagesRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "parallel_tool_calls": False,
+            "tools": [
+                {
+                    "name": "t",
+                    "description": "d",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        }
+    )
+    body_with_tools = build_base_request_body(request_with_tools)
+    assert body_with_tools["parallel_tool_calls"] is False
+

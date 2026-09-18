@@ -413,3 +413,32 @@ async def test_cleanup_closes_openai_client(open_router_provider):
     await open_router_provider.cleanup()
 
     open_router_provider._client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_key_pool_exhaustion_raises_rate_limit_execution_failure():
+    from free_claude_code.core.failures import ExecutionFailure, FailureKind
+
+    provider = OpenRouterProvider(
+        ProviderConfig(
+            api_key="k1",
+            api_keys=("k1", "k2"),
+            base_url="https://openrouter.ai/api/v1",
+            key_rate_limit=10,
+            rate_limit=10,
+            rate_window=60,
+        ),
+        admission=immediate_admission(),
+    )
+    assert provider._key_pool is not None
+    # Mark all keys as failed/exhausted
+    provider._key_pool.mark_failed("k1")
+    provider._key_pool.mark_failed("k2")
+
+    with pytest.raises(ExecutionFailure) as exc_info:
+        await provider._open_chat_stream({"model": "test"})
+
+    assert exc_info.value.kind == FailureKind.RATE_LIMIT
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.retryable is True
+

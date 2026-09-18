@@ -782,3 +782,24 @@ async def test_stream_failure_redacts_credentials_from_customer_diagnostic() -> 
     assert "sk-this-must-never-be-returned" not in exc_info.value.message
     assert "Authorization: <redacted>" in exc_info.value.message
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_iter_sse_handles_eof_done_without_trailing_newline() -> None:
+    from free_claude_code.providers.openai_codex.provider import _iter_sse
+
+    content = (
+        'event: response.output_item.added\n'
+        'data: {"type": "response.output_item.added"}\n\n'
+        'data: [DONE]'
+    )
+    response = httpx.Response(
+        200,
+        content=content.encode(),
+        request=httpx.Request("POST", "https://example.com"),
+    )
+
+    events = [event async for event in _iter_sse(response)]
+    assert len(events) == 1
+    assert events[0][0] == "response.output_item.added"
+

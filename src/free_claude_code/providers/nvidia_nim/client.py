@@ -89,16 +89,28 @@ class NvidiaNimProvider(OpenAIChatProvider):
         body = body_without_nim_tool_argument_aliases(body)
         model = _model_id(body)
         if model in self._unsupported_reasoning_content_models:
+            body = dict(body)
+            messages = body.get("messages")
+            if isinstance(messages, list):
+                body["messages"] = [
+                    dict(msg) if isinstance(msg, dict) else msg for msg in messages
+                ]
             _strip_message_reasoning_content(body)
         if model in self._unsupported_reasoning_budget_models:
             extra = body.get("extra_body")
             if isinstance(extra, dict):
+                body = dict(body)
+                extra = dict(extra)
+                body["extra_body"] = extra
                 _strip_reasoning_budget_fields(extra)
                 if not extra:
                     body.pop("extra_body", None)
         if model in self._unsupported_chat_template_models:
             extra = body.get("extra_body")
             if isinstance(extra, dict):
+                body = dict(body)
+                extra = dict(extra)
+                body["extra_body"] = extra
                 _strip_chat_template_fields(extra)
                 if not extra:
                     body.pop("extra_body", None)
@@ -256,9 +268,19 @@ def _is_degraded_function(body: Mapping[str, Any]) -> bool:
 
 def _is_opaque_internal_server_error(error: Exception) -> bool:
     """Return whether NIM provided no request-shape correction to make."""
-    if not isinstance(error, openai.InternalServerError):
-        return False
-    if getattr(error, "status_code", None) != 500:
+    status_code = getattr(error, "status_code", None)
+    if isinstance(error, openai.InternalServerError) and status_code == 500:
+        pass
+    elif isinstance(error, openai.APIError) and status_code is None:
+        bodies = _nim_error_bodies(error)
+        is_500 = any(
+            body.get("code") in (500, "500")
+            or body.get("type") == "internal_server_error"
+            for body in bodies
+        )
+        if not is_500:
+            return False
+    else:
         return False
     error_text = str(error)
     error_body = getattr(error, "body", None)

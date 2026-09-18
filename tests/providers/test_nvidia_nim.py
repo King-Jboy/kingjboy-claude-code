@@ -1532,3 +1532,96 @@ async def test_stream_response_internal_reasoning_content_error_does_not_downgra
         for call in mock_create.await_args_list
     )
     assert "Provider API request failed" in exc_info.value.message
+
+
+def test_build_request_body_parallel_tool_calls_requires_tools(nim_provider):
+    req_no_tools = make_request()
+    body_no_tools = nim_provider._build_request_body(req_no_tools)
+    assert "parallel_tool_calls" not in body_no_tools
+
+    req_with_tools = make_request(
+        tools=[
+            tool(
+                "test_tool",
+                "A test tool",
+                {"type": "object", "properties": {"x": {"type": "string"}}},
+            )
+        ]
+    )
+    body_with_tools = nim_provider._build_request_body(req_with_tools)
+    assert "parallel_tool_calls" in body_with_tools
+    assert body_with_tools["parallel_tool_calls"] is True
+
+
+def test_is_opaque_internal_server_error_accepts_api_error_with_in_stream_500():
+    from free_claude_code.providers.nvidia_nim.client import (
+        _is_opaque_internal_server_error,
+    )
+
+    err1 = openai.APIError(
+        "Internal server error", request=MagicMock(), body={"code": 500}
+    )
+    assert getattr(err1, "status_code", None) is None
+    assert _is_opaque_internal_server_error(err1) is True
+
+    err2 = openai.APIError(
+        "Internal server error",
+        request=MagicMock(),
+        body={"error": {"code": 500, "message": "In-stream fail"}},
+    )
+    assert _is_opaque_internal_server_error(err2) is True
+
+    err3 = openai.APIError(
+        "Internal server error",
+        request=MagicMock(),
+        body={"error": {"type": "internal_server_error"}},
+    )
+    assert _is_opaque_internal_server_error(err3) is True
+
+    err4 = openai.APIError("Bad request", request=MagicMock(), body={"code": 400})
+    assert _is_opaque_internal_server_error(err4) is False
+
+
+def test_stream_failure_override_fast_fails_on_in_stream_500(nim_provider):
+    err = openai.APIError(
+        "NIM in-stream internal error",
+        request=MagicMock(),
+        body={"error": {"code": 500, "type": "internal_server_error"}},
+    )
+    failure = nim_provider._stream_failure_override(
+        err,
+        attempts_started=2,
+        stream_opened=True,
+        accepted=False,
+    )
+    assert failure is not None
+    assert failure.status_code == 500
+    assert failure.retryable is False
+
+
+def test_prepare_create_body_does_not_mutate_input_messages(nim_provider):
+    nim_provider._unsupported_reasoning_content_models.add("test-model")
+    orig_msg = {
+        "role": "assistant",
+        "content": "hi",
+        "reasoning_content": "thinking trace",
+    }
+    body = {
+        "model": "test-model",
+        "messages": [orig_msg],
+    }
+
+    prepared = nim_provider._prepare_create_body(body)
+
+    # Prepared body should have reasoning stripped/replayed
+    assert "reasoning_content" not in prepared["messages"][0]
+    assert "thinking trace" in prepared["messages"][0]["content"]
+
+    # Original body and message MUST NOT be mutated
+    assert "reasoning_content" in orig_msg
+    assert orig_msg["reasoning_content"] == "thinking trace"
+    assert orig_msg["content"] == "hi"
+    assert "reasoning_content" in body["messages"][0]
+    assert body["messages"][0]["content"] == "hi"
+
+
