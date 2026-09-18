@@ -33,7 +33,7 @@ Run your coding agents with free, paid, or local models. Choose and validate pro
 - **Dynamic 1M Context Auto-Resolution**: Automatic per-model context allocation (1,048,576 tokens for DeepSeek V4 & Kimi K3, 262,144 for MiniMax M3) with instant 0.0s `fcc-context` lookups.
 - **Multi-Agent Launchers**: Launch Claude Code with `fcc-claude`, Codex with `fcc-codex`, Pi with `fcc-pi`, Hermes with `fcc-hermes`, DeepSeek Harness with `fcc-dsh`, or Grok Build with `fcc-grok`.
 - **Desktop Launcher**: Run FCC in the background on Windows/macOS with native system tray control.
-- **Provider Switching**: Switch among 14 cloud and local providers from the Admin UI.
+- **Provider Switching**: Switch among 15 cloud and local providers from the Admin UI.
 - **Diagnostics**: Inspect your entire environment and model catalogs in one command with `fcc-doctor`.
 - **Chrome Side Panel**: Debug active tabs from a side panel with `fcc-extension`.
 - **Integrations**: Discord and Telegram bridge with voice-note transcription.
@@ -158,6 +158,7 @@ fcc-codex exec "hello"
 | [Amazon Bedrock](https://console.aws.amazon.com/bedrock/) | `AWS_BEARER_TOKEN_BEDROCK` | `bedrock/openai.gpt-oss-120b` |
 | [TokenRouter](https://www.tokenrouter.com/) | `TOKENROUTER_API_KEY` | `tokenrouter/openai/gpt-4o` |
 | [NaraRoute](https://router.bynara.id/keys) | `NARAROUTE_API_KEY` | `nararoute/openai/gpt-4o` |
+| [Custom (OpenAI-compatible)](#choose-a-provider) | `CUSTOM_BASE_URL` + `CUSTOM_API_KEY` | `custom/<model-id>` |
 | [LM Studio](https://lmstudio.ai/) | `LM_STUDIO_BASE_URL` | `lmstudio/<model-id>` |
 | [Ollama](https://ollama.com/) | `OLLAMA_BASE_URL` | `ollama/<model-tag>` |
 

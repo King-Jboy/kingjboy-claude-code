@@ -19,6 +19,11 @@ _POOL_SETTINGS_BY_PROVIDER = {
         "open_router_key_rate_limit",
         20,
     ),
+    "custom": (
+        "custom_api_keys",
+        "custom_key_rate_limit",
+        40,
+    ),
 }
 _NIM_MINIMUM_HTTP_READ_TIMEOUT_SECONDS = 300.0
 

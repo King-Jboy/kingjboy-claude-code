@@ -39,6 +39,20 @@ _PROVIDER_FIELD_OVERRIDES: dict[str, dict[str, Any]] = {
             "[OpenAI compatibility docs](https://console.groq.com/docs/openai)."
         ),
     },
+    "CUSTOM_API_KEY": {
+        "label": "Custom Provider API Key",
+        "description": (
+            "API key for your custom OpenAI-compatible endpoint (e.g. ZenMux, "
+            "OpenWebUI, vLLM). For a key pool, configure CUSTOM_API_KEYS in .env."
+        ),
+    },
+    "CUSTOM_BASE_URL": {
+        "label": "Custom Provider Base URL",
+        "description": (
+            "Base URL for your custom OpenAI-compatible endpoint (e.g. "
+            "https://api.zenmux.ai/v1)."
+        ),
+    },
 }
 
 

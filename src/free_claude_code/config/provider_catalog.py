@@ -33,6 +33,8 @@ GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/"
 TOKENROUTER_DEFAULT_BASE = "https://api.tokenrouter.com/v1"
 # NaraRoute OpenAI-compatible Chat Completions gateway.
 NARAROUTE_DEFAULT_BASE = "https://router.bynara.id/v1"
+# Custom OpenAI-compatible Chat Completions gateway.
+CUSTOM_DEFAULT_BASE = ""
 
 
 class ProviderAuthKind(StrEnum):
@@ -190,6 +192,16 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
         default_base_url=NARAROUTE_DEFAULT_BASE,
         base_url_attr="nararoute_base_url",
         proxy_attr="nararoute_proxy",
+    ),
+    "custom": ProviderDescriptor(
+        provider_id="custom",
+        display_name="Custom OpenAI",
+        credential_env="CUSTOM_API_KEY",
+        credential_attr="custom_api_key",
+        default_base_url=CUSTOM_DEFAULT_BASE,
+        base_url_attr="custom_base_url",
+        proxy_attr="custom_proxy",
+        required_settings_attrs=("custom_base_url", "custom_api_key"),
     ),
     "lmstudio": ProviderDescriptor(
         provider_id="lmstudio",

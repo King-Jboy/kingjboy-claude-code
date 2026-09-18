@@ -66,6 +66,9 @@ def _make_settings(**overrides):
     mock.nararoute_api_key = "test_nararoute_key"
     mock.nararoute_base_url = "https://router.bynara.id/v1"
     mock.nararoute_proxy = ""
+    mock.custom_api_key = "test_custom_key"
+    mock.custom_base_url = "https://custom.test/v1"
+    mock.custom_proxy = ""
     mock.openai_proxy = ""
     mock.provider_rate_limit = 40
     mock.provider_rate_window = 60
@@ -220,6 +223,7 @@ def test_create_provider_instantiates_each_builtin():
         "bedrock": OpenAIChatProvider,
         "tokenrouter": OpenAIChatProvider,
         "nararoute": OpenAIChatProvider,
+        "custom": OpenAIChatProvider,
         "lmstudio": LMStudioProvider,
         "ollama": OpenAIChatProvider,
     }
@@ -255,6 +259,7 @@ def test_create_provider_instantiates_each_builtin():
                 # shared non-pool override is configured.
                 "nvidia_nim": (40, 60.0),
                 "open_router": (20, 60.0),
+                "custom": (40, 60.0),
             }.get(provider_id, (6, 11))
             admission_factory.assert_called_once_with(
                 provider_name=provider_id,

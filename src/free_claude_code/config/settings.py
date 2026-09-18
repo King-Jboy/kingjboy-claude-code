@@ -37,6 +37,7 @@ from .model_refs import (
 from .nim import NimSettings
 from .provider_catalog import (
     BEDROCK_DEFAULT_BASE,
+    CUSTOM_DEFAULT_BASE,
     NARAROUTE_DEFAULT_BASE,
     SUPPORTED_PROVIDER_IDS,
     TOKENROUTER_DEFAULT_BASE,
@@ -146,6 +147,16 @@ class Settings(BaseSettings):
         default=NARAROUTE_DEFAULT_BASE, validation_alias="NARAROUTE_BASE_URL"
     )
 
+    # ==================== Custom OpenAI-Compatible Provider ====================
+    custom_api_key: str = Field(default="", validation_alias="CUSTOM_API_KEY")
+    custom_api_keys: str = Field(default="", validation_alias="CUSTOM_API_KEYS")
+    custom_key_rate_limit: int = Field(
+        default=40, gt=0, validation_alias="CUSTOM_KEY_RATE_LIMIT"
+    )
+    custom_base_url: str = Field(
+        default=CUSTOM_DEFAULT_BASE, validation_alias="CUSTOM_BASE_URL"
+    )
+
     # ==================== Messaging Platform Selection ====================
     # Valid: "telegram" | "discord" | "none"
     messaging_platform: str = Field(
@@ -225,6 +236,7 @@ class Settings(BaseSettings):
     bedrock_proxy: str = Field(default="", validation_alias="BEDROCK_PROXY")
     tokenrouter_proxy: str = Field(default="", validation_alias="TOKENROUTER_PROXY")
     nararoute_proxy: str = Field(default="", validation_alias="NARAROUTE_PROXY")
+    custom_proxy: str = Field(default="", validation_alias="CUSTOM_PROXY")
     # ==================== Provider Rate Limiting ====================
     provider_rate_limit: int = Field(
         default=40, gt=0, validation_alias="PROVIDER_RATE_LIMIT"
