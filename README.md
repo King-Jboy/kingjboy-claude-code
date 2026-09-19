@@ -512,6 +512,99 @@ Match the port and token to the Admin UI, then restart the IDE. Match `CLAUDE_CO
 </details>
 
 <details>
+<summary><strong>Hermes Agent</strong></summary>
+
+Connect [Hermes Agent](https://github.com/NousResearch/hermes-agent) to Free Claude Code as a custom provider to access all your pinned FCC models, with dynamic model discovery and long-running reasoning support.
+
+#### 1. Configure FCC (Server Side)
+
+In your Free Claude Code `.env` (`~/.fcc/.env`):
+
+```bash
+# Project only your clean pinned models (and active model) to Hermes /v1/models:
+MODEL_CATALOG_VIEW=responses
+
+# Allow long thinking / reasoning models without timeout drops:
+HTTP_READ_TIMEOUT=3600
+PROVIDER_PROGRESS_TIMEOUT=3660
+```
+
+Restart FCC to apply (`sudo systemctl restart fcc` or restart `fcc-server`).
+
+#### 2. Configure Hermes (`config.yaml`)
+
+Edit your Hermes configuration file:
+- **Windows:** `%LOCALAPPDATA%\hermes\config.yaml`
+- **macOS / Linux:** `~/.hermes/config.yaml`
+
+Add or update the `model`, `custom_providers`, `providers`, and `auxiliary` sections:
+
+```yaml
+model:
+  default: custom/z-ai/glm-5.3-flashx   # or any pinned model slug
+  provider: custom
+  base_url: http://127.0.0.1:8082/v1
+  api_key: freecc
+  api_mode: codex_responses
+
+custom_providers:
+  - name: Free-claude-code
+    base_url: http://127.0.0.1:8082/v1
+    api_key: freecc
+    model: custom/z-ai/glm-5.3-flashx
+    api_mode: codex_responses
+    request_timeout_seconds: 3600
+    stale_timeout_seconds: 3600
+    models: {}   # Leave empty ({}) so Hermes dynamically discovers your live pinned models!
+
+providers:
+  custom:
+    request_timeout_seconds: 3600
+    stale_timeout_seconds: 3600
+
+auxiliary:
+  title_generation:
+    enabled: false   # Disables background title calls so slow reasoning models don't trigger timeout errors
+```
+
+> **Why `models: {}`?** Leaving `models` empty enables dynamic discovery. Hermes will query FCC's `/v1/models` endpoint directly, so any changes to `PINNED_MODELS` on your server propagate automatically without editing `config.yaml`.
+
+#### 3. Configure Hermes Environment (`.env`)
+
+In your Hermes `.env` (`~/.hermes/.env` or `%LOCALAPPDATA%\hermes\.env`):
+
+```env
+OPENAI_API_KEY=freecc
+HERMES_CUSTOM_127_0_0_1_8082_API_KEY=freecc
+HERMES_API_TIMEOUT=3600
+HERMES_STREAM_READ_TIMEOUT=3600
+```
+
+#### 4. Remote Server / EC2 Setup (Optional)
+
+If FCC runs on a remote server or EC2 instance, forward port `8082` over SSH:
+
+```bash
+ssh -i /path/to/key.pem -N -L 8082:127.0.0.1:8082 ubuntu@<SERVER_IP>
+```
+
+#### 5. Usage & Model Switching
+
+- **Interactive Model Picker:** In any chat, type `/model` to view and select from your live pinned models.
+- **Refresh Model List:** Whenever you add or remove models from `PINNED_MODELS` on FCC, run:
+  ```bash
+  hermes model --refresh
+  ```
+  This immediately flushes the cache and fetches the updated catalog.
+- **Launch with a specific model:**
+  ```bash
+  hermes -m "nvidia_nim/z-ai/glm-5.3"
+  hermes -m "open_router/thinkingmachines/inkling:free"
+  ```
+
+</details>
+
+<details>
 <summary><strong>Claude Code still asks you to log in</strong></summary>
 
 If Claude Code asks you to log in after you configure the FCC URL and token, open its state file:
