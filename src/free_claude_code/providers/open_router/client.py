@@ -1,5 +1,7 @@
 """OpenRouter provider implementation."""
 
+from collections.abc import Mapping
+
 from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.config.constants import ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS
 from free_claude_code.core.anthropic import ReasoningReplayMode
@@ -16,6 +18,11 @@ from free_claude_code.providers.openai_chat import (
     validate_extra_body_does_not_override_canonical_fields,
 )
 
+_OPENROUTER_DEFAULT_HEADERS = {
+    "HTTP-Referer": "https://claude.ai/code",
+    "X-Title": "Claude Code",
+}
+
 _REQUEST_POLICY = OpenAIChatRequestPolicy(
     provider_name="OPENROUTER",
     reasoning_replay=ReasoningReplayMode.REASONING_CONTENT,
@@ -29,12 +36,20 @@ class OpenRouterProvider(OpenAIChatProvider):
     """OpenRouter provider using the OpenAI-compatible Chat Completions API."""
 
     def __init__(
-        self, config: ProviderConfig, *, admission: ProviderAdmissionController
+        self,
+        config: ProviderConfig,
+        *,
+        admission: ProviderAdmissionController,
+        default_headers: Mapping[str, str] | None = None,
     ):
+        headers = dict(_OPENROUTER_DEFAULT_HEADERS)
+        if default_headers:
+            headers.update(default_headers)
         super().__init__(
             config,
             profile=_PROFILE,
             admission=admission,
+            default_headers=headers,
         )
 
     async def list_model_infos(self) -> frozenset[ProviderModelInfo]:
