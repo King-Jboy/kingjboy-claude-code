@@ -602,6 +602,8 @@ ssh -i /path/to/key.pem -N -L 8082:127.0.0.1:8082 ubuntu@<SERVER_IP>
   hermes -m "open_router/thinkingmachines/inkling:free"
   ```
 
+> **Harness-Gated Free Models:** Models restricted by OpenRouter to agentic harnesses (such as `thinkingmachines/inkling:free`) work automatically—FCC injects the required application attribution headers.
+
 </details>
 
 <details>
