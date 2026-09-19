@@ -16,6 +16,7 @@ from ..ids import (
     new_message_item_id,
     new_reasoning_item_id,
     new_response_id,
+    tool_item_id_prefix,
 )
 from ..models import OpenAIResponsesRequest
 from ..tools import responses_tool_identity_from_anthropic_name
@@ -374,8 +375,7 @@ class ResponsesStreamAssembler:
         state = ToolBlockState(
             index=index,
             output_index=self._ledger.reserve_output_slot(),
-            item_id=f"{'ctc' if identity.kind == 'custom' else 'fc'}_"
-            f"{uuid.uuid4().hex[:24]}",
+            item_id=f"{tool_item_id_prefix(identity.kind)}{uuid.uuid4().hex[:24]}",
             call_id=_string_value(block.get("id")) or new_call_id(),
             kind=identity.kind,
             name=identity.name,

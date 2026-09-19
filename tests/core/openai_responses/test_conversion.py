@@ -766,3 +766,71 @@ def test_responses_function_call_output_non_string_serialized_to_json() -> None:
             ],
         },
     ]
+
+
+@pytest.mark.parametrize("choice", ["auto", "any", "none"])
+def test_responses_omits_tool_choice_without_tools(choice: str) -> None:
+    payload = _to_anthropic_payload(
+        {
+            "model": "gpt-test",
+            "input": "Hello",
+            "tool_choice": choice,
+        }
+    )
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
+
+
+def test_responses_malformed_custom_tool_call_is_quarantined_and_output_skipped() -> None:
+    payload = _to_anthropic_payload(
+        {
+            "model": "nvidia_nim/test-model",
+            "input": [
+                {"role": "user", "content": "run task"},
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_bad_custom",
+                    "name": "",
+                    "input": "action_input",
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_bad_custom",
+                    "output": "stale output",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+    assert payload["messages"] == [
+        {"role": "user", "content": "run task"},
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_responses_interrupted_tool_call_is_quarantined_and_output_skipped() -> None:
+    payload = _to_anthropic_payload(
+        {
+            "model": "nvidia_nim/test-model",
+            "input": [
+                {"role": "user", "content": "run task"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_interrupted",
+                    "name": "lookup",
+                    "status": "incomplete",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_interrupted",
+                    "output": "stale output",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+    assert payload["messages"] == [
+        {"role": "user", "content": "run task"},
+        {"role": "user", "content": "continue"},
+    ]

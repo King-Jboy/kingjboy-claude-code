@@ -96,9 +96,10 @@ def convert_request_to_anthropic_payload(
     tools = convert_tools(request.tools)
     if tools and raw_tool_choice != "none":
         payload["tools"] = tools
-    tool_choice = convert_tool_choice(raw_tool_choice)
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
+    if tools:
+        tool_choice = convert_tool_choice(raw_tool_choice)
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
     if request.parallel_tool_calls is not None:
         payload["parallel_tool_calls"] = request.parallel_tool_calls
 
@@ -139,19 +140,22 @@ def _append_input_item(
         _append_message_item(role, item.get("content", ""), messages, system_parts)
         return
     if item_type in {"function_call", "custom_tool_call"}:
+        call_id = call_id_from_item(item)
+        if item.get("status") in {"incomplete", "in_progress"}:
+            quarantined_function_call_ids.add(call_id)
+            return
         namespace = optional_str(item.get("namespace"))
         field_name = f"{item_type}.name"
-        name = required_str(item.get("name"), field_name)
-        call_id = call_id_from_item(item)
-        if item_type == "custom_tool_call":
-            tool_input = custom_tool_input_to_anthropic(item.get("input"))
-        else:
-            try:
+        try:
+            name = required_str(item.get("name"), field_name)
+            if item_type == "custom_tool_call":
+                tool_input = custom_tool_input_to_anthropic(item.get("input"))
+            else:
                 tool_input = parse_arguments(item.get("arguments"))
-            except ResponsesConversionError as exc:
-                quarantined_function_call_ids.add(call_id)
-                _trace_quarantined_function_call(call_id, exc)
-                return
+        except ResponsesConversionError as exc:
+            quarantined_function_call_ids.add(call_id)
+            _trace_quarantined_function_call(call_id, exc)
+            return
         tool_use = {
             "type": "tool_use",
             "id": call_id,
@@ -167,10 +171,7 @@ def _append_input_item(
         return
     if item_type in {"function_call_output", "custom_tool_call_output"}:
         call_id = call_id_from_item(item)
-        if (
-            item_type == "function_call_output"
-            and call_id in quarantined_function_call_ids
-        ):
+        if call_id in quarantined_function_call_ids:
             return
         if call_id not in known_function_call_ids:
             raise ResponsesConversionError(
