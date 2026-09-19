@@ -341,3 +341,77 @@ def test_direct_model_views_resolve_curated_context_window():
     assert model_contexts["nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"] == 1_048_576
     assert model_contexts["nvidia_nim/moonshotai/kimi-k3"] == 1_048_576
     assert model_contexts["nvidia_nim/minimaxai/minimax-m3"] == 262_144
+
+
+def test_models_list_defaults_to_configured_model_catalog_view():
+    from free_claude_code.config.model_refs import ModelCatalogView
+
+    app = create_test_app(
+        _settings(
+            model="deepseek/deepseek-chat",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["nvidia_nim/meta/llama-3.3-70b-instruct"]',
+        ).model_copy(update={"model_catalog_view": ModelCatalogView.RESPONSES})
+    )
+    _cache_models(app, "deepseek", "deepseek-chat", "unwanted-deepseek")
+    _cache_models(app, "nvidia_nim", "meta/llama-3.3-70b-instruct", "unwanted-nim")
+
+    response = TestClient(app).get("/v1/models")
+    assert response.status_code == 200
+    model_ids = [item["id"] for item in response.json()["data"]]
+
+    assert model_ids == [
+        "deepseek/deepseek-chat",
+        "nvidia_nim/meta/llama-3.3-70b-instruct",
+    ]
+
+
+def test_models_list_respects_header_model_catalog_view():
+    app = create_test_app(
+        _settings(
+            model="deepseek/deepseek-chat",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["nvidia_nim/meta/llama-3.3-70b-instruct"]',
+        )
+    )
+    _cache_models(app, "deepseek", "deepseek-chat", "unwanted-deepseek")
+    _cache_models(app, "nvidia_nim", "meta/llama-3.3-70b-instruct", "unwanted-nim")
+
+    response = TestClient(app).get(
+        "/v1/models", headers={"x-model-catalog-view": "responses"}
+    )
+    assert response.status_code == 200
+    model_ids = [item["id"] for item in response.json()["data"]]
+
+    assert model_ids == [
+        "deepseek/deepseek-chat",
+        "nvidia_nim/meta/llama-3.3-70b-instruct",
+    ]
+
+
+def test_models_list_query_param_overrides_configured_view():
+    from free_claude_code.config.model_refs import ModelCatalogView
+
+    app = create_test_app(
+        _settings(
+            model="deepseek/deepseek-chat",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["nvidia_nim/meta/llama-3.3-70b-instruct"]',
+        ).model_copy(update={"model_catalog_view": ModelCatalogView.RESPONSES})
+    )
+    _cache_models(app, "deepseek", "deepseek-chat")
+    _cache_models(app, "nvidia_nim", "meta/llama-3.3-70b-instruct")
+
+    response = TestClient(app).get("/v1/models?view=claude")
+    assert response.status_code == 200
+    model_ids = [item["id"] for item in response.json()["data"]]
+
+    assert "claude-fable-5" in model_ids
+    assert "anthropic/deepseek/deepseek-chat" in model_ids
+

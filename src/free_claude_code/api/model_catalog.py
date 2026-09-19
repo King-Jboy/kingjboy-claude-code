@@ -2,7 +2,6 @@
 
 import math
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -12,6 +11,7 @@ from free_claude_code.config.context_windows import load_context_windows
 from free_claude_code.config.curated_contexts import curated_context_window
 from free_claude_code.config.model_refs import (
     ModelCatalogScope,
+    ModelCatalogView,
     configured_chat_model_refs,
     pinned_model_refs,
 )
@@ -25,14 +25,6 @@ from free_claude_code.core.model_capabilities import ModelInputModality
 DISCOVERED_MODEL_CREATED_AT = "1970-01-01T00:00:00Z"
 _INFERENCE_IDLE_TIMEOUT_MARGIN_SECONDS = 60
 _REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
-
-
-class ModelCatalogView(StrEnum):
-    """Client-specific projections of the application model inventory."""
-
-    CLAUDE = "claude"
-    MESSAGES = "messages"
-    RESPONSES = "responses"
 
 
 class ModelResponse(BaseModel):

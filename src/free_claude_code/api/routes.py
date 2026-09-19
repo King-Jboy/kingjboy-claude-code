@@ -203,14 +203,23 @@ async def probe_health():
     response_model_exclude_none=True,
 )
 async def list_models(
-    view: ModelCatalogView = ModelCatalogView.CLAUDE,
+    request: Request,
+    view: ModelCatalogView | None = None,
     services: ApiServices = Depends(get_services),
     settings: Settings = Depends(get_settings),
     _auth=Depends(require_proxy_auth),
 ):
     """List the model ids this proxy advertises to compatible clients."""
     trace_event(stage="ingress", event="free_claude_code.api.models.list", source="api")
-    return build_models_list_response(settings, services.requests, view=view)
+    header_view_raw = request.headers.get("x-model-catalog-view")
+    header_view: ModelCatalogView | None = None
+    if header_view_raw:
+        try:
+            header_view = ModelCatalogView(header_view_raw.strip().lower())
+        except ValueError:
+            header_view = None
+    effective_view = view or header_view or settings.model_catalog_view
+    return build_models_list_response(settings, services.requests, view=effective_view)
 
 
 @router.get(

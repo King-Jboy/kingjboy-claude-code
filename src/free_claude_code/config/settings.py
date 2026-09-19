@@ -30,6 +30,7 @@ from .env_files import (
 )
 from .model_refs import (
     ModelCatalogScope,
+    ModelCatalogView,
     configured_chat_model_refs,
     parse_model_ref_list,
     pinned_model_refs,
@@ -216,6 +217,12 @@ class Settings(BaseSettings):
     model_catalog_scope: ModelCatalogScope = Field(
         default=ModelCatalogScope.ALL,
         validation_alias="MODEL_CATALOG_SCOPE",
+    )
+
+    # Default projection for client model list endpoints (/v1/models).
+    model_catalog_view: ModelCatalogView = Field(
+        default=ModelCatalogView.CLAUDE,
+        validation_alias="MODEL_CATALOG_VIEW",
     )
 
     # Extra provider/model refs to keep in the model lists, as a JSON list.

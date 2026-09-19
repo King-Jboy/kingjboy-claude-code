@@ -20,6 +20,14 @@ class ModelCatalogScope(StrEnum):
     CONFIGURED = "configured"
 
 
+class ModelCatalogView(StrEnum):
+    """Client-specific projections of the application model inventory."""
+
+    CLAUDE = "claude"
+    MESSAGES = "messages"
+    RESPONSES = "responses"
+
+
 def parse_model_ref_list(raw: str, *, env_name: str) -> tuple[str, ...]:
     """Parse a JSON array of ``provider/model`` refs, ordered and de-duplicated.
 
