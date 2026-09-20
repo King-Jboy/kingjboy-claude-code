@@ -9,6 +9,29 @@ from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 CLAUDE_BINARY_NAME = "claude"
 
 
+_BLOCKED_ENV_PREFIXES = (
+    "ANTHROPIC_",
+    "OPENROUTER_",
+    "NVIDIA_NIM_",
+    "DEEPSEEK_",
+    "KIMI_",
+    "GEMINI_",
+    "GROQ_",
+    "ZAI_",
+    "CUSTOM_",
+    "TOKENROUTER_",
+    "NARAROUTE_",
+)
+_BLOCKED_ENV_KEYS = frozenset(
+    {
+        "OPENAI_API_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "HUGGINGFACE_API_KEY",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    }
+)
+
+
 def build_claude_proxy_env(
     *,
     proxy_root_url: str,
@@ -28,8 +51,8 @@ def build_claude_proxy_env(
         {
             key: value
             for key, value in base_env.items()
-            if not key.startswith("ANTHROPIC_")
-            and key != "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+            if not any(key.startswith(p) for p in _BLOCKED_ENV_PREFIXES)
+            and key not in _BLOCKED_ENV_KEYS
         },
         proxy_root_url=proxy_root_url,
     )

@@ -113,9 +113,16 @@ async def _cancel_and_wait(
 async def _wait_for_cleanup(
     task: asyncio.Task[tuple[BaseException | None, ...]],
 ) -> None:
+    current = asyncio.current_task()
+    cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
             await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+            if current is not None:
+                while current.cancelling():
+                    current.uncancel()
     task.result()
+    if cancellation is not None:
+        raise cancellation

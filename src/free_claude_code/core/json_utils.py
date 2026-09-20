@@ -16,7 +16,7 @@ def fast_json_dumps(
         option |= orjson.OPT_INDENT_2
     try:
         return orjson.dumps(obj, option=option).decode("utf-8")
-    except TypeError, ValueError:
+    except TypeError, ValueError, orjson.JSONEncodeError:
         if indent is not None:
             return json.dumps(
                 obj, ensure_ascii=ensure_ascii, indent=indent, default=str

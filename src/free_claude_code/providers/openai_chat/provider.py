@@ -588,63 +588,73 @@ class OpenAIChatProvider(BaseProvider):
         if key1 is None:
             return await self._open_chat_stream_sequential(create_body)
 
-        task1: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key1))
-        done, _ = await asyncio.wait({task1}, timeout=hedge_delay)
+        tasks: dict[asyncio.Task[Any], str] = {}
+        try:
+            task1: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key1))
+            tasks[task1] = key1
+            done, _ = await asyncio.wait({task1}, timeout=hedge_delay)
 
-        if task1 in done:
-            exc = task1.exception()
-            if exc is None:
-                key_pool.mark_succeeded(key1)
-                return OpenAIStreamAdapter(task1.result())
-            if isinstance(exc, Exception) and _handle_key_error(key1, exc):
-                return await self._open_chat_stream_sequential(create_body)
-            if isinstance(exc, BaseException):
-                raise exc
-
-        # Key 1 did not return within hedge_delay. Speculatively launch Key 2.
-        key2 = key_pool.get_next_key()
-        if key2 is None or key2 == key1:
-            try:
-                stream = await task1
-                key_pool.mark_succeeded(key1)
-                return OpenAIStreamAdapter(stream)
-            except Exception as exc:
-                if _handle_key_error(key1, exc):
-                    return await self._open_chat_stream_sequential(create_body)
-                raise
-
-        logger.info(
-            "{} key hedging: key ...{} quiet after {}s, racing with key ...{}",
-            self._provider_name,
-            key1[-6:] if len(key1) >= 6 else "...",
-            hedge_delay,
-            key2[-6:] if len(key2) >= 6 else "...",
-        )
-        task2: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key2))
-        tasks: dict[asyncio.Task[Any], str] = {task1: key1, task2: key2}
-
-        while tasks:
-            done_tasks, _ = await asyncio.wait(
-                tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-            )
-            for finished in done_tasks:
-                k = tasks.pop(finished)
-                exc = finished.exception()
+            if task1 in done:
+                exc = task1.exception()
                 if exc is None:
-                    winner_stream = finished.result()
-                    key_pool.mark_succeeded(k)
-                    for remaining_task in tasks:
-                        asyncio.create_task(_cancel_task(remaining_task))
-                    return OpenAIStreamAdapter(winner_stream)
-
-                if isinstance(exc, Exception) and _handle_key_error(k, exc):
-                    continue
+                    key_pool.mark_succeeded(key1)
+                    tasks.clear()
+                    return OpenAIStreamAdapter(task1.result())
+                tasks.clear()
+                if isinstance(exc, Exception) and _handle_key_error(key1, exc):
+                    return await self._open_chat_stream_sequential(create_body)
                 if isinstance(exc, BaseException):
-                    for remaining_task in tasks:
-                        asyncio.create_task(_cancel_task(remaining_task))
                     raise exc
 
-        return await self._open_chat_stream_sequential(create_body)
+            # Key 1 did not return within hedge_delay. Speculatively launch Key 2.
+            key2 = key_pool.get_next_key()
+            if key2 is None or key2 == key1:
+                try:
+                    stream = await task1
+                    key_pool.mark_succeeded(key1)
+                    tasks.clear()
+                    return OpenAIStreamAdapter(stream)
+                except Exception as exc:
+                    tasks.clear()
+                    if _handle_key_error(key1, exc):
+                        return await self._open_chat_stream_sequential(create_body)
+                    raise
+
+            logger.info(
+                "{} key hedging: key ...{} quiet after {}s, racing with key ...{}",
+                self._provider_name,
+                key1[-6:] if len(key1) >= 6 else "...",
+                hedge_delay,
+                key2[-6:] if len(key2) >= 6 else "...",
+            )
+            task2: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key2))
+            tasks[task2] = key2
+
+            last_exc: BaseException | None = None
+            while tasks:
+                done_tasks, _ = await asyncio.wait(
+                    tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+                )
+                for finished in done_tasks:
+                    k = tasks.pop(finished)
+                    exc = finished.exception()
+                    if exc is None:
+                        winner_stream = finished.result()
+                        key_pool.mark_succeeded(k)
+                        return OpenAIStreamAdapter(winner_stream)
+
+                    last_exc = exc
+                    if isinstance(exc, Exception):
+                        _handle_key_error(k, exc)
+                    # Allow any other racing task to complete before aborting
+
+            if last_exc is not None:
+                raise last_exc
+            return await self._open_chat_stream_sequential(create_body)
+        finally:
+            for remaining_task in list(tasks.keys()):
+                if not remaining_task.done():
+                    asyncio.create_task(_cancel_task(remaining_task))
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Return the provider-specific stream view consumed by the base runner."""

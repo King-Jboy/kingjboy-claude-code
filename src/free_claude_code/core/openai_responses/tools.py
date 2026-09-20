@@ -25,6 +25,21 @@ class ResponsesToolIdentity:
     namespace: str | None = None
 
 
+def _is_advisor_tool(tool: Mapping[str, Any]) -> bool:
+    tool_type = tool.get("type")
+    if isinstance(tool_type, str) and (
+        tool_type.startswith("advisor") or tool_type in _UNSUPPORTED_PASSIVE_TOOL_TYPES
+    ):
+        return True
+    function = tool.get("function")
+    source = function if isinstance(function, Mapping) else tool
+    name = source.get("name")
+    return bool(
+        isinstance(name, str)
+        and (name.startswith("advisor") or name == "advisor_20260301")
+    )
+
+
 def convert_tools(value: Any) -> list[dict[str, Any]] | None:
     if value is None:
         return None
@@ -37,13 +52,9 @@ def convert_tools(value: Any) -> list[dict[str, Any]] | None:
             raise ResponsesConversionError(
                 f"Unsupported Responses tool: {type(tool).__name__}"
             )
-        tool_type = tool.get("type")
-        if (
-            tool_type in _UNSUPPORTED_PASSIVE_TOOL_TYPES
-            or (isinstance(tool_type, str) and tool_type.startswith("advisor"))
-            or tool.get("name") == "advisor_20260301"
-        ):
+        if _is_advisor_tool(tool):
             continue
+        tool_type = tool.get("type", "function")
         if tool_type == "function":
             tools.append(_convert_function_tool(tool, namespace=None))
             continue
@@ -280,6 +291,8 @@ def _convert_namespace_tool(tool: Mapping[str, Any]) -> list[dict[str, Any]]:
             raise ResponsesConversionError(
                 f"Unsupported Responses namespace tool: {type(nested_tool).__name__}"
             )
+        if _is_advisor_tool(nested_tool):
+            continue
         nested_tool_type = nested_tool.get("type")
         if nested_tool_type == "function":
             converted_tools.append(

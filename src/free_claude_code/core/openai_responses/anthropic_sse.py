@@ -1,5 +1,6 @@
 """Anthropic SSE parsing used by the Responses stream adapter."""
 
+import codecs
 import re
 import sys
 from collections.abc import AsyncIterable, AsyncIterator
@@ -9,9 +10,12 @@ from typing import Any
 from free_claude_code.core.json_utils import fast_json_loads
 from free_claude_code.core.trace import close_stream_input
 
+from .errors import ResponsesConversionError
+
 # RFC 8895 permits either LF or CRLF line endings.  Provider adapters mostly
 # emit LF today, but accepting CRLF here keeps the protocol boundary portable.
 _SSE_EVENT_BOUNDARY = re.compile(r"\r?\n\r?\n")
+_MAX_SSE_BUFFER_LEN = 16 * 1024 * 1024  # 16 MB
 
 
 @dataclass(slots=True)
@@ -24,13 +28,19 @@ async def iter_sse_events(
     chunks: AsyncIterable[Any],
 ) -> AsyncIterator[AnthropicSseEvent]:
     buffer = ""
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
     iterator = aiter(chunks)
     try:
         async for chunk in iterator:
             if isinstance(chunk, bytes):
-                buffer += chunk.decode("utf-8", errors="replace")
+                buffer += decoder.decode(chunk, final=False)
             else:
                 buffer += str(chunk)
+
+            if len(buffer) > _MAX_SSE_BUFFER_LEN:
+                raise ResponsesConversionError(
+                    "SSE stream event exceeded maximum buffer capacity"
+                )
 
             while (boundary := _SSE_EVENT_BOUNDARY.search(buffer)) is not None:
                 raw = buffer[: boundary.start()]
@@ -39,6 +49,7 @@ async def iter_sse_events(
                 if event is not None:
                     yield event
 
+        buffer += decoder.decode(b"", final=True)
         if buffer.strip():
             event = parse_sse_event(buffer)
             if event is not None:

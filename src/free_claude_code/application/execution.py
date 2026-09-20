@@ -178,7 +178,9 @@ class ProviderExecutor:
                         await asyncio.sleep(0)
                         continue
                     yield chunk
-                    progress_deadline = loop.time() + self._progress_timeout_seconds
+                    stripped = chunk.strip()
+                    if not (stripped.startswith(":") or stripped == "event: ping"):
+                        progress_deadline = loop.time() + self._progress_timeout_seconds
             finally:
                 if provider_stream is not None:
                     await close_stream_input(
