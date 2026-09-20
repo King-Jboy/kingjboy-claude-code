@@ -13,6 +13,7 @@ from free_claude_code.core.anthropic.request_serialization import (
 from free_claude_code.core.reasoning import ReasoningControl, ReasoningPolicy
 
 from .errors import ResponsesConversionError
+from .ids import tool_item_id_for_kind
 
 
 def build_responses_provider_request(
@@ -64,7 +65,16 @@ def build_responses_provider_request(
         body["top_p"] = request.top_p
     if request.metadata is not None:
         body["metadata"] = request.metadata
-    if request.tools:
+    active_tools = [
+        tool
+        for tool in request.tools or ()
+        if tool.name != "advisor_20260301"
+        and not (
+            tool.type
+            and (tool.type.startswith("advisor") or tool.type == "advisor_20260301")
+        )
+    ]
+    if active_tools:
         body["tools"] = [
             {
                 "type": "function",
@@ -73,13 +83,27 @@ def build_responses_provider_request(
                 "parameters": tool.input_schema or {"type": "object", "properties": {}},
                 "strict": False,
             }
-            for tool in request.tools
+            for tool in active_tools
         ]
-    tool_choice = resolve_anthropic_tool_choice(request.tools, request.tool_choice)
+    tool_choice = resolve_anthropic_tool_choice(active_tools, request.tool_choice)
     if tool_choice is not None:
         body["tool_choice"] = _tool_choice(tool_choice, tool_names=tool_names)
     if reasoning_config := _reasoning_config(reasoning):
         body["reasoning"] = reasoning_config
+    if isinstance(items := body.get("input"), list):
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") not in (
+                "function_call",
+                "custom_tool_call",
+            ):
+                continue
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id != tool_item_id_for_kind(
+                item_id,
+                kind="custom" if item["type"] == "custom_tool_call" else "function",
+            ):
+                # Full calls replay by call_id; incompatible item IDs are optional.
+                del item["id"]
     return body
 
 
@@ -90,7 +114,13 @@ def _validate_supported_request(request: MessagesRequest) -> None:
             f"{sorted(str(key) for key in request.model_extra)}."
         )
     provider_tool_types = sorted(
-        {tool.type for tool in request.tools or () if tool.type is not None}
+        {
+            tool.type
+            for tool in request.tools or ()
+            if tool.type is not None
+            and not tool.type.startswith("advisor")
+            and tool.type != "advisor_20260301"
+        }
     )
     if provider_tool_types:
         raise ResponsesConversionError(

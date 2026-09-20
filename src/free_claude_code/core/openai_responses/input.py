@@ -6,6 +6,7 @@ from typing import Any
 from free_claude_code.core.trace import trace_event
 
 from .errors import ResponsesConversionError
+from .ids import tool_item_id_for_kind
 from .models import OpenAIResponsesRequest
 from .reasoning import (
     combine_reasoning,
@@ -59,6 +60,7 @@ def convert_request_to_anthropic_payload(
     pending_reasoning = _PendingReasoning()
     known_function_call_ids: set[str] = set()
     quarantined_function_call_ids: set[str] = set()
+    latest_call_quarantined: dict[str, bool] = {}
     for item in _iter_input_items(request.input):
         _append_input_item(
             item,
@@ -67,6 +69,7 @@ def convert_request_to_anthropic_payload(
             pending_reasoning=pending_reasoning,
             known_function_call_ids=known_function_call_ids,
             quarantined_function_call_ids=quarantined_function_call_ids,
+            latest_call_quarantined=latest_call_quarantined,
         )
     _append_pending_reasoning(messages, pending_reasoning)
 
@@ -114,6 +117,7 @@ def _append_input_item(
     pending_reasoning: _PendingReasoning,
     known_function_call_ids: set[str],
     quarantined_function_call_ids: set[str],
+    latest_call_quarantined: dict[str, bool] | None = None,
 ) -> None:
     if isinstance(item, str):
         _append_pending_reasoning(messages, pending_reasoning)
@@ -141,9 +145,18 @@ def _append_input_item(
         return
     if item_type in {"function_call", "custom_tool_call"}:
         call_id = call_id_from_item(item)
-        if item.get("status") in {"incomplete", "in_progress"}:
+        if item.get("status") in {"incomplete", "in_progress", "failed"}:
             quarantined_function_call_ids.add(call_id)
+            if latest_call_quarantined is not None:
+                latest_call_quarantined[call_id] = True
             return
+        item_id = item.get("id")
+        if isinstance(item_id, str) and item_id != tool_item_id_for_kind(
+            item_id,
+            kind="custom" if item_type == "custom_tool_call" else "function",
+        ):
+            # Full calls replay by call_id; incompatible item IDs are optional.
+            del item["id"]
         namespace = optional_str(item.get("namespace"))
         field_name = f"{item_type}.name"
         try:
@@ -154,6 +167,8 @@ def _append_input_item(
                 tool_input = parse_arguments(item.get("arguments"))
         except ResponsesConversionError as exc:
             quarantined_function_call_ids.add(call_id)
+            if latest_call_quarantined is not None:
+                latest_call_quarantined[call_id] = True
             _trace_quarantined_function_call(call_id, exc)
             return
         tool_use = {
@@ -168,10 +183,17 @@ def _append_input_item(
             reasoning_content=pending_reasoning,
         )
         known_function_call_ids.add(call_id)
+        if latest_call_quarantined is not None:
+            latest_call_quarantined[call_id] = False
         return
     if item_type in {"function_call_output", "custom_tool_call_output"}:
         call_id = call_id_from_item(item)
-        if call_id in quarantined_function_call_ids:
+        is_quarantined = (
+            latest_call_quarantined.get(call_id, False)
+            if latest_call_quarantined is not None
+            else call_id in quarantined_function_call_ids
+        )
+        if is_quarantined:
             return
         if call_id not in known_function_call_ids:
             raise ResponsesConversionError(

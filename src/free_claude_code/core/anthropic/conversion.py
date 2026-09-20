@@ -785,6 +785,14 @@ class AnthropicToOpenAIConverter:
                 },
             }
             for tool in tools
+            if getattr(tool, "name", None) != "advisor_20260301"
+            and not (
+                getattr(tool, "type", None)
+                and (
+                    getattr(tool, "type", "").startswith("advisor")
+                    or getattr(tool, "type", "") == "advisor_20260301"
+                )
+            )
         ]
 
     @staticmethod
@@ -795,8 +803,9 @@ class AnthropicToOpenAIConverter:
         choice_type = tool_choice.get("type")
         if choice_type == "tool":
             name = tool_choice.get("name")
-            if name:
+            if name and name != "advisor_20260301":
                 return {"type": "function", "function": {"name": name}}
+            return None
         if choice_type == "any":
             return "required"
         if choice_type in {"auto", "none", "required"}:

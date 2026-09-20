@@ -13,7 +13,7 @@ from .ids import new_call_id
 _MAX_ANTHROPIC_TOOL_NAME_LEN = 64
 _NAMESPACE_TOOL_SEPARATOR = "__"
 _UNSUPPORTED_PASSIVE_TOOL_TYPES = frozenset(
-    {"web_search", "image_generation", "tool_search"}
+    {"web_search", "image_generation", "tool_search", "advisor_20260301"}
 )
 _INVALID_TOOL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -38,6 +38,12 @@ def convert_tools(value: Any) -> list[dict[str, Any]] | None:
                 f"Unsupported Responses tool: {type(tool).__name__}"
             )
         tool_type = tool.get("type")
+        if (
+            tool_type in _UNSUPPORTED_PASSIVE_TOOL_TYPES
+            or (isinstance(tool_type, str) and tool_type.startswith("advisor"))
+            or tool.get("name") == "advisor_20260301"
+        ):
+            continue
         if tool_type == "function":
             tools.append(_convert_function_tool(tool, namespace=None))
             continue
@@ -46,8 +52,6 @@ def convert_tools(value: Any) -> list[dict[str, Any]] | None:
             continue
         if tool_type == "namespace":
             tools.extend(_convert_namespace_tool(tool))
-            continue
-        if tool_type in _UNSUPPORTED_PASSIVE_TOOL_TYPES:
             continue
         if tool_type != "function":
             raise ResponsesConversionError(

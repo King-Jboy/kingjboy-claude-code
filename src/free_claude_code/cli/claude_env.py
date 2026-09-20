@@ -36,6 +36,7 @@ def build_claude_proxy_env(
     env["ANTHROPIC_BASE_URL"] = proxy_root_url
     env["ANTHROPIC_AUTH_TOKEN"] = proxy_auth_token(auth_token)
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+    env["CLAUDE_CODE_DISABLE_ADVISOR_TOOL"] = "1"
     env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(context_window)
     env["DISABLE_AUTOUPDATER"] = "1"
     env["DISABLE_FEEDBACK_COMMAND"] = "1"
