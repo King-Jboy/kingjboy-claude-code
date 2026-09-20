@@ -781,7 +781,9 @@ def test_responses_omits_tool_choice_without_tools(choice: str) -> None:
     assert "tool_choice" not in payload
 
 
-def test_responses_malformed_custom_tool_call_is_quarantined_and_output_skipped() -> None:
+def test_responses_malformed_custom_tool_call_is_quarantined_and_output_skipped() -> (
+    None
+):
     payload = _to_anthropic_payload(
         {
             "model": "nvidia_nim/test-model",

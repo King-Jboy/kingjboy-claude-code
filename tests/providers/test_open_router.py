@@ -88,7 +88,10 @@ def test_init_uses_openai_chat_provider(open_router_provider):
 
 def test_init_includes_agentic_harness_headers(open_router_provider):
     assert open_router_provider._default_headers is not None
-    assert open_router_provider._default_headers.get("HTTP-Referer") == "https://claude.ai/code"
+    assert (
+        open_router_provider._default_headers.get("HTTP-Referer")
+        == "https://claude.ai/code"
+    )
     assert open_router_provider._default_headers.get("X-Title") == "Claude Code"
 
 

@@ -22,7 +22,9 @@ class DummyStream:
         self.closed = False
 
     async def __aiter__(self):
-        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))])
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))]
+        )
 
     async def aclose(self):
         self.closed = True
@@ -65,21 +67,18 @@ async def test_hedged_racing_fast_first_key_does_not_fire_second_key():
 
     calls: list[str] = []
 
-    async def fake_create(**kwargs):
-        # We find which key was used via current_key tracking in client
-        client_key = getattr(fake_create, "_current_key", "unknown")
-        calls.append(client_key)
-        await asyncio.sleep(0.01)
-        return DummyStream(client_key)
-
-    mock_client = MagicMock()
-
     def fake_with_options(api_key: str):
         sub_client = MagicMock()
-        fake_create._current_key = api_key
-        sub_client.chat.completions.create = AsyncMock(side_effect=fake_create)
+
+        async def _call(**kwargs):
+            calls.append(api_key)
+            await asyncio.sleep(0.01)
+            return DummyStream(api_key)
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
         return sub_client
 
+    mock_client = MagicMock()
     mock_client.with_options = MagicMock(side_effect=fake_with_options)
     provider._client = mock_client
 
@@ -181,7 +180,9 @@ async def test_tls_warmup_issues_head_request():
     provider._client._client = mock_raw_http
 
     await provider.warmup()
-    mock_raw_http.head.assert_awaited_once_with("https://openrouter.ai/api/v1", timeout=3.0)
+    mock_raw_http.head.assert_awaited_once_with(
+        "https://openrouter.ai/api/v1", timeout=3.0
+    )
 
     # Calling cleanup cancels keepalive task without errors
     await provider.cleanup()

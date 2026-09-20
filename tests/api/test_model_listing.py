@@ -414,4 +414,3 @@ def test_models_list_query_param_overrides_configured_view():
 
     assert "claude-fable-5" in model_ids
     assert "anthropic/deepseek/deepseek-chat" in model_ids
-

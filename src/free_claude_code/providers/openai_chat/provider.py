@@ -552,13 +552,12 @@ class OpenAIChatProvider(BaseProvider):
         )
 
     async def _open_chat_stream_hedged(self, create_body: dict[str, Any]) -> Any:
-        assert self._key_pool is not None
+        key_pool = self._key_pool
+        assert key_pool is not None
         hedge_delay = self._config.key_hedge_delay_seconds
 
         async def _open_on_key(key: str) -> Any:
-            return await self._client.with_options(
-                api_key=key
-            ).chat.completions.create(
+            return await self._client.with_options(api_key=key).chat.completions.create(
                 **create_body,
                 stream=True,
             )
@@ -568,24 +567,24 @@ class OpenAIChatProvider(BaseProvider):
             try:
                 stream_obj = await task
                 await maybe_await_aclose(stream_obj)
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError, Exception:
                 pass
 
         def _handle_key_error(key: str, error: Exception) -> bool:
             if isinstance(error, AuthenticationError):
-                self._key_pool.mark_failed(key)
+                key_pool.mark_failed(key)
                 return True
             if isinstance(error, PermissionDeniedError):
                 if not self._rotate_on_permission_denied():
                     return False
-                self._key_pool.mark_failed(key)
+                key_pool.mark_failed(key)
                 return True
             if isinstance(error, RateLimitError):
-                self._key_pool.mark_rate_limited(key)
+                key_pool.mark_rate_limited(key)
                 return True
             return False
 
-        key1 = self._key_pool.get_next_key()
+        key1 = key_pool.get_next_key()
         if key1 is None:
             return await self._open_chat_stream_sequential(create_body)
 
@@ -595,7 +594,7 @@ class OpenAIChatProvider(BaseProvider):
         if task1 in done:
             exc = task1.exception()
             if exc is None:
-                self._key_pool.mark_succeeded(key1)
+                key_pool.mark_succeeded(key1)
                 return OpenAIStreamAdapter(task1.result())
             if isinstance(exc, Exception) and _handle_key_error(key1, exc):
                 return await self._open_chat_stream_sequential(create_body)
@@ -603,11 +602,11 @@ class OpenAIChatProvider(BaseProvider):
                 raise exc
 
         # Key 1 did not return within hedge_delay. Speculatively launch Key 2.
-        key2 = self._key_pool.get_next_key()
+        key2 = key_pool.get_next_key()
         if key2 is None or key2 == key1:
             try:
                 stream = await task1
-                self._key_pool.mark_succeeded(key1)
+                key_pool.mark_succeeded(key1)
                 return OpenAIStreamAdapter(stream)
             except Exception as exc:
                 if _handle_key_error(key1, exc):
@@ -633,7 +632,7 @@ class OpenAIChatProvider(BaseProvider):
                 exc = finished.exception()
                 if exc is None:
                     winner_stream = finished.result()
-                    self._key_pool.mark_succeeded(k)
+                    key_pool.mark_succeeded(k)
                     for remaining_task in tasks:
                         asyncio.create_task(_cancel_task(remaining_task))
                     return OpenAIStreamAdapter(winner_stream)
