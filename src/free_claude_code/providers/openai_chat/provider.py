@@ -257,6 +257,12 @@ class OpenAIChatProvider(BaseProvider):
             if config.api_keys and config.key_rate_limit is not None
             else None
         )
+        self._keepalive_task: asyncio.Task[None] | None = None
+        try:
+            loop = asyncio.get_running_loop()
+            self._keepalive_task = loop.create_task(self._prewarm_and_keepalive())
+        except RuntimeError:
+            pass
 
     def _build_client(
         self, credential: str | OpenAIAsyncCredentialProvider
@@ -294,8 +300,26 @@ class OpenAIChatProvider(BaseProvider):
         """Return this runtime generation's shared credential pool."""
         return self._key_pool
 
+    async def _prewarm_and_keepalive(self) -> None:
+        """Pre-warm TLS socket to upstream and keep it active across idle gaps."""
+        await self.warmup()
+        while True:
+            await asyncio.sleep(240.0)
+            await self.warmup()
+
+    async def warmup(self) -> None:
+        """Pre-warm the HTTP/2 TLS socket to the upstream provider."""
+        try:
+            raw_http = getattr(self._client, "_client", None)
+            if raw_http is not None and hasattr(raw_http, "head"):
+                await raw_http.head(self._base_url, timeout=3.0)
+        except Exception:
+            pass
+
     async def cleanup(self) -> None:
         """Release HTTP client resources."""
+        if hasattr(self, "_keepalive_task") and self._keepalive_task is not None:
+            self._keepalive_task.cancel()
         client = getattr(self, "_client", None)
         if client is not None:
             await client.close()
@@ -477,46 +501,151 @@ class OpenAIChatProvider(BaseProvider):
     async def _open_chat_stream(self, create_body: dict[str, Any]) -> Any:
         """Open one upstream stream."""
         if self._key_pool is not None:
-            last_error: Exception | None = None
-            for _ in self._config.api_keys:
-                key = self._key_pool.get_next_key()
-                if key is None:
-                    break
-                try:
-                    stream = await self._client.with_options(
-                        api_key=key
-                    ).chat.completions.create(
-                        **create_body,
-                        stream=True,
-                    )
-                except AuthenticationError as error:
-                    self._key_pool.mark_failed(key)
-                    last_error = error
-                except PermissionDeniedError as error:
-                    if not self._rotate_on_permission_denied():
-                        raise
-                    self._key_pool.mark_failed(key)
-                    last_error = error
-                except RateLimitError as error:
-                    self._key_pool.mark_rate_limited(key)
-                    last_error = error
-                else:
-                    self._key_pool.mark_succeeded(key)
-                    return OpenAIStreamAdapter(stream)
-            if last_error is not None:
-                raise last_error
-            raise ExecutionFailure(
-                kind=FailureKind.RATE_LIMIT,
-                status_code=429,
-                message="No API key in the configured pool is currently available.",
-                retryable=True,
-            )
+            if (
+                self._config.key_hedge_delay_seconds > 0.0
+                and len(self._config.api_keys) >= 2
+            ):
+                return await self._open_chat_stream_hedged(create_body)
+            return await self._open_chat_stream_sequential(create_body)
         return OpenAIStreamAdapter(
             await self._client.chat.completions.create(
                 **create_body,
                 stream=True,
             )
         )
+
+    async def _open_chat_stream_sequential(self, create_body: dict[str, Any]) -> Any:
+        assert self._key_pool is not None
+        last_error: Exception | None = None
+        for _ in self._config.api_keys:
+            key = self._key_pool.get_next_key()
+            if key is None:
+                break
+            try:
+                stream = await self._client.with_options(
+                    api_key=key
+                ).chat.completions.create(
+                    **create_body,
+                    stream=True,
+                )
+            except AuthenticationError as error:
+                self._key_pool.mark_failed(key)
+                last_error = error
+            except PermissionDeniedError as error:
+                if not self._rotate_on_permission_denied():
+                    raise
+                self._key_pool.mark_failed(key)
+                last_error = error
+            except RateLimitError as error:
+                self._key_pool.mark_rate_limited(key)
+                last_error = error
+            else:
+                self._key_pool.mark_succeeded(key)
+                return OpenAIStreamAdapter(stream)
+        if last_error is not None:
+            raise last_error
+        raise ExecutionFailure(
+            kind=FailureKind.RATE_LIMIT,
+            status_code=429,
+            message="No API key in the configured pool is currently available.",
+            retryable=True,
+        )
+
+    async def _open_chat_stream_hedged(self, create_body: dict[str, Any]) -> Any:
+        assert self._key_pool is not None
+        hedge_delay = self._config.key_hedge_delay_seconds
+
+        async def _open_on_key(key: str) -> Any:
+            return await self._client.with_options(
+                api_key=key
+            ).chat.completions.create(
+                **create_body,
+                stream=True,
+            )
+
+        async def _cancel_task(task: asyncio.Task[Any]) -> None:
+            task.cancel()
+            try:
+                stream_obj = await task
+                await maybe_await_aclose(stream_obj)
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        def _handle_key_error(key: str, error: Exception) -> bool:
+            if isinstance(error, AuthenticationError):
+                self._key_pool.mark_failed(key)
+                return True
+            if isinstance(error, PermissionDeniedError):
+                if not self._rotate_on_permission_denied():
+                    return False
+                self._key_pool.mark_failed(key)
+                return True
+            if isinstance(error, RateLimitError):
+                self._key_pool.mark_rate_limited(key)
+                return True
+            return False
+
+        key1 = self._key_pool.get_next_key()
+        if key1 is None:
+            return await self._open_chat_stream_sequential(create_body)
+
+        task1: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key1))
+        done, _ = await asyncio.wait({task1}, timeout=hedge_delay)
+
+        if task1 in done:
+            exc = task1.exception()
+            if exc is None:
+                self._key_pool.mark_succeeded(key1)
+                return OpenAIStreamAdapter(task1.result())
+            if isinstance(exc, Exception) and _handle_key_error(key1, exc):
+                return await self._open_chat_stream_sequential(create_body)
+            if isinstance(exc, BaseException):
+                raise exc
+
+        # Key 1 did not return within hedge_delay. Speculatively launch Key 2.
+        key2 = self._key_pool.get_next_key()
+        if key2 is None or key2 == key1:
+            try:
+                stream = await task1
+                self._key_pool.mark_succeeded(key1)
+                return OpenAIStreamAdapter(stream)
+            except Exception as exc:
+                if _handle_key_error(key1, exc):
+                    return await self._open_chat_stream_sequential(create_body)
+                raise
+
+        logger.info(
+            "{} key hedging: key ...{} quiet after {}s, racing with key ...{}",
+            self._provider_name,
+            key1[-6:] if len(key1) >= 6 else "...",
+            hedge_delay,
+            key2[-6:] if len(key2) >= 6 else "...",
+        )
+        task2: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key2))
+        tasks: dict[asyncio.Task[Any], str] = {task1: key1, task2: key2}
+
+        while tasks:
+            done_tasks, _ = await asyncio.wait(
+                tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+            )
+            for finished in done_tasks:
+                k = tasks.pop(finished)
+                exc = finished.exception()
+                if exc is None:
+                    winner_stream = finished.result()
+                    self._key_pool.mark_succeeded(k)
+                    for remaining_task in tasks:
+                        asyncio.create_task(_cancel_task(remaining_task))
+                    return OpenAIStreamAdapter(winner_stream)
+
+                if isinstance(exc, Exception) and _handle_key_error(k, exc):
+                    continue
+                if isinstance(exc, BaseException):
+                    for remaining_task in tasks:
+                        asyncio.create_task(_cancel_task(remaining_task))
+                    raise exc
+
+        return await self._open_chat_stream_sequential(create_body)
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Return the provider-specific stream view consumed by the base runner."""

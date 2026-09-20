@@ -1,12 +1,12 @@
 """Anthropic SSE parsing used by the Responses stream adapter."""
 
-import json
 import re
 import sys
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from free_claude_code.core.json_utils import fast_json_loads
 from free_claude_code.core.trace import close_stream_input
 
 # RFC 8895 permits either LF or CRLF line endings.  Provider adapters mostly
@@ -67,8 +67,8 @@ def parse_sse_event(raw: str) -> AnthropicSseEvent | None:
     if data_text == "[DONE]":
         return None
     try:
-        parsed = json.loads(data_text) if data_text else {}
-    except json.JSONDecodeError:
+        parsed = fast_json_loads(data_text) if data_text else {}
+    except Exception:
         parsed = {"raw": data_text}
     if not isinstance(parsed, dict):
         parsed = {"value": parsed}

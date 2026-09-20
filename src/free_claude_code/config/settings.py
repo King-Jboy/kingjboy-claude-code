@@ -271,6 +271,12 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="PROVIDER_PROGRESS_TIMEOUT",
     )
+    key_hedge_delay_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        allow_inf_nan=False,
+        validation_alias="KEY_HEDGE_DELAY_SECONDS",
+    )
     reasoning_policy: ReasoningPreference = Field(
         default=ReasoningPreference.CLIENT,
         validation_alias="REASONING_POLICY",
