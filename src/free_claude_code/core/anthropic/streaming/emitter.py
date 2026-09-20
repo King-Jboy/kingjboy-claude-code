@@ -1,9 +1,9 @@
+import json
 from typing import Any
 
 from loguru import logger
 
 from free_claude_code.core.failures import ExecutionFailure
-from free_claude_code.core.json_utils import fast_json_dumps
 
 from ..errors import anthropic_error_payload, anthropic_failure_payload
 
@@ -30,7 +30,7 @@ def map_stop_reason(openai_reason: str | None) -> str:
 
 def format_sse_event(event_type: str, data: dict[str, Any]) -> str:
     """Format one Anthropic-style SSE event."""
-    return f"event: {event_type}\ndata: {fast_json_dumps(data)}\n\n"
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
 def anthropic_ping_frame() -> str:
