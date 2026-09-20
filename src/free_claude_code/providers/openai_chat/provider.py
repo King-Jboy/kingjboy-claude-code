@@ -278,13 +278,13 @@ class OpenAIChatProvider(BaseProvider):
         limits = httpx2.Limits(
             max_keepalive_connections=64,
             max_connections=128,
-            keepalive_expiry=600.0,
+            keepalive_expiry=60.0,
         )
         http_client = DefaultAsyncHttpx2Client(
             proxy=config.proxy or None,
             timeout=timeout,
             limits=limits,
-            http2=True,
+            http2=False,
         )
         return AsyncOpenAI(
             api_key=credential,
@@ -304,7 +304,7 @@ class OpenAIChatProvider(BaseProvider):
         """Pre-warm TLS socket to upstream and keep it active across idle gaps."""
         await self.warmup()
         while True:
-            await asyncio.sleep(240.0)
+            await asyncio.sleep(45.0)
             await self.warmup()
 
     async def warmup(self) -> None:

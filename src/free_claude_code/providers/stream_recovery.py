@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 import httpx
+import httpx2
 import openai
 
 from free_claude_code.core.failures import ExecutionFailure
@@ -195,12 +196,17 @@ def is_retryable_stream_error(exc: BaseException) -> bool:
         exc,
         (
             TimeoutError,
-            ssl.SSLWantReadError,
+            ssl.SSLError,
             httpx.ReadTimeout,
             httpx.ReadError,
             httpx.RemoteProtocolError,
             httpx.ConnectError,
             httpx.NetworkError,
+            httpx2.ReadTimeout,
+            httpx2.ReadError,
+            httpx2.RemoteProtocolError,
+            httpx2.ConnectError,
+            httpx2.NetworkError,
             openai.APITimeoutError,
             openai.APIConnectionError,
         ),
