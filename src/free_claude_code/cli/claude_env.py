@@ -59,6 +59,8 @@ def build_claude_proxy_env(
     env["ANTHROPIC_BASE_URL"] = proxy_root_url
     env["ANTHROPIC_AUTH_TOKEN"] = proxy_auth_token(auth_token)
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+    # FCC uses Claude's separate classifier requests, not Anthropic server checks.
+    env["CLAUDE_CODE_AUTO_MODE_SERVER"] = "0"
     env["CLAUDE_CODE_DISABLE_ADVISOR_TOOL"] = "1"
     env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(context_window)
     env["DISABLE_AUTOUPDATER"] = "1"

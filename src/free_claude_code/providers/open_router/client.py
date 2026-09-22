@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.config.constants import ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS
 from free_claude_code.core.anthropic import ReasoningReplayMode
+from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import ReasoningEffort
 from free_claude_code.providers.admission import ProviderAdmissionController
 from free_claude_code.providers.base import ProviderConfig
@@ -57,6 +58,36 @@ class OpenRouterProvider(OpenAIChatProvider):
         payload = await self._list_models_payload()
         return extract_tool_capable_model_infos(
             payload, provider_name=self._provider_name
+        )
+
+    def _provider_failure_override(self, error: Exception) -> ExecutionFailure | None:
+        """Translate OpenRouter image-unsupported 404 into non-retryable 400."""
+        if getattr(error, "status_code", None) != 404:
+            return None
+        body = getattr(error, "body", None)
+        if isinstance(body, Mapping) and "error" in body:
+            if any(field in body for field in ("code", "message", "metadata")):
+                return None
+            body = body["error"]
+        if not isinstance(body, Mapping):
+            return None
+        code = body.get("code")
+        if not isinstance(code, int) or code != 404:
+            return None
+        if not isinstance(body.get("message"), str):
+            return None
+        metadata = body.get("metadata")
+        if (
+            not isinstance(metadata, Mapping)
+            or metadata.get("failed_routing_step") != "Filter by Image Support"
+        ):
+            return None
+        return ExecutionFailure(
+            FailureKind.INVALID_REQUEST,
+            400,
+            "No OpenRouter endpoint for this request supports image input. "
+            "Remove the image or choose an image-capable model.",
+            False,
         )
 
 
