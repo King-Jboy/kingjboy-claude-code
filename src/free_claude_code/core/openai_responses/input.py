@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -223,6 +224,10 @@ def _append_input_item(
         _append_pending_reasoning(messages, pending_reasoning)
         messages.append({"role": "user", "content": _text_from_part(item)})
         return
+    if item_type in {"input_image", "image", "image_url"} or "image_url" in item:
+        _append_pending_reasoning(messages, pending_reasoning)
+        messages.append({"role": "user", "content": [_image_block_from_part(item)]})
+        return
 
     raise ResponsesConversionError(
         f"Unsupported Responses input item type: {item_type!r}"
@@ -421,11 +426,20 @@ def _convert_message_content(content: Any) -> str | list[dict[str, Any]]:
             if part_type == "refusal":
                 blocks.append({"type": "text", "text": str(part.get("refusal", ""))})
                 continue
+            if (
+                part_type in {"input_image", "image", "image_url"}
+                or "image_url" in part
+            ):
+                blocks.append(_image_block_from_part(part))
+                continue
             raise ResponsesConversionError(
                 f"Unsupported Responses content part type: {part_type!r}"
             )
         return blocks
     if isinstance(content, dict):
+        part_type = content.get("type")
+        if part_type in {"input_image", "image", "image_url"} or "image_url" in content:
+            return [_image_block_from_part(content)]
         return [{"type": "text", "text": _text_from_part(content)}]
     raise ResponsesConversionError(
         f"Unsupported Responses message content: {type(content).__name__}"
@@ -436,7 +450,9 @@ def _content_as_text(content: Any) -> str:
     converted = _convert_message_content(content)
     if isinstance(converted, str):
         return converted
-    return "\n".join(str(block.get("text", "")) for block in converted)
+    return "\n".join(
+        str(block.get("text", "")) for block in converted if block.get("type") == "text"
+    )
 
 
 def _text_from_part(part: Mapping[str, Any]) -> str:
@@ -447,3 +463,57 @@ def _text_from_part(part: Mapping[str, Any]) -> str:
     if text := optional_str(part.get("output_text")):
         return text
     return ""
+
+
+_DATA_URL_PATTERN = re.compile(
+    r"^data:([^;,]+)(?:;[^;,]+)*;base64,(.*)$",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _image_block_from_part(part: Mapping[str, Any]) -> dict[str, Any]:
+    if (source := part.get("source")) and isinstance(source, Mapping):
+        return {"type": "image", "source": dict(source)}
+
+    raw_url = part.get("image_url")
+    if isinstance(raw_url, Mapping):
+        url = raw_url.get("url")
+    elif isinstance(raw_url, str):
+        url = raw_url
+    else:
+        url = part.get("url")
+
+    if isinstance(url, str) and url.strip():
+        url_str = url.strip()
+        match = _DATA_URL_PATTERN.fullmatch(url_str)
+        if match:
+            media_type, data = match.groups()
+            return {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type.lower(),
+                    "data": data.strip(),
+                },
+            }
+        return {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": url_str,
+            },
+        }
+
+    if (data := part.get("data")) and (media_type := part.get("media_type")):
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": str(media_type).lower(),
+                "data": str(data).strip(),
+            },
+        }
+
+    raise ResponsesConversionError(
+        "Unsupported Responses image content part: missing valid image_url or data"
+    )
