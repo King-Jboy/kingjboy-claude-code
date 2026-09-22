@@ -550,8 +550,6 @@ class ApplicationRuntime:
 
     async def _set_messaging_model(self, model_name: str) -> None:
         updates: dict[str, Any] = {"model": model_name, "model_fable": model_name}
-        if not self.settings.messaging_show_thinking:
-            updates["reasoning_fable"] = "off"
         await self.apply_admin_config(updates)
 
     async def _close_owned_resources(self) -> bool:
