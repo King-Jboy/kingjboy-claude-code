@@ -320,6 +320,7 @@ class MessagingNodeRunner:
                         fail_claim=fail_parsed_event,
                         log_messaging_error_details=self._log_messaging_error_details,
                         show_terminal_status=self._show_terminal_status,
+                        show_thinking=self._show_thinking,
                     )
                     if ptype == "error" and parsed.get("source") != "exit":
                         error_message = parsed.get("message", "Unknown error")

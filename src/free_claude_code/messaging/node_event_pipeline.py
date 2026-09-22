@@ -69,6 +69,7 @@ async def process_parsed_cli_event(
     fail_claim: FailClaim,
     log_messaging_error_details: bool = False,
     show_terminal_status: bool = True,
+    show_thinking: bool = True,
 ) -> tuple[str | None, bool]:
     """Process a single parsed CLI event. Returns (last_status, had_transcript_events)."""
     ptype = parsed.get("type") or ""
@@ -79,8 +80,15 @@ async def process_parsed_cli_event(
 
     status = get_status_for_event(ptype, parsed, format_status)
     if status is not None:
-        await update_ui(status)
-        last_status = status
+        if not show_thinking and ptype in (
+            "thinking_start",
+            "thinking_delta",
+            "thinking_chunk",
+        ):
+            status = None
+        else:
+            await update_ui(status)
+            last_status = status
     elif ptype == "block_stop":
         await update_ui(last_status, force=True)
     elif ptype == "complete":

@@ -115,6 +115,8 @@ def build_managed_claude_env(
     env["DISABLE_TELEMETRY"] = "1"
     env["TERM"] = "dumb"
     env["PYTHONIOENCODING"] = "utf-8"
+    env["MAX_THINKING_TOKENS"] = "0"
+    env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
     return env
 
 
