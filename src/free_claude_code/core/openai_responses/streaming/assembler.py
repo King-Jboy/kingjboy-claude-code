@@ -75,6 +75,8 @@ class ResponsesStreamAssembler:
             chunks.extend(self.finish_response())
         elif event.event == "error":
             chunks.extend(self.fail_response(event.data))
+        elif event.event == "ping":
+            chunks.append(": ping\n\n")
         return chunks
 
     def finish_if_needed(self) -> list[str]:

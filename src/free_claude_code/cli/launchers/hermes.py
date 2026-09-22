@@ -146,6 +146,7 @@ def launch(argv: Sequence[str] | None = None) -> None:
         managed=managed,
         proxy_root_url=proxy_root_url,
         auth_token=auth_token,
+        provider_progress_timeout=settings.provider_progress_timeout,
     )
 
 
@@ -238,6 +239,7 @@ def build_hermes_launcher_env(
     auth_token: str,
     proxy_root_url: str,
     base_env: Mapping[str, str],
+    provider_progress_timeout: float | None = None,
 ) -> dict[str, str]:
     """Build a child-only Hermes environment while preserving native state."""
 
@@ -255,6 +257,12 @@ def build_hermes_launcher_env(
     env = with_local_proxy_bypass(filtered, proxy_root_url=proxy_root_url)
     env["HERMES_MANAGED_DIR"] = str(managed_directory)
     env[key_env] = auth_token
+    if provider_progress_timeout is not None and provider_progress_timeout > 0:
+        timeout_str = str(int(provider_progress_timeout))
+        env.setdefault("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", timeout_str)
+        env.setdefault("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", timeout_str)
+        if provider_progress_timeout > 1500.0:
+            env.setdefault("HERMES_CODEX_HARD_TIMEOUT_SECONDS", timeout_str)
     return env
 
 
@@ -266,6 +274,7 @@ def _run_with_managed_config(
     managed: HermesManagedConfig,
     proxy_root_url: str,
     auth_token: str,
+    provider_progress_timeout: float | None = None,
 ) -> None:
     try:
         temp_config = tempfile.TemporaryDirectory(prefix="fcc-hermes-")
@@ -288,6 +297,7 @@ def _run_with_managed_config(
             auth_token=auth_token,
             proxy_root_url=proxy_root_url,
             base_env=os.environ,
+            provider_progress_timeout=provider_progress_timeout,
         )
         _require_overlay_activation(
             binary_path=binary_path,
