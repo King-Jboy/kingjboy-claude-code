@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 
 from loguru import logger
 
+from free_claude_code.cli.claude_env import resolve_claude_executable
 from free_claude_code.cli.process_registry import (
     force_kill_pid_tree_best_effort,
     kill_pid_tree_best_effort,
@@ -137,8 +138,12 @@ class ManagedClaudeSession:
                         **invocation.trace_metadata,
                     )
 
+                    argv = [
+                        resolve_claude_executable(invocation.argv[0]),
+                        *invocation.argv[1:],
+                    ]
                     process = await asyncio.create_subprocess_exec(
-                        *invocation.argv,
+                        *argv,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=invocation.cwd,

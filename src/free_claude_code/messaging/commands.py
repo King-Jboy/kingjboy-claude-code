@@ -180,3 +180,35 @@ async def handle_clear_command(
         msg_ids.add(str(incoming.message_id))
 
     await _delete_message_ids(handler, incoming.chat_id, msg_ids)
+
+
+async def handle_help_command(
+    handler: MessagingCommandContext, incoming: IncomingMessage
+) -> None:
+    """Handle /help and /start commands."""
+    ctx = handler.get_render_ctx()
+    text = (
+        "🤖 "
+        + ctx.bold("Claude Code Proxy")
+        + "\n\n"
+        + ctx.escape_text("Send me any prompt or code to run it through Claude Code.")
+        + "\n\n"
+        + ctx.bold("Commands:")
+        + "\n"
+        + ctx.escape_text("• /stop - Stop active task (or reply to a message)")
+        + "\n"
+        + ctx.escape_text("• /clear - Clear conversation history")
+        + "\n"
+        + ctx.escape_text("• /stats - Show session stats")
+        + "\n"
+        + ctx.escape_text("• /help - Show available commands")
+    )
+    msg_id = await handler.outbound.queue_send_message(
+        incoming.chat_id,
+        text,
+        fire_and_forget=False,
+        message_thread_id=incoming.message_thread_id,
+    )
+    handler.record_outgoing_message(
+        incoming.platform, incoming.chat_id, msg_id, "command"
+    )

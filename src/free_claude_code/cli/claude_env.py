@@ -1,12 +1,47 @@
 """Shared Claude Code environment policy for FCC client surfaces."""
 
+import os
+import shutil
 from collections.abc import Mapping
+from pathlib import Path
 
 from free_claude_code.cli.local_http import with_local_proxy_bypass
 from free_claude_code.cli.proxy_auth import proxy_auth_token
 from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 
 CLAUDE_BINARY_NAME = "claude"
+
+
+def resolve_claude_executable(claude_bin: str = CLAUDE_BINARY_NAME) -> str:
+    """Resolve the Claude Code executable path with fallback to common install dirs."""
+    found = shutil.which(claude_bin)
+    if found:
+        return found
+
+    bin_path = Path(claude_bin)
+    if bin_path.is_file() and (os.name == "nt" or os.access(bin_path, os.X_OK)):
+        return str(bin_path)
+
+    home = Path.home()
+    candidates: list[Path] = [
+        home / ".local" / "bin" / "claude",
+        home / ".local" / "bin" / "claude.exe",
+        home / ".npm-global" / "bin" / "claude",
+        home / ".npm-global" / "bin" / "claude.cmd",
+        home / ".cargo" / "bin" / "claude",
+        Path("/usr/local/bin/claude"),
+    ]
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "npm" / "claude.cmd")
+            candidates.append(Path(appdata) / "npm" / "claude.exe")
+
+    for candidate in candidates:
+        if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+            return str(candidate)
+
+    return claude_bin
 
 
 _BLOCKED_ENV_PREFIXES = (

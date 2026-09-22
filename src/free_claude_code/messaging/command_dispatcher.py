@@ -1,13 +1,20 @@
 """Command parsing and dispatch for messaging handlers."""
 
 from .command_context import MessagingCommandContext
-from .commands import handle_clear_command, handle_stats_command, handle_stop_command
+from .commands import (
+    handle_clear_command,
+    handle_help_command,
+    handle_stats_command,
+    handle_stop_command,
+)
 from .models import IncomingMessage
 
 _COMMAND_HANDLERS = {
     "/clear": handle_clear_command,
     "/stop": handle_stop_command,
     "/stats": handle_stats_command,
+    "/start": handle_help_command,
+    "/help": handle_help_command,
 }
 
 
