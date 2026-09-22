@@ -30,6 +30,7 @@ class ManagedClaudeSessionManager:
         context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW,
         log_raw_cli_diagnostics: bool = False,
         log_messaging_error_details: bool = False,
+        disable_thinking: bool = False,
     ):
         """
         Initialize the session manager.
@@ -47,6 +48,7 @@ class ManagedClaudeSessionManager:
         self.context_window = context_window
         self._log_raw_cli_diagnostics = log_raw_cli_diagnostics
         self._log_messaging_error_details = log_messaging_error_details
+        self._disable_thinking = disable_thinking
 
         self._sessions: dict[str, ManagedClaudeSession] = {}
         self._pending_sessions: dict[str, ManagedClaudeSession] = {}
@@ -75,33 +77,31 @@ class ManagedClaudeSessionManager:
         ]
         for session_id in pending_ids:
             self._pending_sessions.pop(session_id, None)
-        for real_id in real_ids:
-            self._sessions.pop(real_id, None)
-            temp_id = self._real_to_temp.pop(real_id, None)
-            if temp_id is not None:
-                self._temp_to_real.pop(temp_id, None)
+            self._temp_to_real.pop(session_id, None)
+        for session_id in real_ids:
+            self._sessions.pop(session_id, None)
+            self._real_to_temp.pop(session_id, None)
         self._closing_sessions.discard(session)
 
     async def get_or_create_session(
         self, session_id: str | None = None
     ) -> tuple[ManagedClaudeSession, str, bool]:
         """
-        Get an existing session or create a new one.
+        Get existing session or create a new one.
 
         Returns:
-            Tuple of (session instance, session_id, is_new_session)
+            (session, session_or_temp_id, is_new)
         """
         async with self._lock:
             if session_id:
                 lookup_id = self._temp_to_real.get(session_id, session_id)
-
-                if lookup_id in self._sessions:
-                    session = self._sessions[lookup_id]
+                session = self._sessions.get(lookup_id)
+                if session is not None:
                     if session in self._closing_sessions:
                         raise RuntimeError("Managed Claude session is closing.")
                     return session, lookup_id, False
-                if lookup_id in self._pending_sessions:
-                    session = self._pending_sessions[lookup_id]
+                session = self._pending_sessions.get(lookup_id)
+                if session is not None:
                     if session in self._closing_sessions:
                         raise RuntimeError("Managed Claude session is closing.")
                     return session, lookup_id, False
@@ -116,6 +116,7 @@ class ManagedClaudeSessionManager:
                 auth_token=self.auth_token,
                 context_window=self.context_window,
                 log_raw_cli_diagnostics=self._log_raw_cli_diagnostics,
+                disable_thinking=self._disable_thinking,
             )
             self._pending_sessions[temp_id] = new_session
 

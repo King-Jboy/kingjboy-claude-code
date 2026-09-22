@@ -494,6 +494,7 @@ class ApplicationRuntime:
             ).value,
             log_raw_cli_diagnostics=settings.log_raw_cli_diagnostics,
             log_messaging_error_details=settings.log_messaging_error_details,
+            disable_thinking=not settings.messaging_show_thinking,
         )
         session_store = messaging_session.SessionStore(
             storage_path=os.path.join(data_path, "sessions.json"),

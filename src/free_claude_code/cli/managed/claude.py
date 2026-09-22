@@ -45,6 +45,7 @@ class ManagedClaudeConfig:
     claude_bin: str = CLAUDE_BINARY_NAME
     auth_token: str = ""
     context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW
+    disable_thinking: bool = False
 
 
 @dataclass(slots=True)
@@ -82,6 +83,7 @@ def build_managed_claude_invocation(
             auth_token=config.auth_token,
             base_env=base_env,
             context_window=config.context_window,
+            disable_thinking=config.disable_thinking,
         ),
         cwd=config.workspace_path,
         trace_metadata={
@@ -103,6 +105,7 @@ def build_managed_claude_env(
     auth_token: str,
     base_env: Mapping[str, str],
     context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW,
+    disable_thinking: bool = False,
 ) -> dict[str, str]:
     """Return a Claude Code task environment that targets the local proxy."""
 
@@ -115,8 +118,9 @@ def build_managed_claude_env(
     env["DISABLE_TELEMETRY"] = "1"
     env["TERM"] = "dumb"
     env["PYTHONIOENCODING"] = "utf-8"
-    env["MAX_THINKING_TOKENS"] = "0"
-    env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
+    if disable_thinking:
+        env["MAX_THINKING_TOKENS"] = "0"
+        env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
     return env
 
 
