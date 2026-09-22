@@ -234,9 +234,17 @@ async def handle_model_command(
             "",
             ctx.bold("Available Models:"),
         ]
-        for idx, model_name in enumerate(available, start=1):
+        max_displayed = 40
+        for idx, model_name in enumerate(available[:max_displayed], start=1):
             marker = " (active)" if model_name == current else ""
             lines.append(ctx.escape_text(f"{idx}. {model_name}{marker}"))
+
+        if len(available) > max_displayed:
+            lines.append(
+                ctx.escape_text(
+                    f"... and {len(available) - max_displayed} more. Switch directly via /model <name>"
+                )
+            )
 
         lines.extend(
             [

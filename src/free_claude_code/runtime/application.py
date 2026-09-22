@@ -41,7 +41,12 @@ from free_claude_code.config.env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
     process_env_key_is_effective,
 )
-from free_claude_code.config.model_refs import parse_provider_type
+from free_claude_code.config.model_refs import (
+    ModelCatalogScope,
+    configured_chat_model_refs,
+    parse_provider_type,
+    pinned_model_refs,
+)
 from free_claude_code.config.paths import messaging_state_dir_path
 from free_claude_code.config.server_urls import local_admin_url, local_proxy_root_url
 from free_claude_code.config.settings import Settings, get_settings
@@ -524,17 +529,26 @@ class ApplicationRuntime:
 
     def _get_messaging_available_models(self) -> list[str]:
         models: list[str] = []
-        if self.settings.model and self.settings.model not in models:
-            models.append(self.settings.model)
-        for m in self.settings.pinned_models:
-            if m and m not in models:
-                models.append(m)
+        for ref in configured_chat_model_refs(self.settings):
+            if ref.model_ref and ref.model_ref not in models:
+                models.append(ref.model_ref)
+        try:
+            for m in pinned_model_refs(self.settings):
+                if m and m not in models:
+                    models.append(m)
+        except Exception:
+            pass
+        if self.settings.model_catalog_scope != ModelCatalogScope.CONFIGURED:
+            try:
+                for info in self.provider_manager.cached_prefixed_model_infos():
+                    if info.model_id and info.model_id not in models:
+                        models.append(info.model_id)
+            except Exception:
+                pass
         return models
 
     async def _set_messaging_model(self, model_name: str) -> None:
-        updates: dict[str, Any] = {"model": model_name}
-        if self.settings.model_fable:
-            updates["model_fable"] = model_name
+        updates: dict[str, Any] = {"model": model_name, "model_fable": model_name}
         await self.apply_admin_config(updates)
 
     async def _close_owned_resources(self) -> bool:
