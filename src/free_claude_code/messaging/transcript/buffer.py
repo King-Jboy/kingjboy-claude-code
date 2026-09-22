@@ -33,7 +33,10 @@ class TranscriptBuffer:
     def __init__(
         self,
         *,
+        show_thinking: bool = True,
+        show_tool_calls: bool = True,
         show_tool_results: bool = True,
+        show_subagents: bool = True,
         debug_subagent_stack: bool = False,
     ) -> None:
         self._segments: list[Segment] = []
@@ -41,7 +44,10 @@ class TranscriptBuffer:
         self._open_text_by_index: dict[int, TextSegment] = {}
         self._open_tools_by_index: dict[int, ToolCallSegment] = {}
         self._tool_name_by_id: dict[str, str] = {}
+        self._show_thinking = bool(show_thinking)
+        self._show_tool_calls = bool(show_tool_calls)
         self._show_tool_results = bool(show_tool_results)
+        self._show_subagents = bool(show_subagents)
         self._subagents = SubagentState(debug=debug_subagent_stack)
 
     def apply(self, event: dict[str, Any]) -> None:
@@ -51,13 +57,16 @@ class TranscriptBuffer:
             return
 
         if event_type == "thinking_start":
-            self._start_thinking(_event_index(event))
+            if self._show_thinking:
+                self._start_thinking(_event_index(event))
             return
         if event_type in ("thinking_delta", "thinking_chunk"):
-            self._append_thinking(_event_index(event), str(event.get("text", "")))
+            if self._show_thinking:
+                self._append_thinking(_event_index(event), str(event.get("text", "")))
             return
         if event_type == "thinking_stop":
-            self._open_thinking_by_index.pop(_event_index(event), None)
+            if self._show_thinking:
+                self._open_thinking_by_index.pop(_event_index(event), None)
             return
 
         if event_type == "text_start":
@@ -71,7 +80,8 @@ class TranscriptBuffer:
             return
 
         if event_type == "tool_use_start":
-            self._start_tool_use(event)
+            if self._show_tool_calls or self._show_subagents:
+                self._start_tool_use(event)
             return
         if event_type == "tool_use_delta":
             return
@@ -85,10 +95,12 @@ class TranscriptBuffer:
             self._close_block(_event_index(event))
             return
         if event_type == "tool_use":
-            self._append_complete_tool_use(event)
+            if self._show_tool_calls or self._show_subagents:
+                self._append_complete_tool_use(event)
             return
         if event_type == "tool_result":
-            self._append_tool_result(event)
+            if self._show_tool_results or self._subagents.in_subagent():
+                self._append_tool_result(event)
             return
         if event_type == "error":
             self._segments.append(ErrorSegment(str(event.get("message", ""))))
@@ -146,14 +158,16 @@ class TranscriptBuffer:
             self._tool_name_by_id[tool_id] = name
 
         if name == "Task":
-            segment = SubagentSegment(task_heading_from_input(event.get("input")))
-            self._segments.append(segment)
-            self._subagents.push(tool_id, segment)
+            if self._show_subagents:
+                segment = SubagentSegment(task_heading_from_input(event.get("input")))
+                self._segments.append(segment)
+                self._subagents.push(tool_id, segment)
             return
 
-        segment = self._append_tool_call(tool_id, name)
-        if index >= 0:
-            self._open_tools_by_index[index] = segment
+        if self._show_tool_calls:
+            segment = self._append_tool_call(tool_id, name)
+            if index >= 0:
+                self._open_tools_by_index[index] = segment
 
     def _append_complete_tool_use(self, event: dict[str, Any]) -> None:
         tool_id = _event_tool_id(event, "id")
@@ -162,13 +176,15 @@ class TranscriptBuffer:
             self._tool_name_by_id[tool_id] = name
 
         if name == "Task":
-            segment = SubagentSegment(task_heading_from_input(event.get("input")))
-            self._segments.append(segment)
-            self._subagents.push(tool_id, segment)
+            if self._show_subagents:
+                segment = SubagentSegment(task_heading_from_input(event.get("input")))
+                self._segments.append(segment)
+                self._subagents.push(tool_id, segment)
             return
 
-        segment = self._append_tool_call(tool_id, name)
-        segment.closed = True
+        if self._show_tool_calls:
+            segment = self._append_tool_call(tool_id, name)
+            segment.closed = True
 
     def _append_tool_call(self, tool_id: str, name: str) -> ToolCallSegment:
         if self._subagents.in_subagent():

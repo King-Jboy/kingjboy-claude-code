@@ -169,6 +169,15 @@ class Settings(BaseSettings):
     messaging_rate_window: float = Field(
         default=1.0, validation_alias="MESSAGING_RATE_WINDOW"
     )
+    messaging_show_thinking: bool = Field(
+        default=False, validation_alias="MESSAGING_SHOW_THINKING"
+    )
+    messaging_show_tools: bool = Field(
+        default=False, validation_alias="MESSAGING_SHOW_TOOLS"
+    )
+    messaging_show_terminal_status: bool = Field(
+        default=False, validation_alias="MESSAGING_SHOW_TERMINAL_STATUS"
+    )
 
     # ==================== NVIDIA NIM Config ====================
     nvidia_nim_api_keys: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEYS")

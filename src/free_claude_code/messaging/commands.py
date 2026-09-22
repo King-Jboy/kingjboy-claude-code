@@ -195,6 +195,8 @@ async def handle_help_command(
         + "\n\n"
         + ctx.bold("Commands:")
         + "\n"
+        + ctx.escape_text("• /model - View or switch active model")
+        + "\n"
         + ctx.escape_text("• /stop - Stop active task (or reply to a message)")
         + "\n"
         + ctx.escape_text("• /clear - Clear conversation history")
@@ -212,3 +214,105 @@ async def handle_help_command(
     handler.record_outgoing_message(
         incoming.platform, incoming.chat_id, msg_id, "command"
     )
+
+
+async def handle_model_command(
+    handler: MessagingCommandContext, incoming: IncomingMessage
+) -> None:
+    """Handle /model command to view or switch active model."""
+    ctx = handler.get_render_ctx()
+    parts = (incoming.text or "").strip().split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    available = handler.get_available_models()
+    current = handler.get_current_model()
+
+    if not arg:
+        lines = [
+            "🎯 " + ctx.bold("Active Model:"),
+            ctx.escape_text(f"• {current}"),
+            "",
+            ctx.bold("Available Models:"),
+        ]
+        for idx, model_name in enumerate(available, start=1):
+            marker = " (active)" if model_name == current else ""
+            lines.append(ctx.escape_text(f"{idx}. {model_name}{marker}"))
+
+        lines.extend(
+            [
+                "",
+                ctx.bold("To switch:"),
+                ctx.escape_text("Send ") + ctx.code_inline("/model <number or name>"),
+                ctx.escape_text("e.g. ") + ctx.code_inline("/model 2"),
+            ]
+        )
+
+        msg_id = await handler.outbound.queue_send_message(
+            incoming.chat_id,
+            "\n".join(lines),
+            fire_and_forget=False,
+            message_thread_id=incoming.message_thread_id,
+        )
+        handler.record_outgoing_message(
+            incoming.platform, incoming.chat_id, msg_id, "command"
+        )
+        return
+
+    chosen: str | None = None
+    if arg.isdigit():
+        idx = int(arg) - 1
+        if 0 <= idx < len(available):
+            chosen = available[idx]
+    else:
+        for m in available:
+            if m.lower() == arg.lower():
+                chosen = m
+                break
+        if chosen is None:
+            for m in available:
+                if arg.lower() in m.lower():
+                    chosen = m
+                    break
+        if chosen is None and "/" in arg:
+            chosen = arg
+
+    if chosen is None:
+        msg_id = await handler.outbound.queue_send_message(
+            incoming.chat_id,
+            "⚠️ "
+            + ctx.bold("Unknown model:")
+            + " "
+            + ctx.escape_text(arg)
+            + "\n\nUse "
+            + ctx.code_inline("/model")
+            + " to see available models.",
+            fire_and_forget=False,
+            message_thread_id=incoming.message_thread_id,
+        )
+        handler.record_outgoing_message(
+            incoming.platform, incoming.chat_id, msg_id, "command"
+        )
+        return
+
+    try:
+        await handler.set_model(chosen)
+        msg_id = await handler.outbound.queue_send_message(
+            incoming.chat_id,
+            "🎯 " + ctx.bold("Model switched to:") + "\n" + ctx.escape_text(chosen),
+            fire_and_forget=False,
+            message_thread_id=incoming.message_thread_id,
+        )
+        handler.record_outgoing_message(
+            incoming.platform, incoming.chat_id, msg_id, "command"
+        )
+    except Exception as exc:
+        logger.error("Failed to switch model: {}", exc)
+        msg_id = await handler.outbound.queue_send_message(
+            incoming.chat_id,
+            "⚠️ " + ctx.bold("Failed to switch model:") + f" {type(exc).__name__}",
+            fire_and_forget=False,
+            message_thread_id=incoming.message_thread_id,
+        )
+        handler.record_outgoing_message(
+            incoming.platform, incoming.chat_id, msg_id, "command"
+        )

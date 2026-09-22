@@ -1,7 +1,7 @@
 """Messaging workflow coordinator for Discord and Telegram prompts."""
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 from loguru import logger
@@ -100,6 +100,14 @@ class MessagingWorkflow:
         debug_subagent_stack: bool = False,
         log_raw_cli_diagnostics: bool = False,
         log_messaging_error_details: bool = False,
+        show_thinking: bool = True,
+        show_tool_calls: bool = True,
+        show_tool_results: bool = True,
+        show_subagents: bool = True,
+        show_terminal_status: bool = True,
+        get_current_model: Callable[[], str] | None = None,
+        get_available_models: Callable[[], list[str]] | None = None,
+        set_model: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.platform_name = platform_name or "messaging"
         self.outbound = outbound
@@ -112,6 +120,10 @@ class MessagingWorkflow:
         self._stop_generation = 0
         self._clear_generations: dict[MessageScope, int] = {}
         self._pending_restored_status_targets: tuple[NodeUiTarget, ...] = ()
+        self._current_model = "default"
+        self._get_current_model_cb = get_current_model
+        self._get_available_models_cb = get_available_models
+        self._set_model_cb = set_model
 
         self._tree_queue: TreeQueueManager
         self.node_runner = MessagingNodeRunner(
@@ -128,6 +140,11 @@ class MessagingWorkflow:
             debug_subagent_stack=debug_subagent_stack,
             log_raw_cli_diagnostics=log_raw_cli_diagnostics,
             log_messaging_error_details=log_messaging_error_details,
+            show_thinking=show_thinking,
+            show_tool_calls=show_tool_calls,
+            show_tool_results=show_tool_results,
+            show_subagents=show_subagents,
+            show_terminal_status=show_terminal_status,
         )
         self.turn_intake = MessagingTurnIntake(
             platform_name=self.platform_name,
@@ -173,6 +190,21 @@ class MessagingWorkflow:
 
     def _get_limit_chars(self) -> int:
         return self._rendering_profile.limit_chars
+
+    def get_current_model(self) -> str:
+        if self._get_current_model_cb is not None:
+            return self._get_current_model_cb()
+        return self._current_model
+
+    def get_available_models(self) -> list[str]:
+        if self._get_available_models_cb is not None:
+            return self._get_available_models_cb()
+        return [self._current_model]
+
+    async def set_model(self, model: str) -> None:
+        self._current_model = model
+        if self._set_model_cb is not None:
+            await self._set_model_cb(model)
 
     @property
     def tree_queue(self) -> TreeQueueManager:

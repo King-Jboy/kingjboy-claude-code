@@ -41,6 +41,11 @@ class MessagingNodeRunner:
         debug_subagent_stack: bool = False,
         log_raw_cli_diagnostics: bool = False,
         log_messaging_error_details: bool = False,
+        show_thinking: bool = True,
+        show_tool_calls: bool = True,
+        show_tool_results: bool = True,
+        show_subagents: bool = True,
+        show_terminal_status: bool = True,
     ) -> None:
         self.platform_name = platform_name
         self.outbound = outbound
@@ -55,13 +60,21 @@ class MessagingNodeRunner:
         self._debug_subagent_stack = debug_subagent_stack
         self._log_raw_cli_diagnostics = log_raw_cli_diagnostics
         self._log_messaging_error_details = log_messaging_error_details
+        self._show_thinking = show_thinking
+        self._show_tool_calls = show_tool_calls
+        self._show_tool_results = show_tool_results
+        self._show_subagents = show_subagents
+        self._show_terminal_status = show_terminal_status
 
     def _create_transcript_and_render_ctx(
         self,
     ) -> tuple[TranscriptBuffer, RenderCtx]:
         """Create transcript buffer and render context for node processing."""
         transcript = TranscriptBuffer(
-            show_tool_results=False,
+            show_thinking=self._show_thinking,
+            show_tool_calls=self._show_tool_calls,
+            show_tool_results=self._show_tool_results,
+            show_subagents=self._show_subagents,
             debug_subagent_stack=self._debug_subagent_stack,
         )
         return transcript, self._get_render_ctx()
@@ -211,10 +224,12 @@ class MessagingNodeRunner:
             except RuntimeError as e:
                 error_message = safe_exception_message(e)
                 transcript.apply({"type": "error", "message": error_message})
-                await update_ui(
-                    self._format_status("⏳", "Session limit reached", None),
-                    force=True,
+                terminal_status = (
+                    self._format_status("⏳", "Session limit reached", None)
+                    if self._show_terminal_status
+                    else None
                 )
+                await update_ui(terminal_status, force=True)
                 await self._fail_claim(
                     claim,
                     propagate=False,
@@ -304,6 +319,7 @@ class MessagingNodeRunner:
                         ),
                         fail_claim=fail_parsed_event,
                         log_messaging_error_details=self._log_messaging_error_details,
+                        show_terminal_status=self._show_terminal_status,
                     )
                     if ptype == "error" and parsed.get("source") != "exit":
                         error_message = parsed.get("message", "Unknown error")
@@ -326,10 +342,12 @@ class MessagingNodeRunner:
             elif not terminal_seen:
                 error_message = "Claude CLI ended without a terminal event"
                 transcript.apply({"type": "error", "message": error_message})
-                await update_ui(
-                    self._format_status("💥", "Task Failed", None),
-                    force=True,
+                terminal_status = (
+                    self._format_status("💥", "Task Failed", None)
+                    if self._show_terminal_status
+                    else None
                 )
+                await update_ui(terminal_status, force=True)
                 await self._fail_claim(
                     claim,
                     propagate=True,
@@ -375,7 +393,12 @@ class MessagingNodeRunner:
             )
             error_msg = format_user_error_preview(e)
             transcript.apply({"type": "error", "message": error_msg})
-            await update_ui(self._format_status("💥", "Task Failed", None), force=True)
+            terminal_status = (
+                self._format_status("💥", "Task Failed", None)
+                if self._show_terminal_status
+                else None
+            )
+            await update_ui(terminal_status, force=True)
             await self._fail_claim(
                 claim,
                 propagate=True,

@@ -95,5 +95,17 @@ class MessagingCommandContext(Protocol):
         """Record an outgoing platform message ID and report registry ownership."""
         ...
 
+    def get_current_model(self) -> str:
+        """Return the active model name."""
+        ...
+
+    def get_available_models(self) -> list[str]:
+        """Return the list of available models."""
+        ...
+
+    async def set_model(self, model: str) -> None:
+        """Switch the active model."""
+        ...
+
 
 __all__ = ["MessagingCommandContext", "ReplyClearResult", "StopOutcome"]

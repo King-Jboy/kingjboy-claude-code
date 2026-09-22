@@ -504,6 +504,14 @@ class ApplicationRuntime:
             debug_subagent_stack=settings.debug_subagent_stack,
             log_raw_cli_diagnostics=settings.log_raw_cli_diagnostics,
             log_messaging_error_details=settings.log_messaging_error_details,
+            show_thinking=settings.messaging_show_thinking,
+            show_tool_calls=settings.messaging_show_tools,
+            show_tool_results=settings.messaging_show_tools,
+            show_subagents=settings.messaging_show_tools,
+            show_terminal_status=settings.messaging_show_terminal_status,
+            get_current_model=lambda: self.settings.model_fable or self.settings.model,
+            get_available_models=self._get_messaging_available_models,
+            set_model=self._set_messaging_model,
         )
         self._messaging_workflow = workflow
         workflow.restore()
@@ -513,6 +521,21 @@ class ApplicationRuntime:
         if components.startup_notice is not None:
             await workflow.publish_startup_notice(components.startup_notice)
         logger.info("{} platform started with messaging workflow", components.name)
+
+    def _get_messaging_available_models(self) -> list[str]:
+        models: list[str] = []
+        if self.settings.model and self.settings.model not in models:
+            models.append(self.settings.model)
+        for m in self.settings.pinned_models:
+            if m and m not in models:
+                models.append(m)
+        return models
+
+    async def _set_messaging_model(self, model_name: str) -> None:
+        updates: dict[str, Any] = {"model": model_name}
+        if self.settings.model_fable:
+            updates["model_fable"] = model_name
+        await self.apply_admin_config(updates)
 
     async def _close_owned_resources(self) -> bool:
         if not await self._cleanup_messaging():

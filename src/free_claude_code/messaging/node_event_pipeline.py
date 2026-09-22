@@ -68,6 +68,7 @@ async def process_parsed_cli_event(
     complete_claim: CompleteClaim,
     fail_claim: FailClaim,
     log_messaging_error_details: bool = False,
+    show_terminal_status: bool = True,
 ) -> tuple[str | None, bool]:
     """Process a single parsed CLI event. Returns (last_status, had_transcript_events)."""
     ptype = parsed.get("type") or ""
@@ -94,7 +95,8 @@ async def process_parsed_cli_event(
             node_id=claim.node.node_id,
             claude_session_id=captured_session_id,
         )
-        await update_ui(format_status("✅", "Complete"), force=True)
+        terminal_status = format_status("✅", "Complete") if show_terminal_status else None
+        await update_ui(terminal_status, force=True)
         await complete_claim(captured_session_id)
     elif ptype == "error":
         error_msg = parsed.get("message", "Unknown error")
@@ -114,7 +116,8 @@ async def process_parsed_cli_event(
                 "HANDLER: Error event received: message_chars={}",
                 text_len_hint(em),
             )
-        await update_ui(format_status("❌", "Error"), force=True)
+        terminal_status = format_status("❌", "Error") if show_terminal_status else None
+        await update_ui(terminal_status, force=True)
         await fail_claim(em, "Parent task failed")
 
     return last_status, had_transcript_events

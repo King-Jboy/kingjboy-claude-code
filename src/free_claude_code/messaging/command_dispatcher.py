@@ -4,6 +4,7 @@ from .command_context import MessagingCommandContext
 from .commands import (
     handle_clear_command,
     handle_help_command,
+    handle_model_command,
     handle_stats_command,
     handle_stop_command,
 )
@@ -15,6 +16,7 @@ _COMMAND_HANDLERS = {
     "/stats": handle_stats_command,
     "/start": handle_help_command,
     "/help": handle_help_command,
+    "/model": handle_model_command,
 }
 
 
