@@ -14,6 +14,7 @@ from free_claude_code.cli.launchers.hermes_config import (
     build_hermes_managed_config,
 )
 from free_claude_code.cli.launchers.model_catalog import ClientModel
+from free_claude_code.cli.proxy_auth import PROXY_NO_AUTH_SENTINEL
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.json_types import JsonObject
 
@@ -362,28 +363,26 @@ def test_hermes_proxy_failure_does_not_fetch_catalog(
     assert "fcc-server" in capsys.readouterr().err
 
 
-def test_hermes_empty_proxy_token_fails_before_health_check(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_hermes_blank_proxy_token_uses_the_shared_no_auth_marker() -> None:
+    # A blank ANTHROPIC_AUTH_TOKEN is the default and means the proxy runs
+    # without auth; every launcher maps it to the same client marker.
     from free_claude_code.cli.launchers import hermes
 
     with (
         patch.object(hermes, "resolve_client_binary", return_value="resolved-hermes"),
         patch.object(hermes, "require_compatible_hermes"),
         patch.object(hermes, "_system_policy_exists", return_value=False),
+        patch.object(hermes, "get_settings", return_value=_settings(token="   ")),
+        patch.object(hermes, "preflight_proxy", return_value=None),
         patch.object(
-            hermes,
-            "get_settings",
-            return_value=SimpleNamespace(anthropic_auth_token="   "),
-        ),
-        patch.object(hermes, "preflight_proxy") as preflight,
-        pytest.raises(SystemExit) as exc_info,
+            hermes, "fetch_proxy_models_response", return_value=_models_payload()
+        ) as fetch_models,
+        patch.object(hermes, "_run_with_managed_config") as run_managed,
     ):
         hermes.launch([])
 
-    assert exc_info.value.code == 1
-    preflight.assert_not_called()
-    assert "authentication token is empty" in capsys.readouterr().err
+    assert fetch_models.call_args.args[1] == PROXY_NO_AUTH_SENTINEL
+    assert run_managed.call_args.kwargs["auth_token"] == PROXY_NO_AUTH_SENTINEL
 
 
 def test_hermes_catalog_failure_never_starts_child(

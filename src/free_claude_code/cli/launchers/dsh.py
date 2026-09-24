@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Never
 
 from free_claude_code.cli.local_http import with_local_proxy_bypass
+from free_claude_code.cli.proxy_auth import proxy_auth_token
 from free_claude_code.config.loader import get_settings
 from free_claude_code.config.server_urls import local_proxy_root_url
 from free_claude_code.core.json_types import JsonValue
@@ -73,10 +74,7 @@ def launch(argv: Sequence[str] | None = None) -> None:
 
     require_compatible_dsh(binary_path)
     settings = get_settings()
-    auth_token = settings.anthropic_auth_token.strip()
-    if not auth_token:
-        print("Free Claude Code proxy authentication token is empty.", file=sys.stderr)
-        raise SystemExit(1)
+    auth_token = proxy_auth_token(settings.anthropic_auth_token)
 
     proxy_root_url = local_proxy_root_url(settings)
     if error := preflight_proxy(proxy_root_url):

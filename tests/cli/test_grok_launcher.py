@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from free_claude_code.cli.launchers.model_catalog import ClientModel
+from free_claude_code.cli.proxy_auth import PROXY_NO_AUTH_SENTINEL
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.json_types import JsonObject
 
@@ -288,6 +289,25 @@ def test_routed_launch_uses_catalog_model_and_injects_safety_flags() -> None:
         "hello",
     ]
     assert call["env"]["GROK_DEFAULT_MODEL"] == "nvidia_nim/vendor/model"
+
+
+def test_blank_proxy_token_uses_the_shared_no_auth_marker() -> None:
+    from free_claude_code.cli.launchers import grok
+
+    with (
+        patch.object(grok, "resolve_client_binary", return_value="resolved-grok"),
+        patch.object(grok, "require_compatible_grok"),
+        patch.object(grok, "get_settings", return_value=_settings(token="   ")),
+        patch.object(grok, "preflight_proxy", return_value=None),
+        patch.object(
+            grok, "fetch_proxy_models_response", return_value=_models_payload()
+        ) as fetch_models,
+        patch.object(grok, "run_client_process") as run_client_process,
+    ):
+        grok.launch(["--model", "nvidia_nim/vendor/model", "-p", "hello"])
+
+    assert fetch_models.call_args.args[1] == PROXY_NO_AUTH_SENTINEL
+    run_client_process.assert_called_once()
 
 
 def test_agent_stdio_inserts_flags_in_their_parser_scopes() -> None:

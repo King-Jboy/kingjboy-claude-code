@@ -11,6 +11,7 @@ import pytest
 
 from free_claude_code.cli.launchers.dsh import DshInvocation
 from free_claude_code.cli.launchers.model_catalog import ClientModel
+from free_claude_code.cli.proxy_auth import PROXY_NO_AUTH_SENTINEL
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.json_types import JsonObject
 
@@ -307,24 +308,23 @@ def test_dsh_proxy_failure_does_not_fetch_catalog(
     assert "fcc-server" in capsys.readouterr().err
 
 
-def test_dsh_empty_proxy_token_fails_before_health_check() -> None:
+def test_dsh_blank_proxy_token_uses_the_shared_no_auth_marker() -> None:
     from free_claude_code.cli.launchers import dsh
 
     with (
         patch.object(dsh, "resolve_client_binary", return_value="resolved-dsh"),
         patch.object(dsh, "require_compatible_dsh"),
+        patch.object(dsh, "get_settings", return_value=_settings(token="   ")),
+        patch.object(dsh, "preflight_proxy", return_value=None),
         patch.object(
-            dsh,
-            "get_settings",
-            return_value=SimpleNamespace(anthropic_auth_token="   "),
-        ),
-        patch.object(dsh, "preflight_proxy") as preflight,
-        pytest.raises(SystemExit) as exc_info,
+            dsh, "fetch_proxy_models_response", return_value=_models_payload()
+        ) as fetch_models,
+        patch.object(dsh, "_run_with_dsh_config") as run_configured,
     ):
-        dsh.launch([])
+        dsh.launch(["--profile", "headless", "task"])
 
-    assert exc_info.value.code == 1
-    preflight.assert_not_called()
+    assert fetch_models.call_args.args[1] == PROXY_NO_AUTH_SENTINEL
+    run_configured.assert_called_once()
 
 
 def test_dsh_catalog_failure_never_starts_child(
