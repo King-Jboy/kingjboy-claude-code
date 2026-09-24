@@ -1,5 +1,6 @@
 """Managed env persistence, validation preview, and rendering."""
 
+import contextlib
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -201,19 +202,19 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(f"{path.suffix}.tmp.{uuid4().hex}")
     try:
-        temp_path.write_text(
-            render_env_file(
-                prepared.target_values,
-                unmanaged=prepared.unmanaged_values,
-            ),
-            encoding="utf-8",
-        )
+        # Create the secrets file owner-only; a chmod after writing would leave
+        # it briefly readable under the default umask.
+        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as temp_file:
+            temp_file.write(
+                render_env_file(
+                    prepared.target_values,
+                    unmanaged=prepared.unmanaged_values,
+                )
+            )
         if os.name != "nt":
-            try:
+            with contextlib.suppress(OSError):
                 path.parent.chmod(0o700)
-                temp_path.chmod(0o600)
-            except OSError:
-                pass
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)

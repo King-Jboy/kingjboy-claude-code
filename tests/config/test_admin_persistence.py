@@ -1,5 +1,6 @@
 """Managed env rendering, and survival of variables the manifest does not own."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,33 @@ def test_unmanaged_variables_survive_an_admin_save(
     assert saved["HTTPS_PROXY"] == "http://127.0.0.1:8080"
     assert saved["NO_PROXY"] == "localhost"
     assert saved["GROQ_API_KEY"] == "groq-key"
+
+
+def test_admin_save_creates_the_secrets_file_private_from_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The file holds API keys; chmod after writing leaves a window in which a
+    # world-readable copy exists under the default umask.
+    from free_claude_code.config.admin import persistence
+
+    _managed_env(tmp_path, monkeypatch, "")
+    real_open = persistence.os.open
+    opened: list[tuple[str, int, int]] = []
+
+    def spy_open(path, flags, mode=0o777, *args, **kwargs):
+        opened.append((str(path), flags, mode))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(persistence.os, "open", spy_open)
+    prepared = prepare_admin_update({"GROQ_API_KEY": "groq-key"})
+    assert prepared.valid, prepared.errors
+    commit_prepared_admin_update(prepared)
+
+    temp_opens = [entry for entry in opened if ".tmp." in entry[0]]
+    assert len(temp_opens) == 1
+    _, flags, mode = temp_opens[0]
+    assert mode == 0o600
+    assert flags & os.O_CREAT and flags & os.O_EXCL
 
 
 def test_first_admin_save_persists_runtime_defaults_without_drift(
