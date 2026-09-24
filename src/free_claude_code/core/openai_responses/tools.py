@@ -34,10 +34,9 @@ def _is_advisor_tool(tool: Mapping[str, Any]) -> bool:
     function = tool.get("function")
     source = function if isinstance(function, Mapping) else tool
     name = source.get("name")
-    return bool(
-        isinstance(name, str)
-        and (name.startswith("advisor") or name == "advisor_20260301")
-    )
+    # Match the server tool by exact name; a client function may start with
+    # "advisor" too.
+    return name == "advisor_20260301"
 
 
 def convert_tools(value: Any) -> list[dict[str, Any]] | None:

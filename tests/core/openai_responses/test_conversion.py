@@ -371,6 +371,26 @@ def test_responses_passive_codex_built_in_tools_are_ignored() -> None:
     ]
 
 
+def test_responses_client_function_named_like_advisor_is_kept() -> None:
+    # Only the advisor server tool is filtered; a client's own function that
+    # happens to start with "advisor" must still reach the model.
+    payload = _to_anthropic_payload(
+        {
+            "model": "nvidia_nim/test-model",
+            "input": "Hello",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "advisor_lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            ],
+        }
+    )
+
+    assert [tool["name"] for tool in payload["tools"]] == ["advisor_lookup"]
+
+
 def test_responses_namespaced_prior_function_call_flattens_tool_use_name() -> None:
     payload = _to_anthropic_payload(
         {
