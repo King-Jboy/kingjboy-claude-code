@@ -348,6 +348,9 @@ source detection for startup warnings also belongs to `src/free_claude_code/conf
 - managed env file: `~/.fcc/.env`;
 - generated Codex model catalog: `~/.fcc/codex-model-catalog.json`;
 - messaging state directory: `~/.fcc/agent_workspace`;
+- Responses continuation store: `~/.fcc/responses.json`, which keeps the 64
+  most recent completed `/v1/responses` turns so `previous_response_id` can be
+  expanded into full history (requests with `store: false` are not kept);
 - server log: `~/.fcc/logs/server.log`.
 
 Model routing configuration is tiered:

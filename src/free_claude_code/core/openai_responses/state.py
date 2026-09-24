@@ -13,6 +13,11 @@ from typing import Any
 from .errors import ResponsesConversionError
 from .models import OpenAIResponsesRequest
 
+# Each record carries its turn's full expanded history, so the store is bounded
+# by count; continuations reference a session's latest response, so the most
+# recent responses are the ones worth keeping.
+MAX_STORED_RESPONSES = 64
+
 
 class ResponsesStore:
     """Keep completed Responses turns so ``previous_response_id`` is meaningful."""
@@ -68,8 +73,14 @@ class ResponsesStore:
         json.dumps(record, ensure_ascii=False)
         with self._lock:
             self._load_locked()
+            self._records.pop(response_id, None)
             self._records[response_id] = record
+            self._evict_oldest_locked()
             self._persist_locked()
+
+    def _evict_oldest_locked(self) -> None:
+        while len(self._records) > MAX_STORED_RESPONSES:
+            del self._records[next(iter(self._records))]
 
     def _load_locked(self) -> None:
         if self._loaded:
@@ -90,6 +101,7 @@ class ResponsesStore:
             for response_id, record in records.items()
             if isinstance(response_id, str) and _valid_record(record)
         }
+        self._evict_oldest_locked()
 
     def _persist_locked(self) -> None:
         if self._path is None:

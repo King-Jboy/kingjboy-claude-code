@@ -119,3 +119,35 @@ def test_completed_responses_survive_a_store_restart(tmp_path: Path) -> None:
     )
 
     assert resolved.input[0] == "Persist this."
+
+
+def _continue_from(response_id: str) -> OpenAIResponsesRequest:
+    return OpenAIResponsesRequest(
+        model="nvidia_nim/test-model",
+        input="Continue.",
+        previous_response_id=response_id,
+    )
+
+
+def test_store_keeps_only_the_most_recent_responses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each record holds its turn's full history; an unbounded store grows
+    # without limit on disk and in memory.
+    from free_claude_code.core.openai_responses import state
+
+    monkeypatch.setattr(state, "MAX_STORED_RESPONSES", 2)
+    path = tmp_path / "responses.json"
+    store = ResponsesStore(path)
+    request = OpenAIResponsesRequest(model="nvidia_nim/test-model", input="Hi")
+    for response_id in ("resp_1", "resp_2", "resp_3"):
+        store.record(request, _completed_response(response_id))
+
+    with pytest.raises(ResponsesConversionError):
+        store.resolve(_continue_from("resp_1"))
+    store.resolve(_continue_from("resp_3"))
+
+    reloaded = ResponsesStore(path)
+    with pytest.raises(ResponsesConversionError):
+        reloaded.resolve(_continue_from("resp_1"))
+    reloaded.resolve(_continue_from("resp_2"))
