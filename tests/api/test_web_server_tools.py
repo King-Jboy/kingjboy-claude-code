@@ -797,21 +797,46 @@ async def test_automatic_web_search_rejects_oversized_selection_before_public_co
 
 
 @pytest.mark.asyncio
-async def test_automatic_web_search_rejects_slow_selection_before_public_commit(
+async def test_automatic_web_search_waits_for_a_slow_but_healthy_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = ScriptedSelectionProvider([], wait_for=asyncio.Event())
+    # Reasoning models and admission backoff routinely take longer than any
+    # short fixed deadline; the provider progress window already bounds a
+    # stall, so no separate, shorter cap may cut a healthy decision off.
     monkeypatch.setattr(
-        automatic_search_module, "_SELECTION_DECISION_TIMEOUT_SECONDS", 1.0
+        automatic_search_module,
+        "_SELECTION_DECISION_TIMEOUT_SECONDS",
+        0.05,
+        raising=False,
     )
+    release = asyncio.Event()
+    events = _provider_text_events("No search needed")
+    provider = ScriptedSelectionProvider(events, wait_for=release)
+    asyncio.get_running_loop().call_later(0.3, release.set)
+
+    response = await _automatic_search_service(provider).create(
+        _automatic_search_request(), request_id="req_selection_slow"
+    )
+
+    assert isinstance(response, StreamingResponse)
+    assert await _streaming_body_text(response) == "".join(events)
+    assert provider.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_web_search_stall_ends_at_the_progress_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTP_READ_TIMEOUT", "0.1")
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "0.3")
+    provider = ScriptedSelectionProvider([], wait_for=asyncio.Event())
 
     response = await _automatic_search_service(provider).create(
         _automatic_search_request(), request_id="req_selection_timeout"
     )
 
     assert isinstance(response, JSONResponse)
-    assert response.status_code == 500
-    assert "selection deadline" in _json_body(response)["error"]["message"]
+    assert response.status_code == 504
     assert provider.close_count == 1
 
 
