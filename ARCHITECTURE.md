@@ -977,8 +977,10 @@ Responses assembler.
 For streams, upstream acceptance is the first received chunk. Retryable failure
 before that point participates in provider-wide coordinated recovery. Failure
 after that point remains request-local so one interrupted connection does not
-freeze healthy parallel streams, but any continuation still consumes the same
-execution budget. The OpenAI SDK's internal retries remain disabled so FCC is
+freeze healthy parallel streams: that request alone waits out its Retry-After
+or exponential backoff before continuing, never opens or joins a recovery
+episode, and on exhaustion fails only itself. Any continuation still consumes
+the same execution budget. The OpenAI SDK's internal retries remain disabled so FCC is
 the only retry owner. `ExecutionFailure.retryable` records provider-policy
 eligibility; it never tells the client to retry after FCC has finalized the
 failure.

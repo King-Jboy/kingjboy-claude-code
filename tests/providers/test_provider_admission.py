@@ -762,8 +762,8 @@ async def test_retry_after_is_a_minimum_backoff() -> None:
 
 
 @pytest.mark.asyncio
-async def test_accepted_stream_failure_reenters_admission_recovery() -> None:
-    """A post-first-chunk failure uses the same coordinated backoff as an open failure."""
+async def test_accepted_stream_failure_backs_off_its_own_request() -> None:
+    """A post-first-chunk failure waits out its own backoff before continuing."""
     controller = _controller(max_attempts=2, base_delay=0.01, max_delay=0.01)
     session = controller.new_retry_session()
     clock = 0.0
@@ -796,6 +796,38 @@ async def test_accepted_stream_failure_reenters_admission_recovery() -> None:
         await recovery_attempt.aclose()
 
     assert delays == pytest.approx([0.01, 0.005])
+
+
+@pytest.mark.asyncio
+async def test_accepted_stream_failure_does_not_pause_other_requests() -> None:
+    # The upstream already answered this request, so its connection dropping
+    # says nothing about the provider; parallel requests must keep flowing.
+    controller = _controller(max_attempts=2, base_delay=5.0, max_delay=5.0)
+    failed = controller.new_retry_session()
+    attempt = await controller.open_attempt(failed)
+    await attempt.succeeded()
+    assert await attempt.retry_after_acceptance(_status_error(503))
+    await attempt.aclose()
+
+    other = controller.new_retry_session()
+    other_attempt = await asyncio.wait_for(controller.open_attempt(other), 0.5)
+    await other_attempt.succeeded()
+    await other_attempt.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_accepted_stream_failure_does_not_fail_other_requests() -> None:
+    controller = _controller(max_attempts=1, base_delay=5.0, max_delay=5.0)
+    failed = controller.new_retry_session()
+    attempt = await controller.open_attempt(failed)
+    await attempt.succeeded()
+    assert not await attempt.retry_after_acceptance(_status_error(503))
+    await attempt.aclose()
+
+    other = controller.new_retry_session()
+    other_attempt = await asyncio.wait_for(controller.open_attempt(other), 0.5)
+    await other_attempt.succeeded()
+    await other_attempt.aclose()
 
 
 def test_retry_after_accepts_http_date_and_rejects_invalid_values() -> None:

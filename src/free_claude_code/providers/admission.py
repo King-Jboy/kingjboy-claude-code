@@ -37,6 +37,7 @@ class ProviderRetrySession:
         self._request_id = request_id
         self._attempts_started = 0
         self._terminal_error: Exception | None = None
+        self._retry_not_before: float | None = None
 
     @property
     def max_attempts(self) -> int:
@@ -182,9 +183,8 @@ class ProviderAttempt:
         self._failure_retryable = retryable
         if not retryable:
             return False
-        return await self._controller._attempt_failed(
+        return self._controller._accepted_attempt_failed(
             self._session,
-            self._permit,
             error=error,
             status=retryable_upstream_status(effective_error),
         )
@@ -276,6 +276,7 @@ class ProviderAdmissionController:
         """Wait for provider admission and hold one active-operation slot."""
         if not session.can_attempt:
             raise RuntimeError("provider retry session is exhausted")
+        await self._wait_for_session_backoff(session)
         while True:
             permit = await self._wait_for_gate(session)
             slot_acquired = False
@@ -641,6 +642,72 @@ class ProviderAdmissionController:
                 episode_exhausted=exhausted_episode,
             )
         return can_retry
+
+    def _accepted_attempt_failed(
+        self,
+        session: ProviderRetrySession,
+        *,
+        error: Exception,
+        status: int | None,
+    ) -> bool:
+        """Back off one accepted stream without pausing the rest of the provider.
+
+        The upstream already answered this request, so a later drop says
+        nothing about the provider's health and must not open an episode.
+        """
+        label = self._failure_label(status, error)
+        if not session.can_attempt:
+            logger.warning(
+                "{} retry exhausted (attempts={})",
+                label,
+                session.attempts_started,
+            )
+            trace_event(
+                stage="provider",
+                event="provider.retry.exhausted",
+                source="provider",
+                provider=self._provider_name,
+                request_id=session.request_id,
+                status_code=status,
+                exc_type=type(error).__name__,
+                attempts=session.attempts_started,
+                episode_exhausted=False,
+            )
+            return False
+        delay = self._retry_delay(error, session.attempts_started)
+        session._retry_not_before = time.monotonic() + delay
+        logger.warning(
+            "{} after upstream acceptance, attempt {}/{} failed; "
+            "this request retries in {:.1f}s",
+            label,
+            session.attempts_started,
+            session.max_attempts,
+            delay,
+        )
+        trace_event(
+            stage="provider",
+            event="provider.retry.scheduled",
+            source="provider",
+            provider=self._provider_name,
+            request_id=session.request_id,
+            status_code=status,
+            exc_type=type(error).__name__,
+            attempt=session.attempts_started,
+            max_attempts=session.max_attempts,
+            delay_s=round(delay, 3),
+            coordinated=False,
+        )
+        return True
+
+    async def _wait_for_session_backoff(self, session: ProviderRetrySession) -> None:
+        # Event-loop timers can wake marginally early on coarse clocks, so
+        # re-check the deadline rather than trusting one sleep.
+        while (not_before := session._retry_not_before) is not None:
+            remaining = not_before - time.monotonic()
+            if remaining <= 0:
+                session._retry_not_before = None
+                return
+            await asyncio.sleep(remaining)
 
     def _start_recovery_episode(
         self,
