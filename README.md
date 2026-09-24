@@ -818,7 +818,7 @@ Everything below is additional to upstream [Alishahryar1/free-claude-code](https
 
 **A context-window table you can regenerate.** `fcc-context` measures your routable models and records them in `~/.fcc/context.md`, reading published metadata where a provider offers it. See [Finding A Model's Context Window](#finding-a-models-context-window).
 
-**A configurable progress deadline.** `PROVIDER_PROGRESS_TIMEOUT` (default 600s, editable in the Admin UI) bounds how long a request may go without a protocol event before failing as a 504 — and when a client disconnects, provider work is cancelled instead of running out the clock on your keys.
+**A configurable progress deadline.** `PROVIDER_PROGRESS_TIMEOUT` (default 600s, editable in the Admin UI) bounds how long a request may go without real provider output (keep-alive pings do not count) before failing as a 504 — and when a client disconnects, provider work is cancelled instead of running out the clock on your keys.
 
 **`count_tokens` off the event loop.** The token-count endpoint ran tiktoken inline in the async handler, stalling every in-flight stream for the duration (~90ms on a 100k-token request). It now runs in a worker thread.
 

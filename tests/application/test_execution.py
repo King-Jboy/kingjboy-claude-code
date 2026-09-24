@@ -10,6 +10,7 @@ from free_claude_code.application.execution import ProviderExecutor
 from free_claude_code.application.routing import ResolvedModel, RoutedMessagesRequest
 from free_claude_code.config.reasoning import ReasoningPreference
 from free_claude_code.core.anthropic.models import Message, MessagesRequest
+from free_claude_code.core.anthropic.streaming.emitter import anthropic_ping_frame
 from free_claude_code.core.async_iterators import AsyncCloseable
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import ReasoningPolicy
@@ -371,6 +372,53 @@ async def test_empty_chunks_do_not_renew_provider_progress() -> None:
 
     with pytest.raises(ExecutionFailure) as exc_info:
         await anext(stream)
+
+    assert exc_info.value.kind == FailureKind.TIMEOUT
+    assert provider.stream_close_calls == 1
+
+
+class PingingProvider(ControlledProvider):
+    """A provider whose upstream is silent while it keeps the client alive."""
+
+    async def stream_response(
+        self,
+        request: MessagesRequest,
+        input_tokens: int = 0,
+        *,
+        request_id: str | None = None,
+        response_model: str | None = None,
+        reasoning: ReasoningPolicy,
+    ) -> AsyncIterator[str]:
+        self._record_stream_call(
+            request,
+            input_tokens=input_tokens,
+            request_id=request_id,
+            response_model=response_model,
+            reasoning=reasoning,
+        )
+        try:
+            while True:
+                yield anthropic_ping_frame()
+                await asyncio.sleep(0.005)
+        finally:
+            self.stream_close_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_ping_frames_do_not_renew_provider_progress() -> None:
+    # Keepalive pings say the connection is alive, not that the model is
+    # producing anything; a stalled upstream must still reach the deadline.
+    provider = PingingProvider([])
+    stream = _executor_stream(
+        provider,
+        timeout_seconds=0.05,
+        request_id="req_ping_progress",
+    )
+
+    with pytest.raises(ExecutionFailure) as exc_info:
+        async with asyncio.timeout(2.0):
+            async for _ in stream:
+                pass
 
     assert exc_info.value.kind == FailureKind.TIMEOUT
     assert provider.stream_close_calls == 1

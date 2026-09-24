@@ -179,7 +179,11 @@ class ProviderExecutor:
                         continue
                     yield chunk
                     stripped = chunk.strip()
-                    if not (stripped.startswith(":") or stripped == "event: ping"):
+                    if not (
+                        stripped.startswith(":")
+                        or stripped.startswith("event: ping\n")
+                        or stripped == "event: ping"
+                    ):
                         progress_deadline = loop.time() + self._progress_timeout_seconds
             finally:
                 if provider_stream is not None:
