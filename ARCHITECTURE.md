@@ -1555,6 +1555,9 @@ Logging defaults are conservative:
   runtime continues using stale security or privacy policy.
 - Values under keys that look like API keys, authorization, tokens, or secrets
   are redacted by trace helpers where structured traces are emitted.
+- `LOG_LEVEL=DEBUG` is a content-bearing level regardless of the flags above:
+  DEBUG traces include provider request bodies, managed-CLI prompts, and inbound
+  chat text. Use it only for local debugging, never on a shared host.
 
 Important safety boundaries:
 

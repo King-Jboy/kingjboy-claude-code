@@ -21,3 +21,6 @@ Microsoft/
 # Account-specific measurements; the script writes these to ~/.fcc/context.md,
 # and which models resolve depends on what your keys are entitled to.
 context.md
+
+# Private keys (SSH, TLS) must never be committed
+*.pem
