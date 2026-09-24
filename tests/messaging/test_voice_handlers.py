@@ -60,6 +60,28 @@ async def test_telegram_voice_disabled_sends_reply():
 
 
 @pytest.mark.asyncio
+async def test_telegram_voice_disabled_notice_skips_unauthorized_users():
+    with patch(
+        "free_claude_code.messaging.platforms.telegram.TELEGRAM_AVAILABLE", True
+    ):
+        telegram_platform = TelegramRuntime(
+            bot_token="test_token",
+            allowed_user_id="12345",
+            limiter=MagicMock(),
+            transcriber=None,
+        )
+    mock_update = MagicMock()
+    mock_update.message.voice = MagicMock(file_id="f1", mime_type="audio/ogg")
+    mock_update.effective_user.id = 99999
+    mock_update.effective_chat.id = 6789
+    mock_update.message.reply_text = AsyncMock()
+
+    await telegram_platform._on_telegram_voice(mock_update, MagicMock())
+
+    mock_update.message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_telegram_voice_unauthorized_ignored(telegram_platform):
     """Voice from unauthorized user is ignored (no reply)."""
     platform, transcriber = telegram_platform

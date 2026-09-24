@@ -241,9 +241,17 @@ class TelegramRuntime:
     async def _on_start_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
+        # Authorize before replying: anyone can message a public bot.
+        incoming = telegram_text_message_from_update(
+            update,
+            allowed_user_id=self.allowed_user_id,
+            log_raw_messaging_content=self._log_raw_messaging_content,
+        )
+        if incoming is None:
+            return
         if update.message:
             await update.message.reply_text("👋 Hello! I am the Claude Code Proxy Bot.")
-        await self._on_telegram_message(update, context)
+        await self._dispatch_incoming(incoming)
 
     async def _on_telegram_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -253,7 +261,12 @@ class TelegramRuntime:
             allowed_user_id=self.allowed_user_id,
             log_raw_messaging_content=self._log_raw_messaging_content,
         )
-        if incoming is None or self._message_handler is None:
+        if incoming is None:
+            return
+        await self._dispatch_incoming(incoming)
+
+    async def _dispatch_incoming(self, incoming: IncomingMessage) -> None:
+        if self._message_handler is None:
             return
 
         try:
@@ -281,15 +294,16 @@ class TelegramRuntime:
             if message is not None:
                 await message.reply_text(text)
 
-        if await self._voice_flow.reply_if_disabled(_reply_text):
-            return
-
+        # Authorize before any reply, including the voice-disabled notice.
         request = telegram_voice_request_from_update(
             update,
             context,
             allowed_user_id=self.allowed_user_id,
         )
         if request is None:
+            return
+
+        if await self._voice_flow.reply_if_disabled(_reply_text):
             return
 
         await self._voice_flow.handle(

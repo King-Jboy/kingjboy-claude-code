@@ -354,21 +354,49 @@ def test_fire_and_forget_non_coroutine_uses_ensure_future(monkeypatch):
         ef.assert_called_once()
 
 
+def _start_update(user_id: int) -> MagicMock:
+    update = MagicMock()
+    update.message.text = "/start"
+    update.message.reply_to_message = None
+    update.message.message_thread_id = None
+    update.message.reply_text = AsyncMock()
+    update.effective_user.id = user_id
+    update.effective_chat.id = 6789
+    return update
+
+
 @pytest.mark.asyncio
 async def test_on_start_command_replies_and_forwards():
     with patch(
         "free_claude_code.messaging.platforms.telegram.TELEGRAM_AVAILABLE", True
     ):
-        platform = _telegram_runtime(bot_token="t")
+        platform = _telegram_runtime(bot_token="t", allowed_user_id="123")
         with patch.object(
-            platform, "_on_telegram_message", new_callable=AsyncMock
-        ) as mock_msg:
-            update = MagicMock()
-            update.message.reply_text = AsyncMock()
+            platform, "_dispatch_incoming", new_callable=AsyncMock
+        ) as dispatch:
+            update = _start_update(123)
 
             await platform._on_start_command(update, MagicMock())
             update.message.reply_text.assert_awaited_once()
-            mock_msg.assert_awaited_once()
+            dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_on_start_command_ignores_unauthorized_users():
+    # Anyone can message a public bot; only the allowed user may learn it is
+    # an FCC bridge or get any reply at all.
+    with patch(
+        "free_claude_code.messaging.platforms.telegram.TELEGRAM_AVAILABLE", True
+    ):
+        platform = _telegram_runtime(bot_token="t", allowed_user_id="123")
+        with patch.object(
+            platform, "_dispatch_incoming", new_callable=AsyncMock
+        ) as dispatch:
+            update = _start_update(999)
+
+            await platform._on_start_command(update, MagicMock())
+            update.message.reply_text.assert_not_awaited()
+            dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
