@@ -5,10 +5,17 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from pathlib import Path
 
+from loguru import logger
+
 from free_claude_code.api.app import create_app
 from free_claude_code.api.ports import ApiServices
+from free_claude_code.config.admin.persistence import unmanaged_values_from_managed_file
 from free_claude_code.config.logging_config import configure_logging
-from free_claude_code.config.paths import responses_state_path, server_log_path
+from free_claude_code.config.paths import (
+    managed_env_path,
+    responses_state_path,
+    server_log_path,
+)
 from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.openai_responses import ResponsesStore
@@ -45,6 +52,12 @@ def build_asgi_app(
         level=settings.log_level,
         verbose_third_party=settings.log_raw_api_payloads,
     )
+    if ignored_keys := _ignored_managed_env_keys():
+        logger.warning(
+            "{} contains settings FCC does not read, so they have no effect: {}",
+            managed_env_path(),
+            ", ".join(ignored_keys),
+        )
     openai_auth = OpenAIAuthManager(proxy=settings.openai_proxy)
     openai_factory = partial(_create_openai_provider, auth=openai_auth)
     provider_constructor = partial(
@@ -80,6 +93,21 @@ def build_asgi_app(
         responses_store=ResponsesStore(responses_state_path()),
     )
     return RuntimeASGIApp(create_app(services), runtime)
+
+
+def _ignored_managed_env_keys() -> list[str]:
+    """Return managed-env keys that neither Admin nor Settings reads."""
+    read_by_settings = {name.upper() for name in Settings.model_fields}
+    read_by_settings.update(
+        field.validation_alias.upper()
+        for field in Settings.model_fields.values()
+        if isinstance(field.validation_alias, str)
+    )
+    return sorted(
+        key
+        for key in unmanaged_values_from_managed_file()
+        if key.upper() not in read_by_settings
+    )
 
 
 def _create_openai_provider(

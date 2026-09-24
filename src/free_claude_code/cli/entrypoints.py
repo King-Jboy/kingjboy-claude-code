@@ -10,6 +10,12 @@ def serve(argv: Sequence[str] | None = None) -> None:
     """Start the FastAPI server (registered as ``fcc-server``)."""
     if _print_version_if_requested(argv):
         return
+    if ignored := list(sys.argv[1:] if argv is None else argv):
+        print(
+            f"fcc-server takes no options; ignoring: {' '.join(ignored)}. "
+            "Set HOST, PORT and other settings in ~/.fcc/.env or the Admin UI.",
+            file=sys.stderr,
+        )
 
     # Keep the server composition root off metadata-only command paths.
     from free_claude_code.cli.commands import serve as run_server

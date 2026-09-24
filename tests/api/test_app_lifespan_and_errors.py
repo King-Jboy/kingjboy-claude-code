@@ -388,6 +388,46 @@ def test_bootstrap_wires_the_codex_catalog_publisher() -> None:
     publisher.publish.assert_called_once_with(manager)
 
 
+def _write_managed_env(monkeypatch, tmp_path, contents: str) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    managed = tmp_path / ".fcc" / ".env"
+    managed.parent.mkdir(parents=True)
+    managed.write_text(contents, encoding="utf-8")
+
+
+def test_bootstrap_warns_about_managed_env_keys_fcc_does_not_read(
+    monkeypatch, tmp_path
+):
+    # A hand-added key such as PROVIDER_MAX_ATTEMPTS looks like configuration
+    # but changes nothing; the operator must be able to see that.
+    _write_managed_env(
+        monkeypatch, tmp_path, "PROVIDER_MAX_ATTEMPTS=2\nLOG_LEVEL=INFO\n"
+    )
+
+    with (
+        patch("free_claude_code.runtime.bootstrap.configure_logging"),
+        patch("free_claude_code.runtime.bootstrap.logger.warning") as warning,
+    ):
+        build_asgi_app(_settings())
+
+    warning.assert_called_once()
+    message = warning.call_args.args[0].format(*warning.call_args.args[1:])
+    assert "PROVIDER_MAX_ATTEMPTS" in message
+    assert "LOG_LEVEL" not in message
+
+
+def test_bootstrap_is_quiet_when_every_managed_env_key_is_known(monkeypatch, tmp_path):
+    _write_managed_env(monkeypatch, tmp_path, "LOG_LEVEL=INFO\n")
+
+    with (
+        patch("free_claude_code.runtime.bootstrap.configure_logging"),
+        patch("free_claude_code.runtime.bootstrap.logger.warning") as warning,
+    ):
+        build_asgi_app(_settings())
+
+    warning.assert_not_called()
+
+
 def test_bootstrap_honors_process_log_file_override(monkeypatch, tmp_path):
     log_path = tmp_path / "custom.log"
     monkeypatch.setenv("LOG_FILE", str(log_path))

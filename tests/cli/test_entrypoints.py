@@ -197,6 +197,22 @@ def test_non_version_entrypoint_delegates_to_server_command() -> None:
     command.assert_called_once_with()
 
 
+def test_fcc_server_warns_that_it_ignores_other_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A service unit passing --host/--port looks like it controls the bind
+    # address; the server reads HOST/PORT from settings, so say so.
+    from free_claude_code.cli import commands, entrypoints
+
+    with patch.object(commands, "serve") as command:
+        entrypoints.serve(("--host", "127.0.0.1", "--port", "8082"))
+
+    command.assert_called_once_with()
+    stderr = capsys.readouterr().err
+    assert "--host 127.0.0.1 --port 8082" in stderr
+    assert "HOST" in stderr and "PORT" in stderr
+
+
 def test_schedule_open_admin_browser_opens_when_health_ready() -> None:
     """Opening /admin runs after /health preflight succeeds."""
     from free_claude_code.cli import commands
