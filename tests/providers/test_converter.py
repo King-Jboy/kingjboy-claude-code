@@ -2066,6 +2066,25 @@ def test_convert_messages_coalesces_adjacent_assistant_messages() -> None:
     assert converted[1]["content"] == "Part 1\n\nPart 2"
 
 
+@pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+def test_coalescing_assistant_messages_keeps_both_reasoning_parts(field: str) -> None:
+    # REASONING replay uses the ``reasoning`` field; merging must not lose the
+    # second turn's reasoning whichever field carries it.
+    from free_claude_code.core.anthropic.conversion import (
+        _coalesce_openai_assistant_messages,
+    )
+
+    merged = _coalesce_openai_assistant_messages(
+        [
+            {"role": "assistant", "content": "A", field: "first"},
+            {"role": "assistant", "content": "B", field: "second"},
+        ]
+    )
+
+    assert len(merged) == 1
+    assert merged[0][field] == "first\n\nsecond"
+
+
 def test_build_base_request_body_parallel_tool_calls_omitted_without_tools() -> None:
     request = MessagesRequest.model_validate(
         {

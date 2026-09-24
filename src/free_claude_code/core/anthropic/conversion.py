@@ -351,12 +351,14 @@ def _coalesce_openai_assistant_messages(
                 else:
                     previous["tool_calls"] = list(curr_tools)
 
-            prev_reasoning = previous.get("reasoning_content")
-            curr_reasoning = message.get("reasoning_content")
-            if prev_reasoning and curr_reasoning:
-                previous["reasoning_content"] = f"{prev_reasoning}\n\n{curr_reasoning}"
-            elif curr_reasoning:
-                previous["reasoning_content"] = curr_reasoning
+            # Replay modes carry reasoning in either field; merge whichever exists.
+            for field in ("reasoning_content", "reasoning"):
+                prev_reasoning = previous.get(field)
+                curr_reasoning = message.get(field)
+                if prev_reasoning and curr_reasoning:
+                    previous[field] = f"{prev_reasoning}\n\n{curr_reasoning}"
+                elif curr_reasoning:
+                    previous[field] = curr_reasoning
             continue
         result.append(message)
     return result
