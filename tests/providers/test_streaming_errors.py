@@ -1003,6 +1003,33 @@ class TestStreamingExceptionHandling:
         assert parsed[-1].event == "message_stop"
 
     @pytest.mark.asyncio
+    async def test_bulleted_text_at_end_of_stream_is_not_dropped(self):
+        """A bullet opens a possible tool call; if none follows it is still text."""
+        provider = _make_provider()
+        request = _make_request()
+        stream = AsyncStreamMock(
+            [
+                _make_chunk(content="Shopping list:\n● apples\n● pears"),
+                _make_chunk(finish_reason="stop"),
+            ]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            return_value=stream,
+        ):
+            events = await _collect_stream(provider, request)
+
+        text = "".join(
+            event.data.get("delta", {}).get("text", "")
+            for event in parse_sse_text("".join(events))
+            if event.event == "content_block_delta"
+        )
+        assert text == "Shopping list:\n● apples\n● pears"
+
+    @pytest.mark.asyncio
     async def test_keepalives_reach_the_client_while_upstream_withholds_headers(
         self, monkeypatch
     ):

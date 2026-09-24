@@ -460,3 +460,16 @@ class HeuristicToolParser:
             self._buffer = ""
 
         return detected_tools
+
+    def flush_text(self) -> str:
+        """Return and clear buffered text that never became a tool call.
+
+        Call after :meth:`flush`: a bullet that opened a possible tool call
+        with no function header after it is ordinary text, not a dropped call.
+        """
+        if self._state == ParserState.PARSING_PARAMETERS:
+            return ""
+        text = self._strip_control_tokens(self._buffer)
+        self._buffer = ""
+        self._state = ParserState.TEXT
+        return text

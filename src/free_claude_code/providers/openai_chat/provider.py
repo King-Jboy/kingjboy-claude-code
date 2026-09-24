@@ -1074,10 +1074,16 @@ class _OpenAIChatStreamRunner:
                     )
                 ):
                     yield event
+                heuristic_tools = heuristic_parser.flush()
+                if heuristic_text := heuristic_parser.flush_text():
+                    for event in hold_events(
+                        _iter_visible_text_events(ledger, heuristic_text)
+                    ):
+                        yield event
                 for event in hold_events(
                     _iter_text_tool_use_events(
                         ledger,
-                        heuristic_parser.flush(),
+                        heuristic_tools,
                         tool_names=self._tool_names,
                     )
                 ):
