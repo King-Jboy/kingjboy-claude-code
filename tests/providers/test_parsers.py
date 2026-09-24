@@ -487,6 +487,19 @@ def test_heuristic_tool_parser_json_style_web_search_tool_call():
     assert tools[0]["input"] == {"query": "DeepSeek V4"}
 
 
+def test_heuristic_tool_parser_keeps_text_around_a_json_style_call():
+    # Detecting the call must not swallow the sentences around it.
+    parser = HeuristicToolParser()
+
+    filtered, tools = parser.feed(
+        'Let me check the docs. Use WebSearch {"query": "fcc"} Back soon.'
+    )
+    tools.extend(parser.flush())
+
+    assert filtered == "Let me check the docs.  Back soon."
+    assert [tool["name"] for tool in tools] == ["WebSearch"]
+
+
 def test_heuristic_tool_parser_unicode_function_name():
     """Unicode characters in function parameters."""
     parser = HeuristicToolParser()

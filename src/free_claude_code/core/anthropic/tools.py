@@ -295,6 +295,9 @@ class HeuristicToolParser:
 
     def _extract_web_tool_json_calls(self) -> tuple[str, list[dict[str, Any]]]:
         detected_tools: list[dict[str, Any]] = []
+        # Only the matched call spans are consumed; surrounding prose stays text.
+        kept_text: list[str] = []
+        kept_from = 0
 
         for match in self._WEB_TOOL_JSON_PATTERN.finditer(self._buffer):
             try:
@@ -310,6 +313,8 @@ class HeuristicToolParser:
             if tool_name == "WebSearch" and "query" not in tool_input:
                 continue
 
+            kept_text.append(self._buffer[kept_from : match.start()])
+            kept_from = match.end()
             detected_tools.append(
                 {
                     "type": "tool_use",
@@ -326,7 +331,9 @@ class HeuristicToolParser:
         if not detected_tools:
             return self._buffer, []
 
-        return "", detected_tools
+        kept_text.append(self._buffer[kept_from:])
+        remaining = "".join(kept_text)
+        return (remaining if remaining.strip() else ""), detected_tools
 
     def _strip_control_tokens(self, text: str) -> str:
         return _CONTROL_TOKEN_RE.sub("", text)
