@@ -580,6 +580,37 @@ async def test_stats_command_reports_cli_and_tree_counts(
 
 
 @pytest.mark.asyncio
+async def test_model_switch_failure_logs_only_the_exception_type(
+    mock_platform, mock_cli_manager, mock_session_store, incoming_message_factory
+):
+    # Exception text can carry config values or keys; messaging logs stay
+    # metadata-only unless LOG_MESSAGING_ERROR_DETAILS is enabled.
+    async def failing_set_model(_model: str) -> None:
+        raise RuntimeError("upstream said: key nvapi-SECRET rejected")
+
+    handler = MessagingWorkflow(
+        mock_platform,
+        mock_cli_manager,
+        mock_session_store,
+        platform_name="telegram",
+        voice_cancellation=mock_platform,
+        get_available_models=lambda: ["nvidia_nim/vendor/model"],
+        set_model=failing_set_model,
+    )
+
+    with patch("free_claude_code.messaging.commands.logger.error") as log_error:
+        await handler.handle_message(
+            incoming_message_factory(text="/model nvidia_nim/vendor/model")
+        )
+
+    logged = " ".join(
+        str(arg) for call in log_error.call_args_list for arg in call.args
+    )
+    assert "RuntimeError" in logged
+    assert "nvapi-SECRET" not in logged
+
+
+@pytest.mark.asyncio
 async def test_status_echo_is_filtered(
     handler, mock_platform, incoming_message_factory
 ):

@@ -314,7 +314,7 @@ async def handle_model_command(
             incoming.platform, incoming.chat_id, msg_id, "command"
         )
     except Exception as exc:
-        logger.error("Failed to switch model: {}", exc)
+        logger.error("Failed to switch model: {}", type(exc).__name__)
         msg_id = await handler.outbound.queue_send_message(
             incoming.chat_id,
             "⚠️ " + ctx.bold("Failed to switch model:") + f" {type(exc).__name__}",
