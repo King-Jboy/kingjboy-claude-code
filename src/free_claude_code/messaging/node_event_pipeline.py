@@ -103,7 +103,9 @@ async def process_parsed_cli_event(
             node_id=claim.node.node_id,
             claude_session_id=captured_session_id,
         )
-        terminal_status = format_status("✅", "Complete") if show_terminal_status else None
+        terminal_status = (
+            format_status("✅", "Complete") if show_terminal_status else None
+        )
         await update_ui(terminal_status, force=True)
         await complete_claim(captured_session_id)
     elif ptype == "error":

@@ -78,9 +78,11 @@ class ManagedClaudeSessionManager:
         for session_id in pending_ids:
             self._pending_sessions.pop(session_id, None)
             self._temp_to_real.pop(session_id, None)
-        for session_id in real_ids:
-            self._sessions.pop(session_id, None)
-            self._real_to_temp.pop(session_id, None)
+        for real_id in real_ids:
+            self._sessions.pop(real_id, None)
+            temp_id = self._real_to_temp.pop(real_id, None)
+            if temp_id is not None:
+                self._temp_to_real.pop(temp_id, None)
         self._closing_sessions.discard(session)
 
     async def get_or_create_session(
