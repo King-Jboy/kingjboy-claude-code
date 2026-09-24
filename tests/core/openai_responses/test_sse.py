@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -359,13 +360,19 @@ async def test_anthropic_tool_stream_converts_to_function_call_item() -> None:
 
 
 @pytest.mark.asyncio
-async def test_anthropic_function_tool_arguments_are_normalized() -> None:
+async def test_anthropic_function_tool_arguments_stay_valid_and_match_the_stream() -> (
+    None
+):
+    # Arguments are validated as JSON; streamed ones keep their exact text so
+    # the deltas a client already received add up to the final arguments.
     response = await _completed_response_from_sse(
         _aiter(_anthropic_tool_stream(partial_json='{ "value" : "FCC" }')),
         {"model": "nvidia_nim/test-model", "stream": True},
     )
 
-    assert response["output"][0]["arguments"] == '{"value":"FCC"}'
+    arguments = response["output"][0]["arguments"]
+    assert arguments == '{ "value" : "FCC" }'
+    assert json.loads(arguments) == {"value": "FCC"}
 
 
 @pytest.mark.asyncio
@@ -1218,11 +1225,101 @@ async def test_tool_start_with_initial_input_streams_delta_immediately() -> None
     assert "response.function_call_arguments.delta" in event_names
     assert "response.function_call_arguments.done" in event_names
     completed = parsed[-1].data["response"]
-    assert completed["output"][0]["arguments"] == '{"q":"fcc"}'
+    deltas = [
+        e.data["delta"]
+        for e in parsed
+        if e.event == "response.function_call_arguments.delta"
+    ]
+    assert completed["output"][0]["arguments"] == "".join(deltas)
+    assert json.loads(completed["output"][0]["arguments"]) == {"q": "fcc"}
 
 
 @pytest.mark.asyncio
-async def test_custom_tool_call_streams_deltas_without_duplicate_on_done() -> None:
+async def test_function_call_deltas_add_up_to_the_done_arguments() -> None:
+    # Clients may assemble arguments from deltas or read .done; both must agree.
+    fragments = ['{"a": 1, ', '"b": "x"}']
+    events = [
+        format_sse_event(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_fn",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-3-5-sonnet",
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            },
+        ),
+        format_sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "call_f1",
+                    "name": "search",
+                    "input": {},
+                },
+            },
+        ),
+        *[
+            format_sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": fragment},
+                },
+            )
+            for fragment in fragments
+        ],
+        format_sse_event(
+            "content_block_stop",
+            {"type": "content_block_stop", "index": 0},
+        ),
+        format_sse_event("message_stop", {"type": "message_stop"}),
+    ]
+    text = await _collect_sse(
+        _responses_sse(
+            _aiter(events),
+            {
+                "model": "nvidia_nim/test-model",
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            },
+        )
+    )
+    parsed = parse_sse_text(text)
+    deltas = [
+        e.data["delta"]
+        for e in parsed
+        if e.event == "response.function_call_arguments.delta"
+    ]
+    done = [
+        e.data["arguments"]
+        for e in parsed
+        if e.event == "response.function_call_arguments.done"
+    ]
+    assert done == ["".join(deltas)]
+    assert json.loads(done[0]) == {"a": 1, "b": "x"}
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_call_deltas_carry_the_unwrapped_input() -> None:
+    # FCC carries custom tool input internally as {"input": "..."}; clients
+    # must only ever see the raw text, and the deltas must add up to .done.
     events = [
         format_sse_event(
             "message_start",
@@ -1256,7 +1353,7 @@ async def test_custom_tool_call_streams_deltas_without_duplicate_on_done() -> No
             {
                 "type": "content_block_delta",
                 "index": 0,
-                "delta": {"type": "input_json_delta", "partial_json": "chunk1 "},
+                "delta": {"type": "input_json_delta", "partial_json": '{"input": "hel'},
             },
         ),
         format_sse_event(
@@ -1264,7 +1361,7 @@ async def test_custom_tool_call_streams_deltas_without_duplicate_on_done() -> No
             {
                 "type": "content_block_delta",
                 "index": 0,
-                "delta": {"type": "input_json_delta", "partial_json": "chunk2"},
+                "delta": {"type": "input_json_delta", "partial_json": 'lo world"}'},
             },
         ),
         format_sse_event(
@@ -1294,6 +1391,12 @@ async def test_custom_tool_call_streams_deltas_without_duplicate_on_done() -> No
         for e in parsed
         if e.event == "response.custom_tool_call_input.delta"
     ]
-    assert deltas == ["chunk1 ", "chunk2"]
+    done = [
+        e.data["input"]
+        for e in parsed
+        if e.event == "response.custom_tool_call_input.done"
+    ]
+    assert "".join(deltas) == "hello world"
+    assert done == ["hello world"]
     completed = parsed[-1].data["response"]
-    assert completed["output"][0]["input"] == "chunk1 chunk2"
+    assert completed["output"][0]["input"] == "hello world"

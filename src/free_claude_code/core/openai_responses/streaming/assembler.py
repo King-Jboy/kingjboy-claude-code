@@ -275,16 +275,8 @@ class ResponsesStreamAssembler:
                             sequence_number=self._next_sequence_number(),
                         )
                     ]
-                if part and state.kind == "custom":
-                    state.streamed_arguments = True
-                    return [
-                        events.custom_tool_call_input_delta(
-                            state.item_id,
-                            state.output_index,
-                            part,
-                            sequence_number=self._next_sequence_number(),
-                        )
-                    ]
+                # Custom tool input arrives wrapped as {"input": "..."}; its
+                # unwrapped text is emitted once when the block completes.
         return []
 
     def _handle_content_block_stop(self, data: Mapping[str, Any]) -> list[str]:
@@ -402,26 +394,16 @@ class ResponsesStreamAssembler:
                 sequence_number=self._next_sequence_number(),
             )
         )
-        if initial_str:
+        if initial_str and state.kind == "function":
             state.streamed_arguments = True
-            if state.kind == "function":
-                chunks.append(
-                    events.function_call_arguments_delta(
-                        state.item_id,
-                        state.output_index,
-                        initial_str,
-                        sequence_number=self._next_sequence_number(),
-                    )
+            chunks.append(
+                events.function_call_arguments_delta(
+                    state.item_id,
+                    state.output_index,
+                    initial_str,
+                    sequence_number=self._next_sequence_number(),
                 )
-            elif state.kind == "custom":
-                chunks.append(
-                    events.custom_tool_call_input_delta(
-                        state.item_id,
-                        state.output_index,
-                        initial_str,
-                        sequence_number=self._next_sequence_number(),
-                    )
-                )
+            )
         return chunks
 
     def _emit_text_delta(self, state: TextBlockState, text: str) -> list[str]:

@@ -84,6 +84,10 @@ class ResponseBlockCompleter:
             arguments = normalized_function_call_arguments(raw_arguments)
         except ResponsesConversionError as exc:
             return self._on_invalid_function_call(state, exc)
+        if state.streamed_arguments:
+            # Validated above; keep the exact streamed text so the deltas
+            # add up to .done.
+            arguments = raw_arguments
         item = tool_item(state, status="completed", arguments=arguments)
         self._ledger.commit_output(state.output_index, item)
         chunks: list[str] = []
