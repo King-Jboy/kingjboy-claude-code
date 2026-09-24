@@ -1,5 +1,6 @@
 """Tests for LM Studio (OpenAI-compatible chat completions) provider."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -235,7 +236,8 @@ def test_preflight_context_budget_rejects_request_over_90_percent(lmstudio_provi
     assert "prompt is too long" not in failure.message
 
 
-def test_loaded_context_length_reads_max_across_loaded_models(lmstudio_provider):
+@pytest.mark.asyncio
+async def test_fetch_loaded_context_reads_max_across_loaded_models(lmstudio_provider):
     response = MagicMock()
     response.raise_for_status = MagicMock()
     response.json.return_value = {
@@ -245,35 +247,55 @@ def test_loaded_context_length_reads_max_across_loaded_models(lmstudio_provider)
             {"state": "not-loaded", "loaded_context_length": 999999},
         ]
     }
-    with patch(
-        "free_claude_code.providers.lmstudio.client.httpx.get", return_value=response
+    with patch.object(
+        httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=response
     ) as mock_get:
-        value = lmstudio_provider._loaded_context_length()
+        value = await lmstudio_provider._fetch_loaded_context()
 
     assert value == 40960
-    mock_get.assert_called_once()
+    mock_get.assert_awaited_once()
     assert mock_get.call_args[0][0] == "http://localhost:1234/api/v0/models"
 
 
-def test_loaded_context_length_fails_open_on_error(lmstudio_provider):
-    with patch(
-        "free_claude_code.providers.lmstudio.client.httpx.get",
+@pytest.mark.asyncio
+async def test_fetch_loaded_context_fails_open_on_error(lmstudio_provider):
+    with patch.object(
+        httpx.AsyncClient,
+        "get",
+        new_callable=AsyncMock,
         side_effect=httpx.ConnectError("refused"),
     ):
+        assert await lmstudio_provider._fetch_loaded_context() is None
+
+
+@pytest.mark.asyncio
+async def test_loaded_context_length_never_waits_on_the_network(lmstudio_provider):
+    # Preflight is synchronous and runs on the event loop; a slow or dead LM
+    # Studio REST API must not stall every other request on the proxy.
+    release = asyncio.Event()
+
+    async def slow_fetch() -> int:
+        await release.wait()
+        return 40960
+
+    with patch.object(
+        lmstudio_provider, "_fetch_loaded_context", side_effect=slow_fetch
+    ):
         assert lmstudio_provider._loaded_context_length() is None
+        release.set()
+        await lmstudio_provider._context_refresh
+        assert lmstudio_provider._loaded_context_length() == 40960
 
 
-def test_loaded_context_length_is_cached_within_ttl(lmstudio_provider):
-    response = MagicMock()
-    response.raise_for_status = MagicMock()
-    response.json.return_value = {
-        "data": [{"state": "loaded", "loaded_context_length": 40960}]
-    }
-    with patch(
-        "free_claude_code.providers.lmstudio.client.httpx.get", return_value=response
-    ) as mock_get:
+@pytest.mark.asyncio
+async def test_loaded_context_length_refreshes_once_within_ttl(lmstudio_provider):
+    fetch = AsyncMock(return_value=40960)
+
+    with patch.object(lmstudio_provider, "_fetch_loaded_context", fetch):
+        lmstudio_provider._loaded_context_length()
+        await lmstudio_provider._context_refresh
         first = lmstudio_provider._loaded_context_length()
         second = lmstudio_provider._loaded_context_length()
 
     assert first == second == 40960
-    mock_get.assert_called_once()
+    fetch.assert_awaited_once()

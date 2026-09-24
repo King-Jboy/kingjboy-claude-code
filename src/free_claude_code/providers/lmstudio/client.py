@@ -11,6 +11,7 @@ OpenAI provider layers its own tool-call assembly, think-tag parsing, and
 heuristic recovery on top.
 """
 
+import asyncio
 import time
 
 import httpx
@@ -74,6 +75,7 @@ class LMStudioProvider(OpenAIChatProvider):
             admission=admission,
         )
         self._loaded_context_cache: tuple[float, int | None] = (0.0, None)
+        self._context_refresh: asyncio.Task[None] | None = None
 
     def preflight_stream(
         self,
@@ -106,16 +108,30 @@ class LMStudioProvider(OpenAIChatProvider):
             )
 
     def _loaded_context_length(self) -> int | None:
-        """Best-effort loaded context length from LM Studio's REST API, cached."""
-        cached_at, cached_value = self._loaded_context_cache
-        if time.monotonic() - cached_at < self._CONTEXT_CACHE_TTL_S:
-            return cached_value
+        """Best-effort loaded context length from LM Studio's REST API, cached.
 
+        Preflight runs synchronously on the event loop, so a stale cache is
+        refreshed in the background and this call never waits on the network.
+        """
+        cached_at, cached_value = self._loaded_context_cache
+        stale = time.monotonic() - cached_at >= self._CONTEXT_CACHE_TTL_S
+        if stale and (self._context_refresh is None or self._context_refresh.done()):
+            self._context_refresh = asyncio.get_running_loop().create_task(
+                self._refresh_loaded_context()
+            )
+        return cached_value
+
+    async def _refresh_loaded_context(self) -> None:
+        value = await self._fetch_loaded_context()
+        self._loaded_context_cache = (time.monotonic(), value)
+
+    async def _fetch_loaded_context(self) -> int | None:
         value: int | None = None
         try:
             root = self._base_url
             root = root[: -len("/v1")] if root.endswith("/v1") else root
-            response = httpx.get(f"{root}/api/v0/models", timeout=2.0)
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"{root}/api/v0/models")
             response.raise_for_status()
             loaded = [
                 model.get("loaded_context_length")
@@ -131,5 +147,9 @@ class LMStudioProvider(OpenAIChatProvider):
                 "LMSTUDIO context preflight unavailable: {}", type(error).__name__
             )
             value = None
-        self._loaded_context_cache = (time.monotonic(), value)
         return value
+
+    async def cleanup(self) -> None:
+        if self._context_refresh is not None:
+            self._context_refresh.cancel()
+        await super().cleanup()
