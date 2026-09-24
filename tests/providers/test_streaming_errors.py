@@ -1,5 +1,6 @@
 """Tests for streaming error handling in providers/nvidia_nim/client.py."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,6 +25,7 @@ from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningP
 from free_claude_code.providers.admission import UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
+from free_claude_code.providers.openai_chat import provider as provider_module
 from free_claude_code.providers.openai_chat.provider import (
     _OpenAIChatStreamRunner,
 )
@@ -999,6 +1001,85 @@ class TestStreamingExceptionHandling:
         assert sum(event.event == "message_stop" for event in parsed) == 1
         assert parsed[0].event == "message_start"
         assert parsed[-1].event == "message_stop"
+
+    @pytest.mark.asyncio
+    async def test_keepalives_reach_the_client_while_upstream_withholds_headers(
+        self, monkeypatch
+    ):
+        """A queued upstream that has not answered yet must not read as silence.
+
+        NVIDIA NIM holds response headers while a request waits in its queue,
+        measured at 60-130s in production, against a client that gives up
+        after 20s of silence.
+        """
+        monkeypatch.setattr(provider_module, "UPSTREAM_QUIET_KEEPALIVE_SECONDS", 0.05)
+        monkeypatch.setattr(provider_module, "KEEPALIVE_INTERVAL_SECONDS", 0.02)
+        provider = _make_provider()
+        request = _make_request()
+
+        async def slow_headers(*args, **kwargs):
+            await asyncio.sleep(0.3)
+            return AsyncStreamMock(
+                [_make_chunk(content="ok"), _make_chunk(finish_reason="stop")]
+            )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=slow_headers,
+        ):
+            events = await _collect_stream(provider, request)
+
+        parsed = parse_sse_text("".join(events))
+        names = [event.event for event in parsed]
+        first_content = names.index("content_block_start")
+        assert names[0] == "message_start"
+        assert "ping" in names[:first_content]
+        assert names.count("message_start") == 1
+
+    @pytest.mark.asyncio
+    async def test_keepalive_only_commit_still_retries_invisibly(self, monkeypatch):
+        """Keepalives commit the response, but no content has been sent yet.
+
+        A silent upstream that then times out must be retried like any other
+        early failure instead of ending the reply with an error.
+        """
+        monkeypatch.setattr(provider_module, "UPSTREAM_QUIET_KEEPALIVE_SECONDS", 0.05)
+        monkeypatch.setattr(provider_module, "KEEPALIVE_INTERVAL_SECONDS", 0.02)
+        provider = _make_provider()
+        request = _make_request()
+
+        async def silent_then_timeout():
+            await asyncio.sleep(0.2)
+            raise httpx.ReadTimeout("upstream went silent")
+            yield  # pragma: no cover - makes this an async generator
+
+        second_stream = AsyncStreamMock(
+            [_make_chunk(content="visible"), _make_chunk(finish_reason="stop")]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=[silent_then_timeout(), second_stream],
+        ) as mock_create:
+            events = await _collect_stream(provider, request)
+
+        parsed = parse_sse_text("".join(events))
+        names = [event.event for event in parsed]
+        text_deltas = [
+            event.data.get("delta", {}).get("text", "")
+            for event in parsed
+            if event.event == "content_block_delta"
+        ]
+        assert mock_create.await_count == 2
+        assert "ping" in names
+        assert text_deltas == ["visible"]
+        assert names.count("message_start") == 1
+        assert "error" not in names
+        assert names[-1] == "message_stop"
 
     @pytest.mark.asyncio
     async def test_precommit_retry_discards_abandoned_tool_name_fragment(self):

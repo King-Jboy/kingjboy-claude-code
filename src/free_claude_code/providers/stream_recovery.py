@@ -140,11 +140,14 @@ class RecoveryController:
         retry_available = attempts_remaining > 0
         reserve_last_attempt_for_recovery = generated_output and attempts_remaining == 1
 
+        # Keepalives can commit the response before any content exists; the
+        # client has then seen only message_start and pings, so a replay is
+        # still invisible to it.
         if (
             retryable
             and retry_available
             and stream_opened
-            and not committed
+            and (not committed or not generated_output)
             and not complete_tool_salvageable
             and not reserve_last_attempt_for_recovery
         ):
@@ -153,7 +156,7 @@ class RecoveryController:
             return RecoveryDecision(
                 action=RecoveryFailureAction.EARLY_RETRY,
                 retryable=True,
-                committed=False,
+                committed=committed,
                 has_buffered=has_buffered,
             )
 

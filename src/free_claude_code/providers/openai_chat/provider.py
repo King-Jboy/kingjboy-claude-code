@@ -860,10 +860,19 @@ class _OpenAIChatStreamRunner:
                     self._provider._create_stream(body, retry_session)
                 )
                 try:
+                    waited = 0.0
                     while not await _settled_within(
                         create_task, KEEPALIVE_INTERVAL_SECONDS
                     ):
-                        if recovery.committed:
+                        waited += KEEPALIVE_INTERVAL_SECONDS
+                        # A queued upstream withholds its headers, so this wait
+                        # gets the same quiet threshold as the chunk wait below.
+                        if (
+                            recovery.committed
+                            or waited >= UPSTREAM_QUIET_KEEPALIVE_SECONDS
+                        ):
+                            for event in recovery.flush():
+                                yield event
                             yield anthropic_ping_frame()
                 except BaseException:
                     if (
@@ -1156,6 +1165,8 @@ class _OpenAIChatStreamRunner:
                         retryable=True,
                     )
                     ledger = self._new_ledger()
+                    # A keepalive already delivered message_start; do not repeat it.
+                    ledger.message_started = decision.committed
                     think_parser = ThinkTagParser()
                     function_tag_parser = FunctionTagToolParser(self._request)
                     heuristic_parser = HeuristicToolParser()

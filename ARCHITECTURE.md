@@ -962,11 +962,17 @@ fully-stalled operations cannot outlive the downstream harness.
 
 While an already-committed stream waits on mid-stream recovery, the OpenAI-chat
 runner emits Anthropic `ping` keep-alive frames so a long reconnect or admission
-wait never looks like a stalled connection. Keep-alive is gated on the holdback's
-commit state, never on elapsed time: before the first frame escapes, silence is
-required so a failure can still be reported as typed non-2xx JSON with
-`x-should-retry: false`. Consumers ignore unrecognized event types, so the frame
-is inert for non-streaming aggregation and for the Responses assembler.
+wait never looks like a stalled connection. Before commit, the runner stays
+silent until the upstream has been quiet for five seconds, whether it is still
+withholding response headers (a queued model) or has opened the stream without
+a first chunk. Claude Code abandons a stream after about twenty silent seconds,
+so past that threshold the runner releases `message_start` and sends pings,
+giving up the typed non-2xx path for that request. A response committed only
+by keep-alives has shown no content, so a retryable failure before the first
+upstream chunk is still replayed invisibly: the retry reuses the delivered
+`message_start` instead of sending another. Consumers ignore unrecognized event
+types, so the frame is inert for non-streaming aggregation and for the
+Responses assembler.
 
 For streams, upstream acceptance is the first received chunk. Retryable failure
 before that point participates in provider-wide coordinated recovery. Failure
