@@ -1313,10 +1313,10 @@ def test_progress_timeout_can_cover_http_read_timeout(
         ("open_router/test-model", '["nvidia_nim/test-model"]'),
     ),
 )
-def test_nim_route_requires_progress_timeout_to_cover_its_effective_read_timeout(
+def test_nim_route_keeps_its_configured_progress_timeout(
     model: str, pinned_models: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """NIM enforces a 300-second read budget even when HTTP_READ_TIMEOUT is lower."""
+    """NIM honours HTTP_READ_TIMEOUT like every other provider."""
     from free_claude_code.config.settings import Settings
 
     monkeypatch.setenv("MODEL", model)
@@ -1326,8 +1326,9 @@ def test_nim_route_requires_progress_timeout_to_cover_its_effective_read_timeout
     for name in ("MODEL_FABLE", "MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU"):
         monkeypatch.delenv(name, raising=False)
 
-    with pytest.raises(ValidationError, match="PROVIDER_PROGRESS_TIMEOUT"):
-        Settings(_env_file=None)
+    settings = Settings(_env_file=None)
+
+    assert settings.provider_progress_timeout == 300
 
 
 def test_openrouter_route_keeps_its_configured_progress_timeout(

@@ -31,9 +31,7 @@ from .env_files import (
 from .model_refs import (
     ModelCatalogScope,
     ModelCatalogView,
-    configured_chat_model_refs,
     parse_model_ref_list,
-    pinned_model_refs,
 )
 from .nim import NimSettings
 from .provider_catalog import (
@@ -580,20 +578,10 @@ class Settings(BaseSettings):
         contain.  Keep a strict gap so the read timeout can be handled by the
         provider recovery path first.
         """
-        nim_is_selectable = any(
-            reference.provider_id == "nvidia_nim"
-            for reference in configured_chat_model_refs(self)
-        ) or any(
-            reference.startswith("nvidia_nim/") for reference in pinned_model_refs(self)
-        )
-        effective_read_timeout = max(
-            self.http_read_timeout,
-            300.0 if nim_is_selectable else 0.0,
-        )
-        if self.provider_progress_timeout <= effective_read_timeout:
+        if self.provider_progress_timeout <= self.http_read_timeout:
             raise ValueError(
                 "PROVIDER_PROGRESS_TIMEOUT must be greater than "
-                f"the effective HTTP read timeout ({effective_read_timeout:g}s) "
+                f"HTTP_READ_TIMEOUT ({self.http_read_timeout:g}s) "
                 "so streaming recovery can finish."
             )
         return self

@@ -157,6 +157,18 @@ class TestBuildRequestBody:
             "reasoning_budget": 2048,
         }
 
+    def test_adaptive_thinking_does_not_invent_a_reasoning_budget(self):
+        # Budgets come from ReasoningPolicy only; the client's adaptive mode
+        # carries no number, so none may be sent upstream.
+        req = make_messages_request(model="test", thinking={"type": "adaptive"})
+
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_ON)
+
+        assert body["extra_body"]["chat_template_kwargs"] == {
+            "thinking": True,
+            "enable_thinking": True,
+        }
+
     def test_max_tokens_capped_by_nim(self, req):
         req.max_tokens = 100000
         nim = NimSettings(max_tokens=4096)
