@@ -130,6 +130,43 @@ async def test_hedged_racing_slow_first_key_fires_second_key_and_second_wins():
 
 
 @pytest.mark.asyncio
+async def test_hedged_race_closes_a_loser_that_finished_in_the_same_tick():
+    """An unused upstream stream keeps generating, and billing, until closed."""
+    keys = ["key-a", "key-b"]
+    config = _pooled_config(keys, hedge_delay=0.01)
+    provider = OpenRouterProvider(config, admission=immediate_admission())
+    release = asyncio.Event()
+    streams: dict[str, DummyStream] = {}
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            streams[api_key] = DummyStream(api_key)
+            await release.wait()
+            return streams[api_key]
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    opening = asyncio.create_task(provider._open_chat_stream({"model": "test-model"}))
+    while len(streams) < 2:
+        await asyncio.sleep(0.005)
+    release.set()
+    winner = await opening
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    loser = next(s for key, s in streams.items() if key != winner._stream.key)
+    assert not winner._stream.closed
+    assert loser.closed
+
+
+@pytest.mark.asyncio
 async def test_hedged_racing_first_key_rate_limited_failover_to_second():
     """When Key 1 returns 429 RateLimitError, failover continues smoothly to Key 2."""
     import openai

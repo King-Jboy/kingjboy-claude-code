@@ -103,6 +103,9 @@ KEEPALIVE_INTERVAL_SECONDS = 1.5
 # long enough that an ordinary response never commits the reply early.
 UPSTREAM_QUIET_KEEPALIVE_SECONDS = 5.0
 
+# Strong references so losing hedged opens are closed rather than collected.
+_HEDGE_CLEANUP_TASKS: set[asyncio.Task[None]] = set()
+
 
 async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
     """Return whether ``task`` finished within ``timeout`` seconds."""
@@ -652,9 +655,12 @@ class OpenAIChatProvider(BaseProvider):
                 raise last_exc
             return await self._open_chat_stream_sequential(create_body)
         finally:
+            # A loser may already hold an open stream (both opens can finish
+            # in one tick); _cancel_task closes it as well as cancelling.
             for remaining_task in list(tasks.keys()):
-                if not remaining_task.done():
-                    asyncio.create_task(_cancel_task(remaining_task))
+                cleanup = asyncio.create_task(_cancel_task(remaining_task))
+                _HEDGE_CLEANUP_TASKS.add(cleanup)
+                cleanup.add_done_callback(_HEDGE_CLEANUP_TASKS.discard)
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Return the provider-specific stream view consumed by the base runner."""
