@@ -386,8 +386,13 @@ runtime settings do not read it as a live config file. The Admin UI creates and
 atomically replaces `~/.fcc/.env` when configuration is applied; server startup
 only migrates legacy env files when the managed file is absent.
 
-Admin routes call `require_loopback_admin()`, which rejects non-loopback clients
-and non-local origins.
+Admin routes call `require_loopback_admin()`, which rejects non-loopback clients,
+non-local origins, a non-loopback or unparseable `Host`, and requests carrying
+standard forwarding headers. The Admin surface has no authentication of its own,
+so it must never be exposed through a reverse proxy: a proxy that connects over
+loopback, rewrites `Host`, and adds no forwarding headers is indistinguishable
+from a local browser. Reach a remote server's Admin UI through an SSH tunnel
+instead.
 
 ## HTTP Request Flow
 

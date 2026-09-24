@@ -21,7 +21,7 @@ from tests.api.support import create_test_app, provider_manager_for_app
 
 
 def _local_client(app):
-    return TestClient(app, client=("127.0.0.1", 50000))
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1")
 
 
 def _set_home(monkeypatch, tmp_path: Path) -> None:
@@ -120,12 +120,42 @@ def test_admin_http_errors_are_never_cached(
     expected_status,
 ):
     _set_home(monkeypatch, tmp_path)
-    client = TestClient(create_test_app(), client=(client_host, 50000))
+    client = TestClient(
+        create_test_app(),
+        client=(client_host, 50000),
+        base_url="http://127.0.0.1",
+    )
 
     response = client.get(path)
 
     assert response.status_code == expected_status
     assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    (
+        # Starlette's test hostnames once counted as loopback; a DNS-rebinding
+        # page served from a name like these then passed the guard.
+        {"host": "testserver"},
+        {"host": "127.0.0.1:8082", "origin": "http://testclient:8082"},
+        # An unparseable Host must be refused, not crash the guard into a 500.
+        {"host": "[::1"},
+    ),
+)
+def test_admin_refuses_non_loopback_or_malformed_host_headers(
+    monkeypatch, tmp_path, headers
+):
+    _set_home(monkeypatch, tmp_path)
+    client = TestClient(
+        create_test_app(),
+        client=("127.0.0.1", 50000),
+        raise_server_exceptions=False,
+    )
+
+    response = client.get("/admin/api/config", headers=headers)
+
+    assert response.status_code == 403
 
 
 def test_admin_validation_errors_are_never_cached(monkeypatch, tmp_path):
@@ -146,6 +176,7 @@ def test_admin_unexpected_errors_are_never_cached(monkeypatch, tmp_path):
     client = TestClient(
         create_test_app(),
         client=("127.0.0.1", 50000),
+        base_url="http://127.0.0.1",
         raise_server_exceptions=False,
     )
 

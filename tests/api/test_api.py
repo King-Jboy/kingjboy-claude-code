@@ -65,7 +65,9 @@ def client():
             "free_claude_code.api.routes.resolve_provider",
             return_value=mock_provider,
         ),
-        TestClient(app) as test_client,
+        TestClient(
+            app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1"
+        ) as test_client,
     ):
         yield test_client
 

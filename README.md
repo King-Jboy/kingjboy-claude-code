@@ -97,6 +97,12 @@ INFO:     Admin UI: http://127.0.0.1:8082/admin (local-only)
 
 Use the port shown in your terminal if it differs from `8082`.
 
+The Admin UI has no password; it trusts only requests from the same machine.
+Never publish it through a reverse proxy such as nginx, which makes outside
+requests look local. On a remote server, reach it through an SSH tunnel:
+`ssh -L 8082:127.0.0.1:8082 user@server`, then open
+`http://127.0.0.1:8082/admin`.
+
 <a id="nvidia-nim-provider"></a>
 
 ### 3. Configure NVIDIA NIM

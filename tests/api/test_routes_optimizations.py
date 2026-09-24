@@ -14,7 +14,7 @@ app = create_test_app()
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1")
 
 
 @pytest.fixture

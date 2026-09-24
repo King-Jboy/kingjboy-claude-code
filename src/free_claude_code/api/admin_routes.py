@@ -64,7 +64,7 @@ def _is_loopback_host(host: str | None) -> bool:
     if host is None:
         return False
     normalized = host.strip().strip("[]").lower()
-    if normalized in ("localhost", "testserver", "testclient"):
+    if normalized == "localhost":
         return True
     try:
         return ipaddress.ip_address(normalized).is_loopback
@@ -72,11 +72,18 @@ def _is_loopback_host(host: str | None) -> bool:
         return False
 
 
+def _url_hostname(url: str) -> str | None:
+    """Return the hostname, or None when the URL cannot be parsed."""
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
+        return None
+
+
 def _origin_is_local(origin: str | None) -> bool:
     if not origin:
         return True
-    parsed = urlsplit(origin)
-    return _is_loopback_host(parsed.hostname)
+    return _is_loopback_host(_url_hostname(origin))
 
 
 def require_loopback_admin(request: Request) -> None:
@@ -98,7 +105,7 @@ def require_loopback_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin UI is local-only")
 
     host = request.headers.get("host")
-    if not host or not _is_loopback_host(urlsplit(f"//{host}").hostname):
+    if not host or not _is_loopback_host(_url_hostname(f"//{host}")):
         raise HTTPException(status_code=403, detail="Admin UI is local-only")
 
 
