@@ -214,9 +214,15 @@ class TestManagedClaudeSession:
         mock_process.wait.return_value = 0
         mock_process.returncode = 0
 
-        with patch(
-            "asyncio.create_subprocess_exec", new_callable=AsyncMock
-        ) as mock_exec:
+        with (
+            patch(
+                "asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
+            patch(
+                "free_claude_code.cli.managed.session.resolve_claude_executable",
+                side_effect=lambda name: name,
+            ),
+        ):
             mock_exec.return_value = mock_process
 
             events = [e async for e in session.start_task("Hello")]
