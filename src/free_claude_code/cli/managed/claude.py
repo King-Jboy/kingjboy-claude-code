@@ -66,7 +66,6 @@ def build_managed_claude_invocation(
 
     cmd = build_managed_claude_command(
         claude_bin=config.claude_bin,
-        prompt=request.prompt,
         session_id=request.session_id,
         fork_session=request.fork_session,
         allowed_dirs=config.allowed_dirs,
@@ -127,12 +126,15 @@ def build_managed_claude_env(
 def build_managed_claude_command(
     *,
     claude_bin: str,
-    prompt: str,
     session_id: str | None,
     fork_session: bool,
     allowed_dirs: list[str],
 ) -> list[str]:
-    """Return the Claude Code stream-json command for a managed task."""
+    """Return the Claude Code stream-json command for a managed task.
+
+    The prompt is written to stdin, never argv: on Windows ``claude`` is often
+    an npm ``.cmd`` shim, and cmd.exe would truncate, expand, or execute it.
+    """
 
     if session_id and not session_id.startswith("pending_"):
         cmd = [
@@ -146,7 +148,6 @@ def build_managed_claude_command(
             "--model",
             MANAGED_CLAUDE_MODEL_TIER,
             "-p",
-            prompt,
             "--output-format",
             "stream-json",
             "--dangerously-skip-permissions",
@@ -158,7 +159,6 @@ def build_managed_claude_command(
             "--model",
             MANAGED_CLAUDE_MODEL_TIER,
             "-p",
-            prompt,
             "--output-format",
             "stream-json",
             "--dangerously-skip-permissions",

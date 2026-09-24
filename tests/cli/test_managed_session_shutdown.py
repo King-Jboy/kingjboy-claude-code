@@ -27,6 +27,7 @@ def _completed_process(pid: int) -> MagicMock:
     process.returncode = 0
     process.stdout.read = AsyncMock(return_value=b"")
     process.stderr = None
+    process.stdin = None
     process.wait = AsyncMock(return_value=0)
     return process
 
@@ -88,6 +89,7 @@ async def test_launch_publication_wins_before_concurrent_stop() -> None:
     process.pid = 102
     process.returncode = None
     process.stderr = None
+    process.stdin = None
 
     async def create_process(*_args: object, **_kwargs: object) -> MagicMock:
         launch_entered.set()
@@ -289,6 +291,7 @@ async def test_task_failure_keeps_unconfirmed_process_pid_registered() -> None:
     process.returncode = None
     process.stdout.read = AsyncMock(side_effect=RuntimeError("read failed"))
     process.stderr = None
+    process.stdin = None
 
     with (
         patch(
@@ -314,6 +317,7 @@ async def test_completed_task_wait_unregisters_confirmed_process_pid() -> None:
     process.returncode = None
     process.stdout.read = AsyncMock(return_value=b"")
     process.stderr = None
+    process.stdin = None
     process.wait = AsyncMock(return_value=0)
 
     with (

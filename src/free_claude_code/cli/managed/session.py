@@ -146,6 +146,7 @@ class ManagedClaudeSession:
                     ]
                     process = await asyncio.create_subprocess_exec(
                         *argv,
+                        stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=invocation.cwd,
@@ -155,6 +156,16 @@ class ManagedClaudeSession:
                     self.process = process
                     if process.pid:
                         register_pid(process.pid)
+                    if process.stdin:
+                        # A CLI that exits before reading reports that through
+                        # its exit code, which the stdout loop below surfaces.
+                        try:
+                            process.stdin.write(prompt.encode("utf-8"))
+                            await process.stdin.drain()
+                        except BrokenPipeError, ConnectionResetError:
+                            pass
+                        finally:
+                            process.stdin.close()
 
                 if not process.stdout:
                     yield {"type": "exit", "code": 1}

@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from free_claude_code.cli.claude_env import build_claude_proxy_env
 from free_claude_code.cli.managed.claude import (
     MANAGED_CLAUDE_MODEL_TIER,
@@ -58,7 +60,7 @@ def test_managed_claude_builds_new_task_command_and_env() -> None:
         MANAGED_CLAUDE_MODEL_TIER,
         "-p",
     )
-    assert "hello" in invocation.argv
+    assert "hello" not in invocation.argv
     assert "--output-format" in invocation.argv
     assert "stream-json" in invocation.argv
     assert "--add-dir" in invocation.argv
@@ -118,6 +120,24 @@ def test_managed_claude_builds_resume_and_fork_commands() -> None:
         "-p",
     )
     assert "--fork-session" in fork.argv
+
+
+@pytest.mark.parametrize("session_id", [None, "sess_1"])
+def test_managed_claude_never_puts_the_prompt_on_the_command_line(
+    session_id: str | None,
+) -> None:
+    # On Windows an npm install resolves claude to a .cmd shim that cmd.exe
+    # parses: argv prompts lose everything after a newline, expand %VAR%, and
+    # can inject commands. The prompt travels on stdin instead.
+    prompt = "line one\nline two %PATH% & calc"
+    invocation = build_managed_claude_invocation(
+        config=_config(),
+        request=ManagedClaudeTaskRequest(prompt=prompt, session_id=session_id),
+        base_env={},
+    )
+
+    assert "-p" in invocation.argv
+    assert not any("line" in argument for argument in invocation.argv)
 
 
 def test_managed_claude_uses_native_plan_storage() -> None:

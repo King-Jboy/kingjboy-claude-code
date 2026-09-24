@@ -213,6 +213,8 @@ class TestManagedClaudeSession:
         mock_process.stderr.read.return_value = b""  # No error
         mock_process.wait.return_value = 0
         mock_process.returncode = 0
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.drain = AsyncMock()
 
         with (
             patch(
@@ -232,7 +234,10 @@ class TestManagedClaudeSession:
             args = mock_exec.call_args[0]
             assert args[0] == "claude"
             assert "-p" in args
-            assert "Hello" in args
+            assert "Hello" not in args
+            assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.PIPE
+            mock_process.stdin.write.assert_called_once_with(b"Hello")
+            mock_process.stdin.close.assert_called_once_with()
 
             # Verify events
             assert (
