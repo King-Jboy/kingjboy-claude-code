@@ -32,6 +32,31 @@ _SECRET_VALUE_KEYS = frozenset(
         "nvidia-api-key",
     )
 )
+_SECRET_KEY_FRAGMENTS = (
+    "secret",
+    "password",
+    "passwd",
+    "cookie",
+    "credential",
+    "authorization",
+    "api_key",
+    "apikey",
+    "private_key",
+)
+
+
+def _is_secret_key(key: str) -> bool:
+    """Match credential-shaped keys without hiding token counts."""
+    normalized = key.lower().replace("-", "_")
+    if normalized in _SECRET_VALUE_KEYS:
+        return True
+    if any(fragment in normalized for fragment in _SECRET_KEY_FRAGMENTS):
+        return True
+    # auth_token, access_token, bot_token are secrets; input_tokens,
+    # token_count and tokenizer are counts or tooling.
+    return "token" in normalized and not any(
+        counter in normalized for counter in ("tokens", "token_count", "tokenizer")
+    )
 
 
 def sanitize_trace_value(
@@ -48,7 +73,7 @@ def sanitize_trace_value(
         visited.add(obj_id)
         out: dict[str, Any] = {}
         for k, v in obj.items():
-            if str(k).lower() in _SECRET_VALUE_KEYS:
+            if _is_secret_key(str(k)):
                 out[str(k)] = "<redacted>"
             else:
                 out[str(k)] = sanitize_trace_value(

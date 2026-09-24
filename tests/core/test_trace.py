@@ -91,6 +91,49 @@ def test_sanitize_masks_nested_api_key_strings() -> None:
     assert out["outer"]["text"] == "visible"
 
 
+@pytest.mark.parametrize(
+    "key",
+    (
+        "anthropic_auth_token",
+        "openrouter_api_key",
+        "access_token",
+        "refresh_token",
+        "x-goog-api-key",
+        "api-key",
+        "apiKey",
+        "client_secret",
+        "cookie",
+        "Set-Cookie",
+        "proxy-authorization",
+        "telegram_bot_token",
+    ),
+)
+def test_sanitize_masks_credential_shaped_keys(key: str) -> None:
+    # The documented contract is "keys that look like API keys, authorization,
+    # tokens, or secrets", not an exact list of spellings.
+    from free_claude_code.core.trace import sanitize_trace_value
+
+    assert sanitize_trace_value({key: "s3cr3t"}) == {key: "<redacted>"}
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "input_tokens",
+        "output_tokens",
+        "max_tokens",
+        "cache_read_tokens",
+        "token_count",
+        "tokenizer",
+        "key_rate_limit",
+    ),
+)
+def test_sanitize_keeps_token_counts_and_ordinary_keys(key: str) -> None:
+    from free_claude_code.core.trace import sanitize_trace_value
+
+    assert sanitize_trace_value({key: 1234}) == {key: 1234}
+
+
 @pytest.mark.asyncio
 async def test_traced_async_stream_logs_completion(tmp_path) -> None:
     log_file = str(tmp_path / "complete.log")

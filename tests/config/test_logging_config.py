@@ -95,6 +95,21 @@ def test_bearer_substring_redacted_in_log_file(tmp_path) -> None:
     assert "Bearer" in text
 
 
+def test_api_key_headers_and_parameters_redacted_in_log_file(tmp_path) -> None:
+    log_file = str(tmp_path / "keys.log")
+    configure_logging(log_file, force=True, verbose_third_party=False)
+    secrets = ("sk-ant-header-secret", "AIzaQuerySecret", "nvapi-assign-secret")
+    logger.info("headers: x-api-key: {}", secrets[0])
+    logger.info("GET https://host/v1/models?key={}&alt=sse", secrets[1])
+    logger.info("config api_key={} model=x", secrets[2])
+    logger.complete()
+    text = Path(log_file).read_text(encoding="utf-8")
+    for secret in secrets:
+        assert secret not in text
+    assert "alt=sse" in text
+    assert "model=x" in text
+
+
 def test_httpx_logger_quieted_when_not_verbose_third_party(tmp_path) -> None:
     log_file = str(tmp_path / "quiet.log")
     configure_logging(log_file, force=True, verbose_third_party=False)
