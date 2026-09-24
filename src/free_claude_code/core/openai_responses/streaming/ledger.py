@@ -17,6 +17,7 @@ class ResponsesOutputLedger:
         self._input_tokens: int | None = None
         self._output_tokens: int | None = None
         self._cached_tokens: int | None = None
+        self._cache_creation_tokens: int | None = None
         self._reasoning_tokens_estimate = 0
 
     def active_block(self, index: int) -> BlockState | None:
@@ -59,6 +60,9 @@ class ResponsesOutputLedger:
         cache_read = usage.get("cache_read_input_tokens")
         if isinstance(cache_read, int) and cache_read > 0:
             self._cached_tokens = cache_read
+        cache_creation = usage.get("cache_creation_input_tokens")
+        if isinstance(cache_creation, int) and cache_creation > 0:
+            self._cache_creation_tokens = cache_creation
 
     def add_reasoning_text(self, text: str) -> None:
         self._reasoning_tokens_estimate += estimate_text_tokens(text)
@@ -66,7 +70,13 @@ class ResponsesOutputLedger:
     def usage(self) -> dict[str, Any] | None:
         if self._input_tokens is None and self._output_tokens is None:
             return None
-        input_tokens = self._input_tokens or 0
+        # Anthropic input_tokens excludes cache reads and writes; Responses
+        # input_tokens is the inclusive total.
+        input_tokens = (
+            (self._input_tokens or 0)
+            + (self._cached_tokens or 0)
+            + (self._cache_creation_tokens or 0)
+        )
         output_tokens = self._output_tokens or 0
         usage: dict[str, Any] = {
             "input_tokens": input_tokens,

@@ -681,6 +681,7 @@ async def test_message_start_usage_and_caching_are_recorded() -> None:
                             "usage": {
                                 "input_tokens": 100,
                                 "cache_read_input_tokens": 40,
+                                "cache_creation_input_tokens": 3,
                             }
                         },
                     },
@@ -719,9 +720,11 @@ async def test_message_start_usage_and_caching_are_recorded() -> None:
         {"model": "nvidia_nim/test-model", "stream": True},
     )
 
-    assert response["usage"]["input_tokens"] == 100
+    # Anthropic input_tokens excludes cache reads and writes; OpenAI Responses
+    # input_tokens is the inclusive total, with cache reads as cached_tokens.
+    assert response["usage"]["input_tokens"] == 143
     assert response["usage"]["output_tokens"] == 5
-    assert response["usage"]["total_tokens"] == 105
+    assert response["usage"]["total_tokens"] == 148
     assert response["usage"]["input_tokens_details"]["cached_tokens"] == 40
 
 
