@@ -781,10 +781,12 @@ NIM reasoning budget control is also treated as a provider-owned best-effort
 downgrade: if an upstream NIM deployment rejects explicit budget control, FCC
 retries without the budget while preserving thinking enablement.
 NIM also owns response normalization for model-native tool markup exposed in
-chat-completion text. The normalizer recognizes the native protocol signature
-only when tools are declared, validates one complete tool block against the
-request schemas, and converts it into ordinary OpenAI tool-call deltas before
-the shared stream runner can commit visible text. Native structured tool-call
+chat-completion text. The normalizer recognizes the native protocol signature,
+validates one complete tool block against the declared request schemas, and
+converts it into ordinary OpenAI tool-call deltas before the shared stream
+runner can commit visible text. Markup for a tool the request did not declare,
+including any markup when no tools are declared, is treated as a protocol
+failure rather than shown as text. Native structured tool-call
 deltas remain authoritative when both forms appear; incomplete or invalid
 native markup is a retryable upstream protocol failure rather than user-visible
 assistant text. NIM argument-property aliases remain keyed by the original tool
