@@ -24,7 +24,8 @@ from .api_key_pool import parse_api_key_pool
 from .constants import HTTP_CONNECT_TIMEOUT_DEFAULT
 from .env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
-    env_file_override,
+    configured_env_files,
+    env_file_value,
     read_dotenv_file,
     settings_env_files,
 )
@@ -92,6 +93,32 @@ class LiteralDotEnvSettingsSource(DotEnvSettingsSource):
             self.env_ignore_empty,
             self.env_parse_none_str,
         )
+
+
+class DotenvAuthTokenSource(PydanticBaseSettingsSource):
+    """Let this instance's dotenv ANTHROPIC_AUTH_TOKEN beat an inherited shell one.
+
+    Ordered after init arguments and before process env: an explicit argument
+    still wins, ``_env_file=None`` reads no file, and an explicit blank value
+    (auth disabled) counts as set.
+    """
+
+    def __init__(
+        self, settings_cls: type[BaseSettings], dotenv: DotEnvSettingsSource
+    ) -> None:
+        super().__init__(settings_cls)
+        self._env_files = configured_env_files({"env_file": dotenv.env_file})
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        value: str | None = None
+        for env_file in self._env_files:
+            file_value = env_file_value(env_file, ANTHROPIC_AUTH_TOKEN_ENV)
+            if file_value is not None:
+                value = file_value
+        return {} if value is None else {ANTHROPIC_AUTH_TOKEN_ENV: value}
 
 
 class Settings(BaseSettings):
@@ -596,14 +623,6 @@ class Settings(BaseSettings):
             )
         return self
 
-    @model_validator(mode="after")
-    def prefer_dotenv_anthropic_auth_token(self) -> Settings:
-        """Let explicit .env auth config override stale shell/client tokens."""
-        dotenv_value = env_file_override(self.model_config, ANTHROPIC_AUTH_TOKEN_ENV)
-        if dotenv_value is not None:
-            self.anthropic_auth_token = dotenv_value
-        return self
-
     @classmethod
     def settings_customise_sources(
         cls,
@@ -619,6 +638,7 @@ class Settings(BaseSettings):
             return (init_settings, env_settings, dotenv_settings, file_secret_settings)
         return (
             init_settings,
+            DotenvAuthTokenSource(settings_cls, dotenv_settings),
             env_settings,
             LiteralDotEnvSettingsSource.replacing(dotenv_settings),
             file_secret_settings,

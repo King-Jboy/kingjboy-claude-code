@@ -562,6 +562,31 @@ class TestSettings:
             is False
         )
 
+    def test_explicit_auth_token_beats_dotenv(self, monkeypatch, tmp_path):
+        # Admin validates a prospective token by passing it in directly; the
+        # dotenv override used to replace it with the stale file value.
+        from free_claude_code.config.settings import Settings
+
+        env_file = tmp_path / ".env"
+        env_file.write_text('ANTHROPIC_AUTH_TOKEN="old-token"\n', encoding="utf-8")
+        monkeypatch.setitem(Settings.model_config, "env_file", (env_file,))
+
+        settings = Settings(ANTHROPIC_AUTH_TOKEN="new-token")
+
+        assert settings.anthropic_auth_token == "new-token"
+
+    def test_env_file_none_ignores_dotenv_auth_token(self, monkeypatch, tmp_path):
+        from free_claude_code.config.settings import Settings
+
+        env_file = tmp_path / ".env"
+        env_file.write_text('ANTHROPIC_AUTH_TOKEN="file-token"\n', encoding="utf-8")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "shell-token")
+        monkeypatch.setitem(Settings.model_config, "env_file", (env_file,))
+
+        settings = Settings(_env_file=None)
+
+        assert settings.anthropic_auth_token == "shell-token"
+
     @pytest.mark.parametrize("removed_key", ["NIM_ENABLE_THINKING", "ENABLE_THINKING"])
     def test_removed_thinking_env_keys_are_ignored(self, monkeypatch, removed_key):
         """Stale thinking env keys do not block startup or affect settings."""

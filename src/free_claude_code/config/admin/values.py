@@ -3,6 +3,7 @@
 import os
 from typing import Any
 
+from free_claude_code.config.env_files import ANTHROPIC_AUTH_TOKEN_ENV
 from free_claude_code.config.paths import managed_env_path
 
 from .manifest import (
@@ -59,6 +60,12 @@ def load_value_state() -> ValueState:
 
     for key in FIELD_BY_KEY:
         if key in os.environ:
+            # Mirror runtime precedence: a dotenv auth token beats the shell's.
+            if key == ANTHROPIC_AUTH_TOKEN_ENV and sources[key] not in (
+                "template",
+                "default",
+            ):
+                continue
             values[key] = os.environ[key]
             sources[key] = "process"
 

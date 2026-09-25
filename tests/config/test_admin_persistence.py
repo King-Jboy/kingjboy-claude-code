@@ -301,3 +301,19 @@ def test_messaging_settings_are_in_admin_and_the_env_template(key: str) -> None:
 
     assert key in FIELD_BY_KEY
     assert key in template_values()
+
+
+def test_admin_shows_the_dotenv_auth_token_the_server_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The runtime lets a .env ANTHROPIC_AUTH_TOKEN replace an inherited shell
+    # token; Admin showed the shell value, locked the field, and ignored edits.
+    from free_claude_code.config.admin.values import load_value_state
+
+    _managed_env(tmp_path, monkeypatch, 'ANTHROPIC_AUTH_TOKEN="file-token"\n')
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "shell-token")
+
+    entry = load_value_state()["ANTHROPIC_AUTH_TOKEN"]
+
+    assert entry["value"] == "file-token"
+    assert entry["source"] != "process"
