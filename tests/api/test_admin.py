@@ -1307,3 +1307,21 @@ def test_admin_status_identifies_each_built_runtime(monkeypatch, tmp_path):
 
     assert first["instance"]
     assert first["instance"] != second["instance"]
+
+
+def test_admin_script_reports_action_failures_as_errors():
+    # showMessage takes a CSS class; `true` rendered errors unstyled. Actions
+    # without a catch turned failures into silent unhandled rejections.
+    script = Path("src/free_claude_code/api/admin_static/admin.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "showMessage(error.message, true)" not in script
+    for handler in (
+        'addEventListener("click", reportFailures(() => validate(true)))',
+        'addEventListener("click", reportFailures(apply))',
+        "reportFailures(() => testProvider(provider.provider_id, button))",
+        "reportFailures(() => cancelConnectedAccountLogin(providerId))",
+        "reportFailures(() => disconnectConnectedAccount(providerId))",
+    ):
+        assert handler in script

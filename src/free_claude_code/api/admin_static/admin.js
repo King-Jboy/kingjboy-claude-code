@@ -189,7 +189,10 @@ function renderProviders(providerStatus) {
     button.type = "button";
     button.className = "test-button";
     button.textContent = provider.kind === "local" ? "Test" : "Refresh models";
-    button.addEventListener("click", () => testProvider(provider.provider_id, button));
+    button.addEventListener(
+      "click",
+      reportFailures(() => testProvider(provider.provider_id, button)),
+    );
 
     card.append(title, meta, button);
     grid.appendChild(card);
@@ -267,7 +270,11 @@ function populateConnectedAccountActions(provider, status, actions) {
       );
     }
     actions.appendChild(
-      authButton("Cancel", () => cancelConnectedAccountLogin(providerId), "secondary-button"),
+      authButton(
+        "Cancel",
+        reportFailures(() => cancelConnectedAccountLogin(providerId)),
+        "secondary-button",
+      ),
     );
     return;
   }
@@ -281,7 +288,7 @@ function populateConnectedAccountActions(provider, status, actions) {
     actions.appendChild(
       authButton(
         "Disconnect",
-        () => disconnectConnectedAccount(providerId),
+        reportFailures(() => disconnectConnectedAccount(providerId)),
         "secondary-button",
       ),
     );
@@ -356,7 +363,7 @@ async function startConnectedAccountLogin(providerId, mode, button) {
     pollConnectedAccount(provider);
   } catch (error) {
     if (popup) popup.close();
-    showMessage(error.message, true);
+    showMessage(error.message, "error");
     button.disabled = false;
   }
 }
@@ -393,7 +400,7 @@ function pollConnectedAccount(provider) {
       }
     } catch (error) {
       state.authPollers.delete(provider.provider_id);
-      showMessage(error.message, true);
+      showMessage(error.message, "error");
     }
   };
   state.authPollers.set(provider.provider_id, window.setTimeout(poll, 1000));
@@ -958,6 +965,14 @@ function setModelOptions(models) {
   });
 }
 
+// Run a click action and show its failure; an uncaught rejection is silent.
+function reportFailures(action) {
+  return (...args) =>
+    Promise.resolve()
+      .then(() => action(...args))
+      .catch((error) => showMessage(error.message, "error"));
+}
+
 function showMessage(message, kind = "") {
   const area = byId("messageArea");
   area.textContent = message;
@@ -1137,8 +1152,8 @@ document.querySelectorAll("[data-theme-choice]").forEach((button) => {
 });
 applyThemeChoice(storedThemeChoice());
 
-byId("validateButton").addEventListener("click", () => validate(true));
-byId("applyButton").addEventListener("click", apply);
+byId("validateButton").addEventListener("click", reportFailures(() => validate(true)));
+byId("applyButton").addEventListener("click", reportFailures(apply));
 byId("restartButton").addEventListener("click", restartServer);
 byId("stopButton").addEventListener("click", stopServer);
 document.addEventListener("pointerdown", (event) => {
