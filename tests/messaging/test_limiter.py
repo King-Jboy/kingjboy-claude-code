@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Callable
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -225,6 +226,39 @@ class TestMessagingRateLimiter:
             await limiter.enqueue(mock_flood, dedup_key="flood_sec")
 
         assert limiter._paused_until > 0
+
+    @pytest.mark.asyncio
+    async def test_error_mentioning_wait_without_a_delay_does_not_pause(self):
+        # "wait" in an unrelated error used to freeze all messaging for 30s.
+        limiter = self.create_limiter(rate_limit=1, rate_window=1.0)
+
+        async def mock_timeout():
+            raise TimeoutError("Timed out waiting for the Telegram connection")
+
+        with contextlib.suppress(TimeoutError):
+            await limiter.enqueue(mock_timeout, dedup_key="waiting")
+
+        assert limiter._paused_until == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_after_attribute_sets_the_pause(self):
+        # python-telegram-bot RetryAfter and discord.py RateLimited both carry
+        # retry_after (int, float, or timedelta).
+        limiter = self.create_limiter(rate_limit=1, rate_window=1.0)
+
+        class RetryAfter(Exception):
+            def __init__(self):
+                self.retry_after = timedelta(seconds=5)
+                super().__init__("Flood control exceeded. Retry in 5 seconds")
+
+        async def mock_limited():
+            raise RetryAfter()
+
+        before = asyncio.get_running_loop().time()
+        with contextlib.suppress(RetryAfter):
+            await limiter.enqueue(mock_limited, dedup_key="retry_after")
+
+        assert 4.5 <= limiter._paused_until - before <= 6.0
 
     @pytest.mark.asyncio
     async def test_proactive_strict_sliding_window(self):

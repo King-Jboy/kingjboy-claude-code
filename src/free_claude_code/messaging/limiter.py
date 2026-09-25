@@ -1,8 +1,10 @@
 """Runtime-owned queued delivery for one messaging platform."""
 
 import asyncio
+import re
 from collections import deque
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import Any
 
 from loguru import logger
@@ -12,6 +14,25 @@ from free_claude_code.core.rate_limit import (
 )
 
 from .safe_diagnostics import format_exception_for_log
+
+_RETRY_AFTER_TEXT = re.compile(r"retry (?:after|in) (\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def _platform_retry_delay(error: BaseException) -> float | None:
+    """Return a platform-requested pause, or None when the error names none.
+
+    python-telegram-bot's RetryAfter and discord.py's RateLimited carry
+    ``retry_after``; older clients used ``seconds``. A bare mention of "wait"
+    or "flood" is not a delay and must not freeze every chat.
+    """
+    for attribute in ("retry_after", "seconds"):
+        value = getattr(error, attribute, None)
+        if isinstance(value, timedelta):
+            return value.total_seconds()
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+    match = _RETRY_AFTER_TEXT.search(str(error))
+    return float(match.group(1)) if match else None
 
 
 class MessagingRateLimiter:
@@ -110,27 +131,11 @@ class MessagingRateLimiter:
                             if not f.done():
                                 f.set_exception(e)
 
-                        error_msg = str(e).lower()
-                        if "flood" in error_msg or "wait" in error_msg:
-                            seconds = 30
-                            try:
-                                if hasattr(e, "seconds"):
-                                    seconds = e.seconds
-                                elif "after " in error_msg:
-                                    # Try to parse "retry after X"
-                                    parts = error_msg.split("after ")
-                                    if len(parts) > 1:
-                                        seconds = int(parts[1].split()[0])
-                            except Exception:
-                                pass
-
+                        wait_secs = _platform_retry_delay(e)
+                        if wait_secs is not None:
                             logger.error(
-                                f"FloodWait detected! Pausing worker for {seconds}s"
-                            )
-                            wait_secs = (
-                                float(seconds)
-                                if isinstance(seconds, (int, float, str))
-                                else 30.0
+                                "FloodWait detected! Pausing worker for {}s",
+                                wait_secs,
                             )
                             self._paused_until = (
                                 asyncio.get_event_loop().time() + wait_secs
