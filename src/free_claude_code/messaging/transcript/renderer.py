@@ -7,6 +7,19 @@ from .context import RenderCtx
 from .segments import Segment
 
 
+def _escape_safe_cut(text: str, keep: int) -> int:
+    """Return where to cut ``text`` to keep at most ``keep`` trailing chars.
+
+    Rendered text is escaped markup; starting right after an escaping
+    backslash would leave a bare special character that Telegram rejects.
+    """
+    start = len(text) - keep
+    backslashes = 0
+    while start - backslashes - 1 >= 0 and text[start - backslashes - 1] == "\\":
+        backslashes += 1
+    return start + 1 if backslashes % 2 else start
+
+
 def render_segments(
     segments: Iterable[Segment],
     ctx: RenderCtx,
@@ -51,7 +64,8 @@ def render_segments(
         budget = limit_chars - len(prefix_marker) - len(status_text)
         if budget > len(ellipsis) + 10:
             tail = (
-                ellipsis + last_part[-(budget - len(ellipsis)) :]
+                ellipsis
+                + last_part[_escape_safe_cut(last_part, budget - len(ellipsis)) :]
                 if len(last_part) > budget
                 else last_part
             )

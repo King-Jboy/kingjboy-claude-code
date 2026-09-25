@@ -1,3 +1,7 @@
+import re
+
+import pytest
+
 from free_claude_code.messaging.rendering.telegram_markdown import (
     escape_md_v2,
     escape_md_v2_code,
@@ -359,3 +363,27 @@ def test_transcript_truncation_preserves_last_segment_tail():
     assert escape_md_v2("... (truncated)") in msg
     assert "✅ *Complete*" in msg
     assert "actual output" in msg or "content" in msg or "x" in msg
+
+
+@pytest.mark.parametrize("limit_chars", [100, 101])
+def test_render_tail_never_starts_inside_a_markdown_escape(limit_chars: int) -> None:
+    # A cut between "\\" and "." leaves a bare ".", which Telegram rejects as
+    # invalid MarkdownV2, so every later live edit of the message fails.
+    class StaticSegment(Segment):
+        def __init__(self, text: str) -> None:
+            super().__init__(kind="static")
+            self._text = text
+
+        def render(self, ctx: RenderCtx) -> str:
+            return self._text
+
+    ctx = _ctx()
+    out = render_segments(
+        [StaticSegment(ctx.escape_text("." * 3000))],
+        ctx,
+        limit_chars=limit_chars,
+        status=None,
+    )
+
+    assert len(out) <= limit_chars
+    assert re.search(r"(?<!\\)\.", out) is None

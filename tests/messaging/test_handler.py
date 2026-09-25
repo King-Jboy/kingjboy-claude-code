@@ -580,6 +580,26 @@ async def test_stats_command_reports_cli_and_tree_counts(
 
 
 @pytest.mark.asyncio
+async def test_unknown_model_reply_is_valid_markdown_v2(
+    mock_platform, mock_cli_manager, mock_session_store, incoming_message_factory
+):
+    # A bare "." is reserved in MarkdownV2; Telegram rejects the whole reply.
+    handler = MessagingWorkflow(
+        mock_platform,
+        mock_cli_manager,
+        mock_session_store,
+        platform_name="telegram",
+        voice_cancellation=mock_platform,
+        get_available_models=lambda: ["nvidia_nim/vendor/model"],
+    )
+
+    await handler.handle_message(incoming_message_factory(text="/model nosuch"))
+
+    text = mock_platform.queue_send_message.call_args.args[1]
+    assert "models\\." in text
+
+
+@pytest.mark.asyncio
 async def test_model_switch_failure_logs_only_the_exception_type(
     mock_platform, mock_cli_manager, mock_session_store, incoming_message_factory
 ):

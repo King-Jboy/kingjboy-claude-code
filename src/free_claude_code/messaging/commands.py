@@ -291,9 +291,9 @@ async def handle_model_command(
             + ctx.bold("Unknown model:")
             + " "
             + ctx.escape_text(arg)
-            + "\n\nUse "
+            + ctx.escape_text("\n\nUse ")
             + ctx.code_inline("/model")
-            + " to see available models.",
+            + ctx.escape_text(" to see available models."),
             fire_and_forget=False,
             message_thread_id=incoming.message_thread_id,
         )
