@@ -15,6 +15,10 @@ FCC_COMMANDS = (
     "fcc-hermes",
     "fcc-dsh",
     "fcc-grok",
+    "fcc-doctor",
+    "fcc-context",
+    "fcc-extension",
+    "fcc-bridge",
     "fcc-init",
     "free-claude-code",
 )

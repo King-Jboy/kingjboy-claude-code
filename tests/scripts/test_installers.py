@@ -16,6 +16,10 @@ FCC_COMMANDS = (
     "fcc-hermes",
     "fcc-dsh",
     "fcc-grok",
+    "fcc-doctor",
+    "fcc-context",
+    "fcc-extension",
+    "fcc-bridge",
     "fcc-init",
     "free-claude-code",
 )
@@ -1515,3 +1519,22 @@ def test_install_ps1_dry_run_never_touches_the_webview2_runtime(
     assert result.returncode == 0, result.stderr
     assert "only when missing" in result.stdout
     assert powershell_harness.calls() == []
+
+
+@pytest.mark.parametrize(
+    "script",
+    ["install.sh", "uninstall.sh", "install.ps1", "uninstall.ps1"],
+)
+def test_script_command_lists_cover_every_entry_point(script: str) -> None:
+    # The lists decide which running processes block an update and which
+    # leftover shims fail an uninstall; a missing command slips through both.
+    import tomllib
+
+    project = tomllib.loads((_repo_root() / "pyproject.toml").read_text("utf-8"))
+    entry_points = set(project["project"]["scripts"]) | set(
+        project["project"].get("gui-scripts", {})
+    )
+    text = (_repo_root() / "scripts" / script).read_text(encoding="utf-8")
+
+    missing = sorted(name for name in entry_points if f"{name}" not in text)
+    assert missing == []
