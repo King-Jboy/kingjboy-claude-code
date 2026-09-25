@@ -94,7 +94,9 @@ async def process_parsed_cli_event(
     elif ptype == "complete":
         if parsed.get("status") != "success":
             return last_status, had_transcript_events
-        if not had_transcript_events:
+        # With thinking and tools hidden, a turn can finish having shown
+        # nothing; leave a visible sign that it is done.
+        if not transcript.has_segments:
             transcript.apply({"type": "text_chunk", "text": "Done."})
         trace_event(
             stage="claude_cli",

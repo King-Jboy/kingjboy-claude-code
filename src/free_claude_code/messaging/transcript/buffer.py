@@ -105,6 +105,11 @@ class TranscriptBuffer:
         if event_type == "error":
             self._segments.append(ErrorSegment(str(event.get("message", ""))))
 
+    @property
+    def has_segments(self) -> bool:
+        """Whether anything visible was recorded (hidden events add nothing)."""
+        return bool(self._segments)
+
     def render(self, ctx: RenderCtx, *, limit_chars: int, status: str | None) -> str:
         return render_segments(
             self._segments,

@@ -542,3 +542,61 @@ async def test_handler_update_ui_edit_failure_does_not_crash():
         await handler.node_runner.process_node(_claim())
 
     cli_manager.remove_session.assert_awaited_once()
+
+
+def _hidden_transcript():
+    # Production defaults: thinking, tools and terminal status are all hidden.
+    from free_claude_code.messaging.transcript import TranscriptBuffer
+
+    return TranscriptBuffer(
+        show_thinking=False,
+        show_tool_calls=False,
+        show_tool_results=False,
+        show_subagents=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_with_only_hidden_output_still_shows_it_finished():
+    handler = MessagingWorkflow(MagicMock(), MagicMock(), MagicMock())
+    transcript = _hidden_transcript()
+    transcript.apply({"type": "thinking_chunk", "text": "hidden reasoning"})
+
+    await process_parsed_cli_event(
+        parsed={"type": "complete", "status": "success"},
+        transcript=transcript,
+        update_ui=AsyncMock(),
+        last_status=None,
+        had_transcript_events=True,
+        claim=_claim(),
+        captured_session_id="session_1",
+        format_status=handler.format_status,
+        complete_claim=AsyncMock(),
+        fail_claim=AsyncMock(),
+        show_terminal_status=False,
+        show_thinking=False,
+    )
+
+    assert transcript.has_segments
+
+
+@pytest.mark.asyncio
+async def test_error_stays_visible_when_terminal_status_is_hidden():
+    handler = MessagingWorkflow(MagicMock(), MagicMock(), MagicMock())
+    transcript = _hidden_transcript()
+
+    await process_parsed_cli_event(
+        parsed={"type": "error", "message": "provider failed"},
+        transcript=transcript,
+        update_ui=AsyncMock(),
+        last_status=None,
+        had_transcript_events=True,
+        claim=_claim(),
+        captured_session_id="session_1",
+        format_status=handler.format_status,
+        complete_claim=AsyncMock(),
+        fail_claim=AsyncMock(),
+        show_terminal_status=False,
+    )
+
+    assert transcript.has_segments
