@@ -5,6 +5,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
+import httpx2
 import openai
 from loguru import logger
 
@@ -200,6 +202,29 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return overloaded_provider_failure()
         return None
 
+    def _open_failure_override(self, error: Exception) -> ExecutionFailure | None:
+        """Do not re-queue a request that timed out waiting in NIM's queue.
+
+        NIM withholds response headers while a request is queued. A timeout
+        there means the queue outlasted HTTP_READ_TIMEOUT, and a retry rejoins
+        at the back, so it would only time out again. It also says nothing
+        about other NIM models, so it must not pause the whole provider.
+        """
+        if _is_queue_timeout(error):
+            return ExecutionFailure(
+                kind=FailureKind.TIMEOUT,
+                status_code=504,
+                message=(
+                    "NVIDIA NIM request timed out after "
+                    f"{self._config.http_read_timeout:g}s waiting in the model's "
+                    "queue. It was not retried: a retry rejoins the back of the "
+                    "queue. Raise HTTP_READ_TIMEOUT if this model's queue is "
+                    "usually longer."
+                ),
+                retryable=False,
+            )
+        return self._provider_failure_override(error)
+
     def _stream_failure_override(
         self,
         error: Exception,
@@ -225,6 +250,19 @@ class NvidiaNimProvider(OpenAIChatProvider):
                 retryable=False,
             )
         return None
+
+
+def _is_queue_timeout(error: Exception) -> bool:
+    """Whether NIM never sent response headers, i.e. the request stayed queued.
+
+    A connect timeout never reached the queue, so it stays retryable.
+    """
+    if isinstance(error, openai.APITimeoutError):
+        cause = error.__cause__
+        return cause is None or isinstance(
+            cause, httpx.ReadTimeout | httpx2.ReadTimeout
+        )
+    return isinstance(error, httpx.ReadTimeout | httpx2.ReadTimeout)
 
 
 def _nim_error_bodies(error: Exception) -> tuple[Mapping[str, Any], ...]:

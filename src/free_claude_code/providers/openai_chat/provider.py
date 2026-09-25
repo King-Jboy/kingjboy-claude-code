@@ -418,6 +418,10 @@ class OpenAIChatProvider(BaseProvider):
         del attempts_started, stream_opened, accepted
         return self._provider_failure_override(error)
 
+    def _open_failure_override(self, error: Exception) -> ExecutionFailure | None:
+        """Classify a failure before any response headers arrived."""
+        return self._provider_failure_override(error)
+
     def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """Return the body passed to the upstream OpenAI-compatible client."""
         return body
@@ -484,7 +488,7 @@ class OpenAIChatProvider(BaseProvider):
                     continue
                 should_retry = await attempt.retry(
                     error,
-                    provider_failure_override=self._provider_failure_override,
+                    provider_failure_override=self._open_failure_override,
                 )
                 if not should_retry:
                     raise
@@ -1269,6 +1273,8 @@ class _OpenAIChatStreamRunner:
                     request_id=self._request_id,
                     provider_failure_override=(
                         self._provider._provider_failure_override
+                        if stream_opened
+                        else self._provider._open_failure_override
                     ),
                 )
                 error_trace: dict[str, Any] = {

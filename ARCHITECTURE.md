@@ -792,6 +792,12 @@ OpenAI base.
 NIM reasoning budget control is also treated as a provider-owned best-effort
 downgrade: if an upstream NIM deployment rejects explicit budget control, FCC
 retries without the budget while preserving thinking enablement.
+NIM withholds response headers while a request waits in the model's queue, so
+a read timeout before any headers means the queue outlasted
+`HTTP_READ_TIMEOUT`. That failure is final and request-local: a retry would
+rejoin the back of the queue and time out again, and another model's queue says
+nothing about it. Connect timeouts and upstream 5xx responses keep the shared
+retry policy.
 NIM also owns response normalization for model-native tool markup exposed in
 chat-completion text. The normalizer recognizes the native protocol signature,
 validates one complete tool block against the declared request schemas, and

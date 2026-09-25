@@ -20,7 +20,7 @@ from free_claude_code.core.anthropic.streaming import (
     make_response_recovery_body,
     make_text_recovery_body,
 )
-from free_claude_code.core.failures import ExecutionFailure
+from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
 from free_claude_code.providers.admission import UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
 from free_claude_code.providers.base import ProviderConfig
@@ -1001,6 +1001,57 @@ class TestStreamingExceptionHandling:
         assert sum(event.event == "message_stop" for event in parsed) == 1
         assert parsed[0].event == "message_start"
         assert parsed[-1].event == "message_stop"
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            httpx.ReadTimeout("no response headers"),
+            openai.APITimeoutError(
+                request=httpx2.Request("POST", "https://nim.test/v1/chat/completions")
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_nim_does_not_requeue_a_request_that_timed_out_in_its_queue(
+        self, error
+    ):
+        # NIM withholds response headers while a request waits in its queue.
+        # A timeout there means the queue outlasted HTTP_READ_TIMEOUT; a retry
+        # rejoins at the back and times out again, so production saw five
+        # 120s attempts (632s) against a ~170s queue.
+        provider = _make_provider()
+        request = _make_request()
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=error,
+        ) as mock_create:
+            failure = await _collect_stream_error(provider, request)
+
+        assert mock_create.await_count == 1
+        assert failure.kind == FailureKind.TIMEOUT
+        assert failure.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_nim_still_retries_a_connection_failure_before_headers(self):
+        # Only queue timeouts are final; a failed connect never joined a queue.
+        provider = _make_provider()
+        request = _make_request()
+        stream = AsyncStreamMock(
+            [_make_chunk(content="ok"), _make_chunk(finish_reason="stop")]
+        )
+
+        with patch.object(
+            provider._client.chat.completions,
+            "create",
+            new_callable=AsyncMock,
+            side_effect=[httpx.ConnectError("refused"), stream],
+        ) as mock_create:
+            await _collect_stream(provider, request)
+
+        assert mock_create.await_count == 2
 
     @pytest.mark.asyncio
     async def test_bulleted_text_at_end_of_stream_is_not_dropped(self):
