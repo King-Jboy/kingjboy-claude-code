@@ -1,5 +1,6 @@
 """Flat application settings schema loaded by Pydantic Settings."""
 
+import math
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
@@ -550,8 +551,9 @@ class Settings(BaseSettings):
     @field_validator("messaging_rate_window")
     @classmethod
     def validate_messaging_rate_window(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("messaging_rate_window must be > 0")
+        # NaN slips past "<= 0", and an infinite window never admits again.
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("messaging_rate_window must be a finite number > 0")
         return float(v)
 
     @field_validator("web_fetch_allowed_schemes")

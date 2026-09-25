@@ -1385,3 +1385,15 @@ def test_empty_numeric_settings_use_defaults(tmp_path: Path) -> None:
     settings = Settings(_env_file=env_file)
     assert settings.port == 8082
     assert settings.provider_rate_limit == 40
+
+
+@pytest.mark.parametrize("window", ["nan", "inf"])
+def test_messaging_rate_window_must_be_finite(window: str, monkeypatch) -> None:
+    # NaN passed "v <= 0"; an infinite window stopped the limiter admitting
+    # anything ever again.
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("MESSAGING_RATE_WINDOW", window)
+
+    with pytest.raises(ValidationError, match="messaging_rate_window"):
+        Settings(_env_file=None)
