@@ -6,7 +6,11 @@ from typing import Any
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.core.anthropic import ReasoningReplayMode, set_if_not_none
 from free_claude_code.core.anthropic.models import MessagesRequest
-from free_claude_code.core.reasoning import ReasoningControl, ReasoningPolicy
+from free_claude_code.core.reasoning import (
+    ReasoningControl,
+    ReasoningEffort,
+    ReasoningPolicy,
+)
 from free_claude_code.providers.openai_chat import (
     OpenAIChatRequestPolicy,
     build_openai_chat_request_body,
@@ -105,6 +109,13 @@ def apply_nim_request_options(
             chat_template_kwargs["enable_thinking"] = enabled
             if enabled:
                 budget = reasoning.numeric_budget_tokens
+                if (
+                    budget is None
+                    and request_data.thinking is not None
+                    and request_data.thinking.type == "adaptive"
+                ):
+                    # Unbounded NIM thinking delays the first answer token.
+                    budget = ReasoningEffort.HIGH.budget_tokens
                 if budget is not None:
                     chat_template_kwargs["reasoning_budget"] = budget
 

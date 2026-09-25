@@ -157,9 +157,9 @@ class TestBuildRequestBody:
             "reasoning_budget": 2048,
         }
 
-    def test_adaptive_thinking_does_not_invent_a_reasoning_budget(self):
-        # Budgets come from ReasoningPolicy only; the client's adaptive mode
-        # carries no number, so none may be sent upstream.
+    def test_adaptive_thinking_without_a_budget_uses_the_high_effort_budget(self):
+        # Adaptive mode carries no number; unbounded NIM thinking delays the
+        # first answer token, so it gets the high-effort budget.
         req = make_messages_request(model="test", thinking={"type": "adaptive"})
 
         body = build_request_body(req, NimSettings(), reasoning=REASONING_ON)
@@ -167,7 +167,18 @@ class TestBuildRequestBody:
         assert body["extra_body"]["chat_template_kwargs"] == {
             "thinking": True,
             "enable_thinking": True,
+            "reasoning_budget": ReasoningEffort.HIGH.budget_tokens,
         }
+
+    def test_adaptive_thinking_keeps_an_explicit_effort_budget(self):
+        req = make_messages_request(model="test", thinking={"type": "adaptive"})
+        reasoning = ReasoningPolicy.on(effort=ReasoningEffort.LOW)
+
+        body = build_request_body(req, NimSettings(), reasoning=reasoning)
+
+        assert body["extra_body"]["chat_template_kwargs"]["reasoning_budget"] == (
+            ReasoningEffort.LOW.budget_tokens
+        )
 
     def test_max_tokens_capped_by_nim(self, req):
         req.max_tokens = 100000
