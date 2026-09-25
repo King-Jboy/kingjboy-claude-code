@@ -383,6 +383,10 @@ If your proxy has `ANTHROPIC_AUTH_TOKEN` set, `fcc-extension` masks it by defaul
 | `page_info` | URL, title, viewport of the active tab |
 | `read_page` | Rendered text or raw HTML, whole document or one CSS selector |
 | `read_console` | Console output and uncaught errors recorded since page load |
+| `read_selection` | The text currently selected on the page |
+| `screenshot` | An image of the visible part of the tab |
+| `click` | Clicks one element by CSS selector; you approve each click first |
+| `type_text` | Types into one field by CSS selector; you approve each use first |
 
 Untick **Let the model read the active tab** in the panel's settings to send no tools at all.
 

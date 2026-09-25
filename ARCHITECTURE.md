@@ -94,7 +94,7 @@ also removes that permission:
 | `runtime` | `api`, `application`, `cli`, `config`, `core`, `messaging`, `providers` |
 
 There is one exact exception:
-`free_claude_code.cli.entrypoints` imports
+`free_claude_code.cli.commands` imports
 `free_claude_code.runtime.bootstrap` because the installed server executable
 delegates construction to the process composition root. The exception does not
 permit any broader dependency from `cli` to `runtime`. Every new top-level
@@ -217,6 +217,14 @@ Console scripts are registered in [pyproject.toml](pyproject.toml):
 - `fcc-claude` calls `free_claude_code.cli.launchers.claude:launch`.
 - `fcc-codex` calls `free_claude_code.cli.launchers.codex:launch`.
 - `fcc-pi` calls `free_claude_code.cli.launchers.pi:launch`.
+- `fcc-hermes`, `fcc-dsh`, and `fcc-grok` call the matching
+  `free_claude_code.cli.launchers.<name>:launch`; each writes a temporary
+  managed client config pointed at the proxy and applies the shared
+  `fcc-no-auth` rule for a blank proxy token.
+- `fcc-doctor`, `fcc-context`, `fcc-extension`, and `fcc-bridge` call the
+  matching `free_claude_code.cli.entrypoints` function: install diagnostics,
+  model context-window measurement, the Chrome side-panel locator, and the
+  Chrome native-messaging host that runs the side panel's approved commands.
 
 
 [scripts/install.sh](scripts/install.sh) and [scripts/install.ps1](scripts/install.ps1)
@@ -230,7 +238,10 @@ uv, Claude Code, Codex, Pi, or uv-managed Python runtimes. [scripts/ci.sh](scrip
 [scripts/ci.ps1](scripts/ci.ps1) mirror [.github/workflows/tests.yml](.github/workflows/tests.yml)
 for local pre-push verification.
 
-[cli/entrypoints.py](src/free_claude_code/cli/entrypoints.py) starts the FastAPI server with Uvicorn.
+[cli/entrypoints.py](src/free_claude_code/cli/entrypoints.py) keeps `--version`
+import-free and hands off to [cli/commands.py](src/free_claude_code/cli/commands.py),
+which starts the FastAPI server with Uvicorn. `fcc-server` takes no options
+(it warns about any it is given); host and port come from `HOST`/`PORT`.
 The shared `ServerSupervisor` migrates legacy env files when needed, loads cached
 settings, runs one server instance, and can restart it after Admin config changes.
 An Admin restart constructs the next instance only when the prior
@@ -761,8 +772,8 @@ model identity; harness permissions remain the final authority for execution.
 Specialized provider packages remain only for true upstream quirks such as
 Gemini thought signatures, NIM tool-schema aliases, retry downgrades, and NVCF
 deployment-failure classification, or DeepSeek attachment/tool/thinking
-compatibility. Local Ollama, Ollama Cloud, llama.cpp, and LM Studio all use the
-same OpenAI-compatible Chat Completions provider family;
+compatibility. Ollama and LM Studio use the same OpenAI-compatible Chat
+Completions provider family (LM Studio adds a context-budget preflight);
 Ollama's standard `reasoning` delta and history field are profile data rather
 than a specialized adapter. DeepSeek intentionally uses its
 OpenAI-compatible Chat Completions endpoint because that is the endpoint that
@@ -772,23 +783,19 @@ history is serialized per assistant turn: non-tool reasoning is omitted from
 its first replay, while tool-call reasoning is retained independently of the
 next generation's thinking mode. Append-only conversations therefore keep an
 identical message prefix without violating DeepSeek's tool-call replay contract.
-Cloudflare uses its
-account-scoped Workers AI OpenAI-compatible Chat Completions endpoint for
-`@cf/...` model IDs, while account ID composition, model search, and
-Cloudflare-specific reasoning deltas stay in the Cloudflare provider client.
-OpenRouter and Kilo remain specialized for capability-aware model filtering and
-structured reasoning-detail stream events. Kilo excludes image-output and
-Responses-only models from Chat Completions discovery while keeping direct model
-execution upstream-authoritative. Amazon Bedrock Mantle uses an ordinary profile with a region-specific,
-configurable OpenAI base URL and bearer API key; AWS SigV4 and native
-Converse/Invoke transports are outside that provider contract. Wafer, Kimi API,
-Kimi Code, MiniMax, Fireworks, and Z.ai use ordinary
-declarative profiles for their thinking, token, and `extra_body` policy. Kimi
-Code remains distinct from Kimi API because its subscription key and base URL
-are a separate customer contract; its profile maps provider-neutral reasoning
-to Kimi's named efforts and identifies FCC through the upstream user agent.
-Z.ai is treated as the GLM Coding Plan provider and uses Z.ai's Coding Plan
-OpenAI base.
+OpenRouter remains specialized for capability-aware model filtering and
+structured reasoning-detail stream events. Amazon Bedrock Mantle uses an
+ordinary profile with a region-specific, configurable OpenAI base URL and bearer
+API key; AWS SigV4 and native Converse/Invoke transports are outside that
+provider contract. Kimi, Groq, Z.ai, Hugging Face, TokenRouter, NaraRoute, and
+the user-configured Custom endpoint use ordinary declarative profiles for their
+thinking, token, and `extra_body` policy. Z.ai is treated as the GLM Coding Plan
+provider and uses Z.ai's Coding Plan OpenAI base. OpenAI / ChatGPT is not an
+OpenAI-chat profile: it is the Codex Responses provider injected at bootstrap.
+NVIDIA NIM, OpenRouter, and Custom accept key pools (`*_API_KEYS`) that rotate
+per request with per-key rate limits; `KEY_HEDGE_DELAY_SECONDS` (off by default)
+races a second pooled key when the first has not returned headers in time and
+closes whichever stream loses.
 NIM reasoning budget control is also treated as a provider-owned best-effort
 downgrade: if an upstream NIM deployment rejects explicit budget control, FCC
 retries without the budget while preserving thinking enablement.
@@ -863,13 +870,11 @@ Every provider receives the same concrete
 `MessagesRequest` owned by the Anthropic protocol package. Known wire fields are
 accessed through that model; `Any` and dynamic attribute lookup are reserved for
 SDK response objects and genuinely open-ended nested extension payloads.
-Provider-specific inputs that do not apply to other upstreams, such as
-Cloudflare's account ID, stay in that provider's factory/client instead of being
-added to shared `ProviderConfig`.
-Gateway providers such as Vercel AI Gateway, Hugging Face, and Cohere are
-profiles because their documented behavior is expressible as request policy.
-GitHub Models remains specialized because it owns API headers, a separate model
-catalog client, and capability filtering. The OpenAI-chat provider owns standard
+Provider-specific inputs that do not apply to other upstreams stay in that
+provider's factory/client instead of being added to shared `ProviderConfig`.
+Gateway providers such as Hugging Face, TokenRouter, and NaraRoute are profiles
+because their documented behavior is expressible as request policy. The
+OpenAI-chat provider owns standard
 streamed usage handling: it requests
 `stream_options.include_usage`, consumes provider `prompt_tokens` and
 `completion_tokens` when present, and falls back to local estimates when
@@ -1615,7 +1620,7 @@ providers, touch local model servers, and optionally send bot messages.
 CI is defined in [.github/workflows/tests.yml](.github/workflows/tests.yml). It
 enforces:
 
-- `Ban type ignore suppressions`;
+- `Ban suppressions and legacy annotations`;
 - `ruff-format`;
 - `ruff-check`;
 - `ty`;
