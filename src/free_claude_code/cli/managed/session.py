@@ -239,8 +239,15 @@ class ManagedClaudeSession:
                             stderr_bytes = await asyncio.wait_for(
                                 stderr_task, timeout=2.0
                             )
-                        except TimeoutError, asyncio.CancelledError:
+                        except TimeoutError:
                             stderr_task.cancel()
+                        except asyncio.CancelledError:
+                            stderr_task.cancel()
+                            # Only the stderr reader's own cancellation is
+                            # expected here; a cancelled caller must stop.
+                            current = asyncio.current_task()
+                            if current is not None and current.cancelling():
+                                raise
 
                 stderr_text = None
                 if stderr_bytes:

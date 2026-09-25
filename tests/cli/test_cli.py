@@ -197,6 +197,48 @@ class TestManagedClaudeSession:
         assert extract_managed_claude_session_id("not a dict") is None
 
     @pytest.mark.asyncio
+    async def test_cancellation_during_stderr_wait_still_cancels(self):
+        # /stop or shutdown can land while the session waits for stderr after
+        # stdout ended; swallowing it let the task carry on and yield events.
+        from free_claude_code.cli.managed.session import ManagedClaudeSession
+
+        session = ManagedClaudeSession("/tmp", "http://localhost:8082")
+        process = AsyncMock()
+        process.stdout.read.return_value = b""
+        process.stdin = None
+        process.wait.return_value = 0
+        process.returncode = 0
+        stderr_started = asyncio.Event()
+
+        async def hanging_stderr(_process):
+            stderr_started.set()
+            await asyncio.Event().wait()
+
+        events: list[dict] = []
+
+        async def consume() -> None:
+            events.extend([event async for event in session.start_task("Hello")])
+
+        with (
+            patch(
+                "asyncio.create_subprocess_exec", new=AsyncMock(return_value=process)
+            ),
+            patch(
+                "free_claude_code.cli.managed.session.resolve_claude_executable",
+                side_effect=lambda name: name,
+            ),
+            patch.object(session, "_drain_stderr_bounded", side_effect=hanging_stderr),
+        ):
+            task = asyncio.create_task(consume())
+            await stderr_started.wait()
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert events == []
+
+    @pytest.mark.asyncio
     async def test_start_task_basic_flow(self):
         """Test start_task running a basic command flow."""
         from free_claude_code.cli.managed.session import ManagedClaudeSession
