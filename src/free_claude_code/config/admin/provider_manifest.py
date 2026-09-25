@@ -111,17 +111,18 @@ def _proxy_field_specs() -> tuple[dict[str, Any], ...]:
     for descriptor in PROVIDER_CATALOG.values():
         if descriptor.proxy_attr is None:
             continue
-        specs.append(
-            {
-                "key": _settings_env_key(descriptor.proxy_attr),
-                "label": f"{descriptor.display_name} Proxy",
-                "section_id": "providers",
-                "field_type": "secret",
-                "settings_attr": descriptor.proxy_attr,
-                "secret": True,
-                "advanced": True,
-            }
-        )
+        key = _settings_env_key(descriptor.proxy_attr)
+        spec = {
+            "key": key,
+            "label": f"{descriptor.display_name} Proxy",
+            "section_id": "providers",
+            "field_type": "secret",
+            "settings_attr": descriptor.proxy_attr,
+            "secret": True,
+            "advanced": True,
+        }
+        spec.update(_PROVIDER_FIELD_OVERRIDES.get(key, {}))
+        specs.append(spec)
     return tuple(specs)
 
 

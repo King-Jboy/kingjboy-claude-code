@@ -118,3 +118,13 @@ def test_provider_catalog_display_names_are_admin_status_source() -> None:
             else "remote"
         )
         assert status_by_provider[provider_id]["kind"] == expected_kind
+
+
+def test_openai_proxy_is_marked_restart_required() -> None:
+    # The OpenAI auth manager reads the proxy once at startup; without the
+    # override Admin reported a proxy change as applied while sign-in kept
+    # using the old one.
+    field = FIELD_BY_KEY["OPENAI_PROXY"]
+
+    assert field.restart_required is True
+    assert "restarts FCC" in field.description
