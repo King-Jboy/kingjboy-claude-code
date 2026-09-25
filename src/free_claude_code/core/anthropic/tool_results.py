@@ -4,7 +4,11 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from free_claude_code.core.anthropic.content import get_block_attr, get_block_type
+from free_claude_code.core.anthropic.content import (
+    DOCUMENT_OMITTED_NOTICE,
+    get_block_attr,
+    get_block_type,
+)
 from free_claude_code.core.anthropic.image_sources import (
     portable_anthropic_image_url,
 )
@@ -49,6 +53,8 @@ def decompose_tool_result_content(content: object) -> DecomposedToolResult:
         elif block_type == "image":
             source = get_block_attr(block, "source")
             parts.append(ToolResultImage(portable_anthropic_image_url(source)))
+        elif block_type == "document":
+            parts.append(ToolResultText(DOCUMENT_OMITTED_NOTICE))
         elif isinstance(block, str):
             parts.append(ToolResultText(block))
         elif isinstance(block, Mapping):

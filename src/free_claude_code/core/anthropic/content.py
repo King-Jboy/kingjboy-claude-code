@@ -2,6 +2,10 @@
 
 from typing import Any
 
+# OpenAI chat has no document part. Say a document was there rather than drop it
+# silently or paste its base64 payload into the prompt.
+DOCUMENT_OMITTED_NOTICE = "[document omitted: this model cannot read documents]"
+
 
 def get_block_attr(block: Any, attr: str, default: Any = None) -> Any:
     """Get an attribute from a Pydantic model, lightweight object, or dict."""

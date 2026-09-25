@@ -3,6 +3,7 @@
 import json
 from typing import Any
 
+from .content import DOCUMENT_OMITTED_NOTICE
 from .models import MessagesRequest
 
 _MESSAGES_REQUEST_FIELDS = (
@@ -50,6 +51,8 @@ def serialize_tool_result_content(content: Any) -> str:
         for item in content:
             if isinstance(item, dict) and item.get("type") == "text":
                 parts.append(str(item.get("text", "")))
+            elif isinstance(item, dict) and item.get("type") == "document":
+                parts.append(DOCUMENT_OMITTED_NOTICE)
             elif isinstance(item, dict):
                 parts.append(json.dumps(item, ensure_ascii=False))
             else:

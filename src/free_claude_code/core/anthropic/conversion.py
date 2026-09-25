@@ -13,7 +13,7 @@ from free_claude_code.core.openai_chat import (
     image_tool_result_label,
 )
 
-from .content import get_block_attr, get_block_type
+from .content import DOCUMENT_OMITTED_NOTICE, get_block_attr, get_block_type
 from .image_sources import AnthropicImageSourceError, portable_anthropic_image_url
 from .models import MessagesRequest
 from .request_serialization import serialize_tool_result_content
@@ -692,6 +692,8 @@ class AnthropicToOpenAIConverter:
                 continue
             elif block_type == "tool_use":
                 tool_calls.append(_tool_call_from_tool_use(block))
+            elif block_type == "document":
+                content_parts.append(DOCUMENT_OMITTED_NOTICE)
             else:
                 _assert_no_forbidden_assistant_block(block)
 
@@ -767,6 +769,9 @@ class AnthropicToOpenAIConverter:
             elif block_type == "image":
                 flush_tool_results()
                 content_parts.append(_openai_user_image_part(block))
+            elif block_type == "document":
+                flush_tool_results()
+                content_parts.append({"type": "text", "text": DOCUMENT_OMITTED_NOTICE})
             elif block_type == "tool_result":
                 flush_content()
                 tool_results.append(_openai_chat_tool_result(block))

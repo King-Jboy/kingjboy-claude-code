@@ -469,6 +469,54 @@ def test_convert_user_message_tool_result_list():
     assert result[0]["content"] == "Line 1\nLine 2"
 
 
+_PDF_DOCUMENT = {
+    "type": "document",
+    "source": {
+        "type": "base64",
+        "media_type": "application/pdf",
+        "data": "JVBERi0xLjQK" * 1000,
+    },
+}
+_DOCUMENT_NOTICE = "[document omitted: this model cannot read documents]"
+
+
+def test_user_document_becomes_a_notice_instead_of_vanishing():
+    # Silently dropping it makes the model answer as if nothing was attached.
+    messages = [
+        MockMessage(
+            "user",
+            [MockBlock(type="text", text="Summarise this"), MockBlock(**_PDF_DOCUMENT)],
+        )
+    ]
+
+    result = AnthropicToOpenAIConverter.convert_messages(messages)
+
+    text = json.dumps(result)
+    assert _DOCUMENT_NOTICE in text
+    assert "JVBERi0" not in text
+
+
+def test_tool_result_document_is_not_pasted_into_the_prompt_as_base64():
+    # Claude Code's Read tool returns PDFs this way; serialising the part
+    # pasted megabytes of base64 into the prompt.
+    tool_content = [{"type": "text", "text": "Read report.pdf"}, _PDF_DOCUMENT]
+    messages = [
+        MockMessage(
+            "user",
+            [
+                MockBlock(
+                    type="tool_result", tool_use_id="tool_pdf", content=tool_content
+                )
+            ],
+        )
+    ]
+
+    result = AnthropicToOpenAIConverter.convert_messages(messages)
+
+    assert result[0]["role"] == "tool"
+    assert result[0]["content"] == f"Read report.pdf\n{_DOCUMENT_NOTICE}"
+
+
 def test_convert_user_message_mixed_text_and_tool_result():
     # Note: Anthropic/OpenAI mapping usually separates these, but the converter handles lists
     # User text usually comes before tool results in a turn, or after.

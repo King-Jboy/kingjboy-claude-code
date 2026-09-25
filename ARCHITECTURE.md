@@ -914,8 +914,12 @@ dependencies are ordered, a neutral whitespace-only assistant boundary closes
 any completed tool round before subsequent user input. Adjacent user content
 is then coalesced into one turn so strict chat templates receive neither
 `tool → user` nor consecutive user roles. Conversion preserves content order
-and rejects unrepresentable blocks instead of dropping them. Provider policies
-do not reinterpret this role mapping.
+and rejects unrepresentable blocks instead of dropping them, with one
+exception: OpenAI chat has no document part, so a `document` block (including
+one inside a tool result, as Claude Code returns for PDFs) becomes the text
+notice `[document omitted: this model cannot read documents]` rather than being
+dropped silently or serialized as base64 into the prompt. Provider policies do
+not reinterpret this role mapping.
 
 User image conversion is a pure protocol operation. Core maps Anthropic base64
 and URL image sources to ordered OpenAI `image_url` content parts without

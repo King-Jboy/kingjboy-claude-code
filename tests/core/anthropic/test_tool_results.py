@@ -1,3 +1,4 @@
+from free_claude_code.core.anthropic.content import DOCUMENT_OMITTED_NOTICE
 from free_claude_code.core.anthropic.tool_results import (
     ToolResultImage,
     ToolResultText,
@@ -39,14 +40,16 @@ def test_decompose_tool_result_preserves_unknown_siblings_as_text() -> None:
                     "url": "https://images.example.test/result.png",
                 },
             },
-            {"type": "document", "title": "café"},
+            {"type": "search_result", "title": "café"},
+            {"type": "document", "source": {"type": "base64", "data": "JVBERi0"}},
             7,
         ]
     )
 
     assert result.parts == (
         ToolResultImage("https://images.example.test/result.png"),
-        ToolResultText('{"type": "document", "title": "café"}'),
+        ToolResultText('{"type": "search_result", "title": "café"}'),
+        ToolResultText(DOCUMENT_OMITTED_NOTICE),
         ToolResultText("7"),
     )
 
