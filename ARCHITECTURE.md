@@ -446,7 +446,11 @@ OpenAI Responses validation and conversion for Codex clients. `TokenCountHandler
 owns Anthropic token counting. Shared provider execution lives in
 [application/execution.py](src/free_claude_code/application/execution.py). `ProviderExecutor` resolves the narrow
 consumer-owned `ProviderPort`, synchronously preflights the upstream request,
-emits trace events, counts input tokens, and returns an Anthropic SSE iterator.
+emits trace events, and returns an Anthropic SSE iterator. It does not count
+input tokens before the request (removed for request-path latency), so
+`message_start` reports 0 input tokens and the real figure arrives with the
+provider's usage at the end of the stream; it stays 0 when a provider reports
+no usage. `POST /v1/messages/count_tokens` still counts on demand.
 It receives only a provider resolver and the few scalar collaborators it needs;
 it does not depend on FastAPI, provider implementations, or the full settings
 object. The executor also owns FCC's provider-progress deadline: every wait for
