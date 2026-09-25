@@ -183,8 +183,8 @@ def configure_logging(
 
         logger.remove()
 
-        log_path.write_text("")
-
+        # Append: a restart must keep the log of the run that preceded it;
+        # rotation bounds the file size.
         _sink_id = _add_file_sink(log_path, level)
 
         intercept = InterceptHandler()

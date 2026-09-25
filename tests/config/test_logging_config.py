@@ -12,7 +12,7 @@ from free_claude_code.config.logging_config import configure_logging
 
 
 def test_configure_logging_creates_parent_directories(tmp_path) -> None:
-    """Nested log path: parent directories are created before truncating."""
+    """Nested log path: parent directories are created before the sink opens."""
     log_file = tmp_path / "nested" / "dir" / "app.log"
     configure_logging(str(log_file), force=True)
     assert log_file.is_file()
@@ -224,3 +224,18 @@ def test_configure_logging_updates_verbosity_on_same_level(tmp_path) -> None:
     logger.info("still logging")
     logger.complete()
     assert "still logging" in Path(log_file).read_text(encoding="utf-8")
+
+
+def test_configure_logging_keeps_the_previous_runs_log(tmp_path) -> None:
+    # A restart after a failure must not wipe the log that explains it;
+    # rotation (50 MB, five files) already bounds the size.
+    log_file = tmp_path / "server.log"
+    log_file.write_text('{"message": "previous run crashed"}\n', encoding="utf-8")
+
+    configure_logging(str(log_file), force=True, verbose_third_party=False)
+    logger.info("new run started")
+    logger.complete()
+
+    text = log_file.read_text(encoding="utf-8")
+    assert "previous run crashed" in text
+    assert "new run started" in text
