@@ -31,7 +31,7 @@ class SubagentState:
         self._segments.append(segment)
         if self._debug:
             logger.debug(
-                "SUBAGENT_STACK: push id=%r depth=%d heading=%r",
+                "SUBAGENT_STACK: push id={!r} depth={} heading={!r}",
                 marker,
                 len(self._stack),
                 segment.description,
@@ -81,7 +81,7 @@ class SubagentState:
                 self._segments.pop()
             if self._debug:
                 logger.debug(
-                    "SUBAGENT_STACK: pop id=%r depth=%d (%s=%r)",
+                    "SUBAGENT_STACK: pop id={!r} depth={} ({}={!r})",
                     popped,
                     len(self._stack),
                     reason,

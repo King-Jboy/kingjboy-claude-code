@@ -92,7 +92,7 @@ def get_token_count(
                     total_tokens += 12
                 else:
                     logger.debug(
-                        "Unexpected block type %r, falling back to json/str encoding",
+                        "Unexpected block type {!r}, falling back to json/str encoding",
                         b_type,
                     )
                     try:

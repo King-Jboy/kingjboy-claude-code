@@ -69,7 +69,7 @@ def _signal_pid_tree_best_effort(pid: int, sig: int) -> None:
                 check=False,
             )
         except Exception as e:
-            logger.debug("process_registry: taskkill failed pid=%s: %s", pid, e)
+            logger.debug("process_registry: taskkill failed pid={}: {}", pid, e)
         return
 
     # All tracked POSIX children start a fresh session, so their process group
@@ -77,7 +77,7 @@ def _signal_pid_tree_best_effort(pid: int, sig: int) -> None:
     try:
         os.killpg(os.getpgid(pid), sig)
     except Exception as e:
-        logger.debug("process_registry: signal failed pid=%s: %s", pid, e)
+        logger.debug("process_registry: signal failed pid={}: {}", pid, e)
 
 
 def kill_all_best_effort() -> None:
