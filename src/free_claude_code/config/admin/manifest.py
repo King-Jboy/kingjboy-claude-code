@@ -376,6 +376,17 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         session_sensitive=True,
     ),
     ConfigFieldSpec(
+        "MESSAGING_MODEL",
+        "Messaging Model",
+        "messaging",
+        "optional_model",
+        settings_attr="messaging_model",
+        description=(
+            "Model for Telegram/Discord sessions only; the chat /model command "
+            "sets it. Select None to use the Fable route."
+        ),
+    ),
+    ConfigFieldSpec(
         "MESSAGING_RATE_LIMIT",
         "Messaging Rate Limit",
         "messaging",

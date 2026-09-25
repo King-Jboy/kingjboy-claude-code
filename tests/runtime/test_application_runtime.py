@@ -1003,3 +1003,32 @@ async def test_composition_publishes_startup_notice_after_runtime_and_repair() -
     assert "plans_directory" not in manager_constructor.call_args.kwargs
 
     assert await runtime.close() is True
+
+
+@pytest.mark.asyncio
+async def test_messaging_model_switch_writes_only_the_messaging_setting() -> None:
+    # A phone /model switch must not change what laptop Claude Code, Codex or
+    # direct clients route to.
+    manager = ProviderRuntimeManager(_settings("nvidia_nim/model"))
+    runtime = ApplicationRuntime(manager, transcriber=None)
+    apply = AsyncMock(return_value={"applied": True, "errors": []})
+
+    with patch.object(runtime, "apply_admin_config", apply):
+        await runtime._set_messaging_model("open_router/vendor/model")
+
+    apply.assert_awaited_once_with({"MESSAGING_MODEL": "open_router/vendor/model"})
+
+
+@pytest.mark.asyncio
+async def test_messaging_model_switch_reports_a_rejected_update() -> None:
+    manager = ProviderRuntimeManager(_settings("nvidia_nim/model"))
+    runtime = ApplicationRuntime(manager, transcriber=None)
+    apply = AsyncMock(
+        return_value={"applied": False, "errors": ["MESSAGING_MODEL: Invalid provider"]}
+    )
+
+    with (
+        patch.object(runtime, "apply_admin_config", apply),
+        pytest.raises(ValueError, match="Invalid provider"),
+    ):
+        await runtime._set_messaging_model("nosuch/vendor/model")

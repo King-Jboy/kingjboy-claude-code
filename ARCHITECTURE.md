@@ -1218,7 +1218,7 @@ is its bundled Pi adapter:
 [cli/managed/](src/free_claude_code/cli/managed/) owns managed Claude Code subprocesses used by
 Discord and Telegram messaging. Managed task invocations extend the same proxy
 environment only with non-interactive terminal settings, optional `--resume`,
-optional `--fork-session`, `--model fable`, `-p` with `--output-format
+optional `--fork-session`, `--model` (`MESSAGING_MODEL`, else `fable`), `-p` with `--output-format
 stream-json --verbose`, `--dangerously-skip-permissions`, `--add-dir` for
 `ALLOWED_DIR`, and, when `MESSAGING_SHOW_THINKING` is off,
 `MAX_THINKING_TOKENS=0` and `CLAUDE_CODE_DISABLE_THINKING=1`. The prompt is
@@ -1228,9 +1228,13 @@ npm `.cmd` shim, and cmd.exe would truncate a multi-line argument, expand
 a managed session can run any command the server's OS user can; `ALLOWED_DIR`
 (or the server's working directory when unset) chooses where it works, not what
 it may touch, so messaging authorization is effectively shell authorization.
-Messaging pins this Claude tier alias so phone sessions route through
-`MODEL_FABLE` or the `MODEL` fallback instead of inheriting a user's interactive
-`/model` picker state. Managed execution does not override Claude's
+Messaging never inherits a user's interactive Claude Code `/model` picker
+state: sessions use `MESSAGING_MODEL` when set, otherwise the `fable` tier
+alias, which routes through `MODEL_FABLE` or the `MODEL` fallback. The chat
+`/model` command writes only `MESSAGING_MODEL` (persisted in the managed
+`.env`, validated like the other model settings) and the manager reads it for
+each new session, so a switch applies to the next turn without a restart and
+never changes the routes laptop Claude Code, Codex, or direct clients use. Managed execution does not override Claude's
 `plansDirectory`; plan files use Claude's native user-level location so the
 project workspace may reside on any filesystem volume. The managed session
 parser extracts persistent Claude session IDs and yields Claude stream-json

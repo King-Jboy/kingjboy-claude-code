@@ -176,6 +176,10 @@ class Settings(BaseSettings):
     messaging_show_terminal_status: bool = Field(
         default=False, validation_alias="MESSAGING_SHOW_TERMINAL_STATUS"
     )
+    # Model for Telegram/Discord sessions only; unset keeps the fable tier route.
+    messaging_model: str | None = Field(
+        default=None, validation_alias="MESSAGING_MODEL"
+    )
 
     # ==================== NVIDIA NIM Config ====================
     nvidia_nim_api_keys: str = Field(default="", validation_alias="NVIDIA_NIM_API_KEYS")
@@ -442,6 +446,7 @@ class Settings(BaseSettings):
         "model_opus",
         "model_sonnet",
         "model_haiku",
+        "messaging_model",
         mode="before",
     )
     @classmethod
@@ -536,7 +541,12 @@ class Settings(BaseSettings):
         return ",".join(schemes)
 
     @field_validator(
-        "model", "model_fable", "model_opus", "model_sonnet", "model_haiku"
+        "model",
+        "model_fable",
+        "model_opus",
+        "model_sonnet",
+        "model_haiku",
+        "messaging_model",
     )
     @classmethod
     def validate_model_format(cls, v: str | None) -> str | None:

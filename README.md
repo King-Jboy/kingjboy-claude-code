@@ -716,6 +716,8 @@ Configure integrations from **Admin UI → Messaging**, then click **Validate** 
 | Usage | Behavior |
 | --- | --- |
 | `/stats` | Show session state. |
+| `/model` | List models, or switch the model for chat sessions only (`/model <number or provider/model>`). The choice persists as `MESSAGING_MODEL`; your other clients keep their routes. |
+| `/start`, `/help` | Show the available commands. |
 | Standalone `/stop` | Cancel all work. |
 | Reply with `/stop` | Cancel only the selected request while other queued requests continue. |
 | Standalone `/clear` | Reset all FCC state and remove every tracked message in that chat, including user prompts, voice notes, FCC replies, Telegram's online notice, and the clear command itself. |

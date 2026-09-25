@@ -17,6 +17,7 @@ from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 from free_claude_code.core.trace import trace_event
 
 from .claude import (
+    MANAGED_CLAUDE_MODEL_TIER,
     ManagedClaudeConfig,
     ManagedClaudeParseState,
     ManagedClaudeTaskRequest,
@@ -46,6 +47,7 @@ class ManagedClaudeSession:
         context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW,
         log_raw_cli_diagnostics: bool = False,
         disable_thinking: bool = False,
+        model: str = MANAGED_CLAUDE_MODEL_TIER,
     ):
         self.config = ManagedClaudeConfig(
             workspace_path=os.path.normpath(os.path.abspath(workspace_path)),
@@ -55,6 +57,7 @@ class ManagedClaudeSession:
             auth_token=auth_token,
             context_window=context_window,
             disable_thinking=disable_thinking,
+            model=model,
         )
         self.workspace = self.config.workspace_path
         self.proxy_root_url = self.config.proxy_root_url

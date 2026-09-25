@@ -46,6 +46,7 @@ class ManagedClaudeConfig:
     auth_token: str = ""
     context_window: int = DEFAULT_CLIENT_CONTEXT_WINDOW
     disable_thinking: bool = False
+    model: str = MANAGED_CLAUDE_MODEL_TIER
 
 
 @dataclass(slots=True)
@@ -66,6 +67,7 @@ def build_managed_claude_invocation(
 
     cmd = build_managed_claude_command(
         claude_bin=config.claude_bin,
+        model=config.model,
         session_id=request.session_id,
         fork_session=request.fork_session,
         allowed_dirs=config.allowed_dirs,
@@ -92,7 +94,7 @@ def build_managed_claude_invocation(
             "prompt": request.prompt,
             "cwd": config.workspace_path,
             "claude_binary": config.claude_bin,
-            "managed_model_tier": MANAGED_CLAUDE_MODEL_TIER,
+            "managed_model_tier": config.model,
             "cli_argv": cmd,
         },
     )
@@ -126,6 +128,7 @@ def build_managed_claude_env(
 def build_managed_claude_command(
     *,
     claude_bin: str,
+    model: str = MANAGED_CLAUDE_MODEL_TIER,
     session_id: str | None,
     fork_session: bool,
     allowed_dirs: list[str],
@@ -146,7 +149,7 @@ def build_managed_claude_command(
             cmd.append("--fork-session")
         cmd += [
             "--model",
-            MANAGED_CLAUDE_MODEL_TIER,
+            model,
             "-p",
             "--output-format",
             "stream-json",
@@ -157,7 +160,7 @@ def build_managed_claude_command(
         cmd = [
             claude_bin,
             "--model",
-            MANAGED_CLAUDE_MODEL_TIER,
+            model,
             "-p",
             "--output-format",
             "stream-json",

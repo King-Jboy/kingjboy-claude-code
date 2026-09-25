@@ -2,12 +2,14 @@
 
 import asyncio
 import uuid
+from collections.abc import Callable
 
 from loguru import logger
 
 from free_claude_code.cli.claude_env import CLAUDE_BINARY_NAME
 from free_claude_code.config.constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 
+from .claude import MANAGED_CLAUDE_MODEL_TIER
 from .session import ManagedClaudeSession
 
 
@@ -31,6 +33,7 @@ class ManagedClaudeSessionManager:
         log_raw_cli_diagnostics: bool = False,
         log_messaging_error_details: bool = False,
         disable_thinking: bool = False,
+        model_provider: Callable[[], str | None] | None = None,
     ):
         """
         Initialize the session manager.
@@ -49,6 +52,8 @@ class ManagedClaudeSessionManager:
         self._log_raw_cli_diagnostics = log_raw_cli_diagnostics
         self._log_messaging_error_details = log_messaging_error_details
         self._disable_thinking = disable_thinking
+        # Read per session so a /model switch applies to the next turn.
+        self._model_provider = model_provider
 
         self._sessions: dict[str, ManagedClaudeSession] = {}
         self._pending_sessions: dict[str, ManagedClaudeSession] = {}
@@ -119,6 +124,8 @@ class ManagedClaudeSessionManager:
                 context_window=self.context_window,
                 log_raw_cli_diagnostics=self._log_raw_cli_diagnostics,
                 disable_thinking=self._disable_thinking,
+                model=(self._model_provider() if self._model_provider else None)
+                or MANAGED_CLAUDE_MODEL_TIER,
             )
             self._pending_sessions[temp_id] = new_session
 

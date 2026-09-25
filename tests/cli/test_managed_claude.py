@@ -1,3 +1,4 @@
+import dataclasses
 import os
 
 import pytest
@@ -120,6 +121,23 @@ def test_managed_claude_builds_resume_and_fork_commands() -> None:
         "-p",
     )
     assert "--fork-session" in fork.argv
+
+
+def test_managed_claude_uses_the_configured_messaging_model() -> None:
+    config = dataclasses.replace(_config(), model="open_router/vendor/model")
+
+    invocation = build_managed_claude_invocation(
+        config=config,
+        request=ManagedClaudeTaskRequest(prompt="hello"),
+        base_env={},
+    )
+
+    assert invocation.argv[:4] == (
+        "claude",
+        "--model",
+        "open_router/vendor/model",
+        "-p",
+    )
 
 
 @pytest.mark.parametrize("session_id", [None, "sess_1"])

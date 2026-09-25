@@ -495,6 +495,7 @@ class ApplicationRuntime:
             log_raw_cli_diagnostics=settings.log_raw_cli_diagnostics,
             log_messaging_error_details=settings.log_messaging_error_details,
             disable_thinking=not settings.messaging_show_thinking,
+            model_provider=lambda: self.settings.messaging_model,
         )
         session_store = messaging_session.SessionStore(
             storage_path=os.path.join(data_path, "sessions.json"),
@@ -515,7 +516,11 @@ class ApplicationRuntime:
             show_tool_results=settings.messaging_show_tools,
             show_subagents=settings.messaging_show_tools,
             show_terminal_status=settings.messaging_show_terminal_status,
-            get_current_model=lambda: self.settings.model_fable or self.settings.model,
+            get_current_model=lambda: (
+                self.settings.messaging_model
+                or self.settings.model_fable
+                or self.settings.model
+            ),
             get_available_models=self._get_messaging_available_models,
             set_model=self._set_messaging_model,
         )
@@ -549,8 +554,10 @@ class ApplicationRuntime:
         return models
 
     async def _set_messaging_model(self, model_name: str) -> None:
-        updates: dict[str, Any] = {"model": model_name, "model_fable": model_name}
-        await self.apply_admin_config(updates)
+        """Persist a model for messaging sessions only, leaving other clients' routes."""
+        result = await self.apply_admin_config({"MESSAGING_MODEL": model_name})
+        if not result.get("applied"):
+            raise ValueError("; ".join(result.get("errors") or ["update rejected"]))
 
     async def _close_owned_resources(self) -> bool:
         if not await self._cleanup_messaging():

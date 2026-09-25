@@ -276,13 +276,15 @@ async def handle_model_command(
             if m.lower() == arg.lower():
                 chosen = m
                 break
+        # A full provider/model ref means exactly that model; only a short name
+        # is matched by substring, so "…/v4-pro" never becomes "…/v4-pro-0813".
+        if chosen is None and "/" in arg:
+            chosen = arg
         if chosen is None:
             for m in available:
                 if arg.lower() in m.lower():
                     chosen = m
                     break
-        if chosen is None and "/" in arg:
-            chosen = arg
 
     if chosen is None:
         msg_id = await handler.outbound.queue_send_message(
