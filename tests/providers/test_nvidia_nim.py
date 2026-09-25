@@ -369,6 +369,65 @@ async def test_stream_response_text(nim_provider):
         assert "Hello World" in text_content
 
 
+async def _single_stop_chunk():
+    chunk = MagicMock()
+    chunk.choices = [
+        MagicMock(
+            delta=MagicMock(content="ok", reasoning_content=""), finish_reason="stop"
+        )
+    ]
+    chunk.usage = MagicMock(completion_tokens=1)
+    yield chunk
+
+
+@pytest.mark.asyncio
+async def test_stream_reuses_the_body_preflight_converted(nim_provider):
+    """A preflighted request is converted once, not again when it streams."""
+    req = make_request()
+    with (
+        patch.object(
+            nim_provider,
+            "_build_request_body",
+            wraps=nim_provider._build_request_body,
+        ) as build,
+        patch.object(
+            nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create,
+    ):
+        mock_create.return_value = _single_stop_chunk()
+        nim_provider.preflight_stream(req, reasoning=REASONING_OFF)
+        _ = [
+            e async for e in nim_provider.stream_response(req, reasoning=REASONING_OFF)
+        ]
+
+    assert build.call_count == 1
+    assert mock_create.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_rebuilds_the_body_for_a_different_reasoning_policy(
+    nim_provider,
+):
+    """A preflight body is only reused for the policy it was converted under."""
+    req = make_request()
+    with (
+        patch.object(
+            nim_provider,
+            "_build_request_body",
+            wraps=nim_provider._build_request_body,
+        ) as build,
+        patch.object(
+            nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create,
+    ):
+        mock_create.return_value = _single_stop_chunk()
+        nim_provider.preflight_stream(req, reasoning=REASONING_OFF)
+        _ = [e async for e in nim_provider.stream_response(req, reasoning=REASONING_ON)]
+
+    assert build.call_count == 2
+    assert build.call_args.kwargs["reasoning"] is REASONING_ON
+
+
 @pytest.mark.asyncio
 async def test_stream_response_thinking_reasoning_content(nim_provider):
     """Test streaming with native reasoning_content."""

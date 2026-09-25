@@ -1,5 +1,6 @@
 """The shared OpenAI-chat provider owns explicit request preflight."""
 
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 
 import pytest
@@ -14,6 +15,7 @@ from free_claude_code.providers.openai_chat import OpenAIChatProvider
 class RecordingOpenAIProvider(OpenAIChatProvider):
     def __init__(self) -> None:
         self.build_calls: list[tuple[MessagesRequest, ReasoningPolicy]] = []
+        self._prepared_bodies = OrderedDict()
 
     def _build_request_body(
         self,

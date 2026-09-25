@@ -3,6 +3,7 @@
 import asyncio
 import sys
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -131,6 +132,10 @@ def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> f
 # the client needs to hear something.
 _KEEPALIVE = object()
 
+# Preflighted bodies whose stream never started (the client left, or a later
+# preflight check rejected the request) are evicted beyond this many.
+_PREPARED_BODY_LIMIT = 16
+
 
 async def _chunks_with_keepalive(
     stream: Any,
@@ -248,6 +253,11 @@ class OpenAIChatProvider(BaseProvider):
         # Learned per-model output-token caps from upstream 400 rejections, so
         # later requests clamp proactively instead of paying the 400 each time.
         self._model_output_caps: dict[str, int] = {}
+        # Bodies converted by preflight_stream, keyed by the request object, so
+        # the stream that follows reuses the conversion instead of repeating it.
+        self._prepared_bodies: OrderedDict[
+            int, tuple[MessagesRequest, ReasoningPolicy, dict[str, Any]]
+        ] = OrderedDict()
         self._admission = admission
         self._default_headers = default_headers
         self._client = self._build_client(api_key_provider or self._api_key)
@@ -390,7 +400,23 @@ class OpenAIChatProvider(BaseProvider):
         reasoning: ReasoningPolicy = DEFAULT_REASONING_POLICY,
     ) -> None:
         """Validate OpenAI-chat request conversion before streaming."""
-        self._build_request_body(request, reasoning=reasoning)
+        body = self._build_request_body(request, reasoning=reasoning)
+        # The entry holds the request, so its id cannot be reused while cached.
+        self._prepared_bodies[id(request)] = (request, reasoning, body)
+        while len(self._prepared_bodies) > _PREPARED_BODY_LIMIT:
+            self._prepared_bodies.popitem(last=False)
+
+    def _stream_request_body(
+        self,
+        request: MessagesRequest,
+        *,
+        reasoning: ReasoningPolicy,
+    ) -> dict[str, Any]:
+        """Return the preflighted body for this request, or convert it now."""
+        prepared = self._prepared_bodies.pop(id(request), None)
+        if prepared is not None and prepared[1] == reasoning:
+            return prepared[2]
+        return self._build_request_body(request, reasoning=reasoning)
 
     def _handle_extra_reasoning(
         self, delta: Any, ledger: AnthropicStreamLedger, *, output_reasoning: bool
@@ -820,7 +846,7 @@ class _OpenAIChatStreamRunner:
             for event in events:
                 yield from hold_event(event)
 
-        body = self._provider._build_request_body(
+        body = self._provider._stream_request_body(
             self._request,
             reasoning=self._reasoning,
         )
