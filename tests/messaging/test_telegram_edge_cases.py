@@ -282,6 +282,40 @@ async def test_with_retry_drops_parse_mode_on_markdown_entity_error():
 
 
 @pytest.mark.asyncio
+async def test_with_retry_handles_real_bad_request_errors_without_retrying(
+    monkeypatch,
+):
+    # python-telegram-bot raises BadRequest, a NetworkError subclass, for both
+    # of these; they must not go through the network retry-and-raise path.
+    from telegram.error import BadRequest
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with patch(
+        "free_claude_code.messaging.platforms.telegram.TELEGRAM_AVAILABLE", True
+    ):
+        platform = _telegram_runtime(bot_token="t")
+        calls: list[object] = []
+
+        async def _markdown(parse_mode=None):
+            calls.append(parse_mode)
+            if len(calls) == 1:
+                raise BadRequest("Can't parse entities: character '.' is reserved")
+            return "ok"
+
+        async def _gone():
+            raise BadRequest("Message to edit not found")
+
+        assert (
+            await platform.outbound._with_retry(_markdown, parse_mode="MarkdownV2")
+            == "ok"
+        )
+        assert calls == ["MarkdownV2", None]
+        assert await platform.outbound._with_retry(_gone) is None
+        sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_with_retry_can_raise_known_message_errors_for_bulk_fallback():
     with patch(
         "free_claude_code.messaging.platforms.telegram.TELEGRAM_AVAILABLE", True

@@ -12,10 +12,14 @@ from .outbox import PlatformOutbox
 
 TELEGRAM_DELETE_MESSAGES_BATCH_SIZE = 100
 
+TelegramBadRequest: type[BaseException]
 TelegramNetworkError: type[BaseException]
 TelegramRetryAfter: type[BaseException]
 TelegramBaseError: type[BaseException]
 try:
+    from telegram.error import (
+        BadRequest as _TelegramBadRequest,
+    )
     from telegram.error import (
         NetworkError as _TelegramNetworkError,
     )
@@ -26,10 +30,15 @@ try:
         TelegramError as _TelegramBaseError,
     )
 
+    TelegramBadRequest = _TelegramBadRequest
     TelegramNetworkError = _TelegramNetworkError
     TelegramRetryAfter = _TelegramRetryAfter
     TelegramBaseError = _TelegramBaseError
 except ImportError:
+
+    class TelegramBadRequest(Exception):  # never raised without the SDK
+        pass
+
     TelegramNetworkError = TimeoutError
     TelegramRetryAfter = TimeoutError
     TelegramBaseError = Exception
@@ -66,6 +75,12 @@ class TelegramMessenger:
         for attempt in range(max_retries):
             try:
                 return await func(*args, **kwargs)
+            except TelegramBadRequest as e:
+                # BadRequest subclasses NetworkError in python-telegram-bot, but
+                # it is a request error: retrying the same call cannot succeed.
+                return await self._recover_from_api_error(
+                    e, func, args, kwargs, suppress_known_message_errors
+                )
             except (TimeoutError, TelegramNetworkError) as e:
                 if "Message is not modified" in str(e):
                     if suppress_known_message_errors:
@@ -100,30 +115,39 @@ class TelegramMessenger:
                 await asyncio.sleep(wait_secs)
                 return await func(*args, **kwargs)
             except TelegramBaseError as e:
-                err_lower = str(e).lower()
-                if "message is not modified" in err_lower:
-                    if suppress_known_message_errors:
-                        return None
-                    raise
-                if any(
-                    x in err_lower
-                    for x in [
-                        "message to edit not found",
-                        "message to delete not found",
-                        "message can't be deleted",
-                        "message can't be edited",
-                        "not enough rights to delete",
-                    ]
-                ):
-                    if suppress_known_message_errors:
-                        return None
-                    raise
-                if "Can't parse entities" in str(e) and kwargs.get("parse_mode"):
-                    logger.warning("Markdown failed, retrying without parse_mode")
-                    kwargs["parse_mode"] = None
-                    return await func(*args, **kwargs)
-                raise
+                return await self._recover_from_api_error(
+                    e, func, args, kwargs, suppress_known_message_errors
+                )
         return None
+
+    @staticmethod
+    async def _recover_from_api_error(
+        error: BaseException,
+        func: Callable[..., Awaitable[Any]],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        suppress_known_message_errors: bool,
+    ) -> Any:
+        """Suppress known message errors or retry once without Markdown."""
+        err_lower = str(error).lower()
+        if "message is not modified" in err_lower or any(
+            x in err_lower
+            for x in [
+                "message to edit not found",
+                "message to delete not found",
+                "message can't be deleted",
+                "message can't be edited",
+                "not enough rights to delete",
+            ]
+        ):
+            if suppress_known_message_errors:
+                return None
+            raise error
+        if "Can't parse entities" in str(error) and kwargs.get("parse_mode"):
+            logger.warning("Markdown failed, retrying without parse_mode")
+            kwargs["parse_mode"] = None
+            return await func(*args, **kwargs)
+        raise error
 
     async def send_message(
         self,
