@@ -6,7 +6,6 @@ from loguru import logger
 
 from free_claude_code.core.trace import trace_event
 
-from .cli_event_constants import STATUS_MESSAGE_PREFIXES
 from .command_context import MessagingCommandContext
 from .command_dispatcher import (
     dispatch_command,
@@ -65,10 +64,6 @@ class MessagingTurnIntake:
         cmd_base = parse_command_base(incoming.text)
 
         if await dispatch_command(self._command_context, incoming, cmd_base):
-            return
-
-        text = incoming.text or ""
-        if any(text.startswith(p) for p in STATUS_MESSAGE_PREFIXES):
             return
 
         reply_target: ReplyTarget | None = None

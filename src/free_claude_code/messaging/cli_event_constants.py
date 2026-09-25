@@ -3,20 +3,6 @@
 from collections.abc import Callable
 from typing import Any
 
-# Status message prefixes used to filter our own messages (ignore echo)
-STATUS_MESSAGE_PREFIXES = (
-    "⏳",
-    "💭",
-    "🔧",
-    "✅",
-    "❌",
-    "🚀",
-    "🤖",
-    "📋",
-    "📊",
-    "🔄",
-)
-
 # Event types that update the transcript (frozenset for O(1) membership)
 TRANSCRIPT_EVENT_TYPES = frozenset(
     {

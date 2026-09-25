@@ -657,12 +657,17 @@ async def test_model_switch_failure_logs_only_the_exception_type(
 
 
 @pytest.mark.asyncio
-async def test_status_echo_is_filtered(
+async def test_prompt_starting_with_a_status_emoji_is_still_a_prompt(
     handler, mock_platform, incoming_message_factory
 ):
-    await handler.handle_message(incoming_message_factory(text="⏳ Thinking..."))
+    # Only the authorized user reaches this point: Telegram never delivers a
+    # bot its own messages and Discord drops bot authors, so an emoji-prefixed
+    # message is the user's own prompt, not a status echo to ignore.
+    await handler.handle_message(
+        incoming_message_factory(text="✅ done, now run the tests")
+    )
 
-    mock_platform.queue_send_message.assert_not_awaited()
+    mock_platform.queue_send_message.assert_awaited()
 
 
 @pytest.mark.asyncio
