@@ -2579,3 +2579,15 @@ async def test_cancelled_reply_clear_finishes_voice_only_owner_after_lock_wait(
         reason=CancellationReason.CLEAR,
     )
     mock_platform.queue_edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/help", "/start"])
+async def test_help_and_start_list_the_commands(
+    handler, mock_platform, incoming_message_factory, command
+):
+    await handler.handle_message(incoming_message_factory(text=command))
+
+    text = mock_platform.queue_send_message.call_args.args[1]
+    for listed in ("/model", "/stop", "/clear", "/stats", "/help"):
+        assert listed in text

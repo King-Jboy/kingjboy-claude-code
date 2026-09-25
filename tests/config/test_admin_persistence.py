@@ -283,3 +283,21 @@ def test_render_without_unmanaged_values_adds_no_section() -> None:
     rendered = render_env_file({"GROQ_API_KEY": "groq-key"})
 
     assert "Not managed by the Admin UI" not in rendered
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "MESSAGING_MODEL",
+        "MESSAGING_SHOW_THINKING",
+        "MESSAGING_SHOW_TOOLS",
+        "MESSAGING_SHOW_TERMINAL_STATUS",
+    ],
+)
+def test_messaging_settings_are_in_admin_and_the_env_template(key: str) -> None:
+    # ARCHITECTURE "Add An Admin Setting": every setting users are told to set
+    # lives in the manifest and in .env.example.
+    from free_claude_code.config.admin.sources import template_values
+
+    assert key in FIELD_BY_KEY
+    assert key in template_values()

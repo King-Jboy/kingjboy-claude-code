@@ -387,6 +387,39 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         ),
     ),
     ConfigFieldSpec(
+        "MESSAGING_SHOW_THINKING",
+        "Show Thinking",
+        "messaging",
+        "boolean",
+        settings_attr="messaging_show_thinking",
+        default="false",
+        description=(
+            "Show Claude's thinking in chat. When off, managed sessions also "
+            "run with thinking disabled."
+        ),
+        session_sensitive=True,
+    ),
+    ConfigFieldSpec(
+        "MESSAGING_SHOW_TOOLS",
+        "Show Tools",
+        "messaging",
+        "boolean",
+        settings_attr="messaging_show_tools",
+        default="false",
+        description="Show tool calls, tool results and subagents in chat.",
+        session_sensitive=True,
+    ),
+    ConfigFieldSpec(
+        "MESSAGING_SHOW_TERMINAL_STATUS",
+        "Show Completion Status",
+        "messaging",
+        "boolean",
+        settings_attr="messaging_show_terminal_status",
+        default="false",
+        description="Append a Complete or Error status line when a turn ends.",
+        session_sensitive=True,
+    ),
+    ConfigFieldSpec(
         "MESSAGING_RATE_LIMIT",
         "Messaging Rate Limit",
         "messaging",

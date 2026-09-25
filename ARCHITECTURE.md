@@ -1411,11 +1411,16 @@ cannot restore a branch removed by `/clear`.
 JSON events into low-level transcript events.
 [messaging/transcript/](src/free_claude_code/messaging/transcript/) owns transcript assembly and
 rendering: open content-block tracking, Task/subagent display state, segment
-models, render context, and truncation. Platform markdown details stay in
+models, render context, and truncation. `MESSAGING_SHOW_THINKING`,
+`MESSAGING_SHOW_TOOLS`, and `MESSAGING_SHOW_TERMINAL_STATUS` filter at apply
+time, so hidden events never become segments; a turn that ends with nothing
+visible still records a `Done.` line, and error events always stay visible.
+Truncation never cuts inside an escape pair. Platform markdown details stay in
 [messaging/rendering/](src/free_claude_code/messaging/rendering/).
 
 [messaging/command_context.py](src/free_claude_code/messaging/command_context.py) defines the typed
-dependency surface for `/stop`, `/clear`, and `/stats`; commands should not
+dependency surface for `/stop`, `/clear`, `/stats`, `/model` (current,
+available, and set-model callbacks), and `/start`/`/help`; commands should not
 depend on the concrete workflow object or on platform SDK runtimes.
 
 [messaging/trees/runtime.py](src/free_claude_code/messaging/trees/runtime.py) contains the
