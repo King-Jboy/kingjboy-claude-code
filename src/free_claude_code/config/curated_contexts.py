@@ -159,7 +159,6 @@ def curated_context_window(provider: str, model: str) -> int | None:
                 best_value = value
         if best_value is not None:
             return best_value
-        return None
 
     normalized = model.lower()
     for family, window in _KNOWN_MODEL_FAMILIES:

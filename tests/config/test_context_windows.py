@@ -180,3 +180,11 @@ def test_a_blank_env_value_means_resolve_rather_than_reject() -> None:
     # The Admin number field posts "" when cleared, which must not fail
     # validation the way a blank int normally would.
     assert _settings(CLIENT_CONTEXT_WINDOW="").client_context_window is None
+
+
+def test_a_provider_table_miss_still_falls_back_to_the_model_family() -> None:
+    # The docstring promises the family fallback for "no entry or no match";
+    # a provider with a table but no matching id returned None instead.
+    from free_claude_code.config.curated_contexts import curated_context_window
+
+    assert curated_context_window("deepseek", "vendor/qwen-experimental") == 131_072
