@@ -7,8 +7,10 @@ import pytest
 from loguru import logger
 
 from free_claude_code.config.logging_config import configure_logging
+from free_claude_code.core import trace as trace_module
 from free_claude_code.core.trace import (
     TRACE_PAYLOAD_BINDING,
+    provider_chat_body_snapshot,
     trace_event,
     traced_async_stream,
 )
@@ -78,6 +80,45 @@ def test_trace_payload_excluded_from_default_info_logs(tmp_path) -> None:
 
     rows = _json_log_rows(log_file)
     assert [row["message"] for row in rows] == ["visible lifecycle event"]
+
+
+def test_trace_payload_is_not_built_when_debug_is_off(tmp_path, monkeypatch) -> None:
+    configure_logging(str(tmp_path / "info.log"), force=True)
+    calls = 0
+    real_sanitize = trace_module.sanitize_trace_value
+
+    def counting_sanitize(obj, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_sanitize(obj, **kwargs)
+
+    monkeypatch.setattr(trace_module, "sanitize_trace_value", counting_sanitize)
+
+    trace_event(
+        stage="provider",
+        event="provider.request.sent",
+        source="unit",
+        body=provider_chat_body_snapshot({"model": "m", "messages": [{"a": 1}]}),
+    )
+
+    assert calls == 0
+
+
+def test_body_snapshot_is_sanitized_when_traced(tmp_path) -> None:
+    log_file = str(tmp_path / "debug.log")
+    configure_logging(log_file, force=True, level="DEBUG")
+
+    trace_event(
+        stage="provider",
+        event="provider.request.sent",
+        source="unit",
+        body=provider_chat_body_snapshot(
+            {"model": "m", "messages": [{"role": "user", "api_key": "sk-secret"}]}
+        ),
+    )
+
+    row = _json_log_rows(log_file)[-1]
+    assert row["body"]["messages"] == [{"role": "user", "api_key": "<redacted>"}]
 
 
 def test_sanitize_masks_nested_api_key_strings() -> None:

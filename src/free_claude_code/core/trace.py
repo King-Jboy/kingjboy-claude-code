@@ -96,16 +96,18 @@ def sanitize_trace_value(
 
 
 def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
-    """Emit one structured DEBUG trace row merged into JSON by the log sink."""
-    payload = sanitize_trace_value(
-        {
-            "stage": stage,
-            "event": event,
-            "source": source,
-            **fields,
-        },
-    )
-    logger.bind(trace_payload=payload).debug("TRACE {}", event)
+    """Emit one structured DEBUG trace row merged into JSON by the log sink.
+
+    Loguru runs patchers only for records that pass its level filter, so the
+    sanitized copy is never built while DEBUG is off.
+    """
+
+    def attach_payload(record: Any) -> None:
+        record["extra"][TRACE_PAYLOAD_BINDING] = sanitize_trace_value(
+            {"stage": stage, "event": event, "source": source, **fields}
+        )
+
+    logger.patch(attach_payload).debug("TRACE {}", event)
 
 
 async def close_stream_input(
@@ -237,7 +239,9 @@ async def traced_async_stream(
 
 
 def provider_chat_body_snapshot(body: Mapping[str, Any]) -> dict[str, Any]:
-    """Sanitized OpenAI-compat chat body subset for traces (conversation text verbatim)."""
+    """OpenAI-compat chat body subset for traces (conversation text verbatim).
+
+    ``trace_event`` sanitizes it, and only when the trace is emitted.
+    """
     keys = ("model", "messages", "tools", "tool_choice", "temperature", "max_tokens")
-    snap = {k: body[k] for k in keys if k in body and body[k] is not None}
-    return sanitize_trace_value(snap)
+    return {k: body[k] for k in keys if k in body and body[k] is not None}
