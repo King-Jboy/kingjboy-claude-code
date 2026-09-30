@@ -1181,7 +1181,11 @@ class _OpenAIChatStreamRunner:
                 raise
             except Exception as error:
                 retry_body = None
-                if attempt is not None and not attempt.accepted:
+                if (
+                    attempt is not None
+                    and not attempt.accepted
+                    and retry_session.can_attempt
+                ):
                     retry_body = self._provider._get_retry_request_body(error, body)
                 if retry_body is not None and attempt is not None:
                     await attempt.retry_immediately()

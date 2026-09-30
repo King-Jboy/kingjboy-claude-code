@@ -385,7 +385,14 @@ async def _single_stop_chunk():
 async def test_stream_logs_one_timing_line_per_request(nim_provider):
     """Each request logs where its time went, at INFO, once it finishes."""
     lines: list[str] = []
-    sink = logger.add(lines.append, level="INFO", format="{level} {message}")
+    # The caplog bridge can echo records back into loguru; count only the
+    # original record.
+    sink = logger.add(
+        lines.append,
+        level="INFO",
+        format="{level} {message}",
+        filter=lambda record: record["function"] == "run_with_timing",
+    )
     try:
         with patch.object(
             nim_provider._client.chat.completions, "create", new_callable=AsyncMock
