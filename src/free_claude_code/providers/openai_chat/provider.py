@@ -4,8 +4,15 @@ import asyncio
 import sys
 import uuid
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from contextlib import suppress
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+)
+from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -778,7 +785,7 @@ class OpenAIChatProvider(BaseProvider):
             response_model=response_model,
             reasoning=reasoning,
         )
-        return runner.run()
+        return runner.run_with_timing()
 
 
 def _reserved_anthropic_tool_ids(request: MessagesRequest) -> frozenset[str]:
@@ -828,8 +835,54 @@ class _OpenAIChatStreamRunner:
             reserved_tool_ids=_reserved_anthropic_tool_ids(request),
             record_extra_content=provider._record_tool_call_extra_content,
         )
+        # Filled in by run() for the timing line.
+        self._retry_session: ProviderRetrySession | None = None
+        self._downstream_model: object = None
+        self._headers_at: float | None = None
 
-    async def run(self) -> AsyncIterator[str]:
+    async def run_with_timing(self) -> AsyncIterator[str]:
+        """Run the stream, then log one INFO line with where its time went."""
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        first_token: float | None = None
+        first_answer: float | None = None
+        outcome = "cancelled"
+        try:
+            async with aclosing(self.run()) as events:
+                async for event in events:
+                    if "content_block_delta" in event:
+                        now = loop.time()
+                        if first_token is None:
+                            first_token = now
+                        if first_answer is None and (
+                            '"text_delta"' in event or '"input_json_delta"' in event
+                        ):
+                            first_answer = now
+                    yield event
+            outcome = "completed"
+        except Exception as error:
+            outcome = type(error).__name__
+            raise
+        finally:
+
+            def since_start(moment: float | None) -> str:
+                return "-" if moment is None else f"{moment - started:.1f}s"
+
+            logger.info(
+                "{}_REQUEST: request_id={} model={} outcome={} attempts={} "
+                "headers={} first_token={} first_answer={} total={}",
+                self._provider._provider_name,
+                self._request_id,
+                self._downstream_model,
+                outcome,
+                self._retry_session.attempts_started if self._retry_session else 0,
+                since_start(self._headers_at),
+                since_start(first_token),
+                since_start(first_answer),
+                since_start(loop.time()),
+            )
+
+    async def run(self) -> AsyncGenerator[str]:
         """Convert the upstream OpenAI-chat stream into Anthropic SSE."""
         tag = self._provider._provider_name
         req_tag = f" request_id={self._request_id}" if self._request_id else ""
@@ -838,6 +891,7 @@ class _OpenAIChatStreamRunner:
         retry_session = self._provider._admission.new_retry_session(
             request_id=self._request_id
         )
+        self._retry_session = retry_session
 
         def hold_event(event: str) -> Iterator[str]:
             yield from recovery.push(event)
@@ -851,6 +905,7 @@ class _OpenAIChatStreamRunner:
             reasoning=self._reasoning,
         )
         request_stream_usage(body)
+        self._downstream_model = body.get("model")
         output_reasoning = self._reasoning.output_enabled
         trace_event(
             stage="provider",
@@ -922,6 +977,8 @@ class _OpenAIChatStreamRunner:
                     raise
                 stream, body, attempt = create_task.result()
                 stream_opened = True
+                if self._headers_at is None:
+                    self._headers_at = asyncio.get_running_loop().time()
                 tool_argument_aliases = self._provider._tool_argument_aliases(body)
                 async for chunk in _chunks_with_keepalive(
                     stream,

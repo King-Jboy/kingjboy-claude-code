@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import openai
 import pytest
 from httpx2 import Request, Response
+from loguru import logger
 
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.config.provider_catalog import NVIDIA_NIM_DEFAULT_BASE
@@ -378,6 +379,41 @@ async def _single_stop_chunk():
     ]
     chunk.usage = MagicMock(completion_tokens=1)
     yield chunk
+
+
+@pytest.mark.asyncio
+async def test_stream_logs_one_timing_line_per_request(nim_provider):
+    """Each request logs where its time went, at INFO, once it finishes."""
+    lines: list[str] = []
+    sink = logger.add(lines.append, level="INFO", format="{level} {message}")
+    try:
+        with patch.object(
+            nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = _single_stop_chunk()
+            _ = [
+                e
+                async for e in nim_provider.stream_response(
+                    make_request(), request_id="req_timing"
+                )
+            ]
+    finally:
+        logger.remove(sink)
+
+    timing = [line for line in lines if "NIM_REQUEST" in line]
+    assert len(timing) == 1
+    assert timing[0].startswith("INFO ")
+    for field in (
+        "request_id=req_timing",
+        "outcome=completed",
+        "attempts=1",
+        "headers=",
+        "first_token=",
+        "first_answer=",
+        "total=",
+    ):
+        assert field in timing[0]
+    assert "first_answer=-" not in timing[0]
 
 
 @pytest.mark.asyncio
