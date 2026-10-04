@@ -33,7 +33,9 @@ from .env_files import (
 from .model_refs import (
     ModelCatalogScope,
     ModelCatalogView,
+    configured_chat_model_refs,
     parse_model_ref_list,
+    pinned_model_refs,
 )
 from .nim import NimSettings
 from .provider_catalog import (
@@ -345,6 +347,15 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
         validation_alias="HTTP_READ_TIMEOUT",
     )
+    # NVIDIA NIM sends a tool call only once it is complete, so writing a large
+    # file is minutes of silence that HTTP_READ_TIMEOUT would cut off. The
+    # effective limit is the smaller of this and PROVIDER_PROGRESS_TIMEOUT.
+    nvidia_nim_read_timeout: float = Field(
+        default=540.0,
+        gt=0,
+        allow_inf_nan=False,
+        validation_alias="NVIDIA_NIM_READ_TIMEOUT",
+    )
     http_write_timeout: float = Field(
         default=10.0,
         gt=0,
@@ -624,7 +635,27 @@ class Settings(BaseSettings):
                 f"HTTP_READ_TIMEOUT ({self.http_read_timeout:g}s) "
                 "so streaming recovery can finish."
             )
+        # Checked only when set explicitly: the default must never stop an
+        # existing configuration from starting.
+        if (
+            "nvidia_nim_read_timeout" in self.model_fields_set
+            and self.provider_progress_timeout <= self.nvidia_nim_read_timeout
+            and self._routes_to_nvidia_nim()
+        ):
+            raise ValueError(
+                "PROVIDER_PROGRESS_TIMEOUT must be greater than "
+                f"NVIDIA_NIM_READ_TIMEOUT ({self.nvidia_nim_read_timeout:g}s) "
+                "while an NVIDIA NIM model is configured."
+            )
         return self
+
+    def _routes_to_nvidia_nim(self) -> bool:
+        return any(
+            reference.provider_id == "nvidia_nim"
+            for reference in configured_chat_model_refs(self)
+        ) or any(
+            reference.startswith("nvidia_nim/") for reference in pinned_model_refs(self)
+        )
 
     @classmethod
     def settings_customise_sources(

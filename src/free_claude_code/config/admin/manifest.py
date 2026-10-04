@@ -324,6 +324,14 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         default="120",
     ),
     ConfigFieldSpec(
+        "NVIDIA_NIM_READ_TIMEOUT",
+        "NVIDIA NIM Read Timeout",
+        "runtime",
+        "number",
+        settings_attr="nvidia_nim_read_timeout",
+        default="540",
+    ),
+    ConfigFieldSpec(
         "HTTP_WRITE_TIMEOUT",
         "HTTP Write Timeout",
         "runtime",

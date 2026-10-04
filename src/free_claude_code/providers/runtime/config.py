@@ -196,7 +196,11 @@ def build_provider_config(
         )
     proxy = string_setting(settings, descriptor.proxy_attr)
     rate_limit, rate_window = resolve_rate_policy(descriptor, settings)
-    http_read_timeout = settings.http_read_timeout
+    http_read_timeout = (
+        settings.nvidia_nim_read_timeout
+        if descriptor.provider_id == "nvidia_nim"
+        else settings.http_read_timeout
+    )
     key_rate_limit: int | None = None
     if pool_settings := _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id):
         key_rate_limit = int(

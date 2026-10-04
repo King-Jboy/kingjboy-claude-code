@@ -1356,6 +1356,59 @@ def test_nim_route_keeps_its_configured_progress_timeout(
     assert settings.provider_progress_timeout == 300
 
 
+def test_nim_read_timeout_defaults_to_nine_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.delenv("NVIDIA_NIM_READ_TIMEOUT", raising=False)
+
+    assert Settings(_env_file=None).nvidia_nim_read_timeout == 540
+
+
+def test_explicit_nim_read_timeout_must_stay_below_progress_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
+    monkeypatch.setenv("PINNED_MODELS", "[]")
+    monkeypatch.setenv("NVIDIA_NIM_READ_TIMEOUT", "900")
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "600")
+
+    with pytest.raises(ValidationError, match="NVIDIA_NIM_READ_TIMEOUT"):
+        Settings(_env_file=None)
+
+
+def test_explicit_nim_read_timeout_is_not_checked_without_a_nim_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("MODEL", "open_router/test-model")
+    monkeypatch.setenv("PINNED_MODELS", "[]")
+    for name in ("MODEL_FABLE", "MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NVIDIA_NIM_READ_TIMEOUT", "900")
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "600")
+
+    assert Settings(_env_file=None).nvidia_nim_read_timeout == 900
+
+
+def test_default_nim_read_timeout_never_blocks_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An existing config with a short progress timeout must keep starting;
+    # the shorter of the two limits simply applies.
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
+    monkeypatch.delenv("NVIDIA_NIM_READ_TIMEOUT", raising=False)
+    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "300")
+
+    assert Settings(_env_file=None).provider_progress_timeout == 300
+
+
 def test_openrouter_route_keeps_its_configured_progress_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

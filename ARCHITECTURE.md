@@ -799,9 +799,14 @@ closes whichever stream loses.
 NIM reasoning budget control is also treated as a provider-owned best-effort
 downgrade: if an upstream NIM deployment rejects explicit budget control, FCC
 retries without the budget while preserving thinking enablement.
+NIM reads use their own `NVIDIA_NIM_READ_TIMEOUT` (default 540 s) instead of
+`HTTP_READ_TIMEOUT`: NIM sends a tool call only once the model has finished it,
+so writing a large file is minutes of silence on an open stream (measured:
+67 s for a 150-line file). `PROVIDER_PROGRESS_TIMEOUT` still bounds that silence,
+so the shorter of the two applies.
 NIM withholds response headers while a request waits in the model's queue, so
 a read timeout before any headers means the queue outlasted
-`HTTP_READ_TIMEOUT`. That failure is final and request-local: a retry would
+`NVIDIA_NIM_READ_TIMEOUT`. That failure is final and request-local: a retry would
 rejoin the back of the queue and time out again, and another model's queue says
 nothing about it. Connect timeouts and upstream 5xx responses keep the shared
 retry policy.
