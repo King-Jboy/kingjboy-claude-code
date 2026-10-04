@@ -282,16 +282,31 @@ def test_openai_build_rejects_non_text_inline_system_blocks() -> None:
         build_base_request_body(request)
 
 
-def test_openai_build_rejects_empty_inline_system_content() -> None:
+@pytest.mark.parametrize(
+    "empty_content",
+    [[], "", [{"type": "text", "text": ""}], "\n\n"],
+    ids=["no-blocks", "empty-string", "empty-text-block", "whitespace"],
+)
+def test_openai_build_skips_empty_inline_system_messages(empty_content) -> None:
+    # Claude Code sends empty inline system messages; they carry nothing, so
+    # they must neither reject the request nor add a blank user message.
     request = MessagesRequest.model_validate(
         {
             "model": "model",
-            "messages": [{"role": "system", "content": []}],
+            "messages": [
+                {"role": "user", "content": "Question"},
+                {"role": "system", "content": empty_content},
+                {"role": "assistant", "content": "Answer"},
+            ],
         }
     )
 
-    with pytest.raises(OpenAIConversionError, match="contain text"):
-        build_base_request_body(request)
+    body = build_base_request_body(request)
+
+    assert body["messages"] == [
+        {"role": "user", "content": "Question"},
+        {"role": "assistant", "content": "Answer"},
+    ]
 
 
 # --- Tool Conversion Tests ---

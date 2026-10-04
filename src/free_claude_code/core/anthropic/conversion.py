@@ -556,11 +556,10 @@ class AnthropicToOpenAIConverter:
                 content,
                 context="an inline Anthropic system message",
             )
-            if system_text is None:
-                raise OpenAIConversionError(
-                    "OpenAI chat conversion requires an inline Anthropic system "
-                    "message to contain text."
-                )
+            if system_text is None or not system_text.strip():
+                # Claude Code sends empty inline system messages. They carry
+                # nothing, and a blank user message can be rejected upstream.
+                return []
             # Reserve the downstream system role for request.system at index zero.
             return [_PlainSegment([{"role": "user", "content": system_text}])]
         if role == "assistant" and isinstance(content, list):
