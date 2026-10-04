@@ -14,6 +14,7 @@ from free_claude_code.core.failures import ExecutionFailure
 from free_claude_code.core.reasoning import ReasoningEffort, ReasoningPolicy
 from free_claude_code.providers.admission import UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
 from free_claude_code.providers.base import ProviderConfig
+from free_claude_code.providers.http import maybe_await_aclose
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
 from free_claude_code.providers.nvidia_nim.tool_schema import (
     NIM_TOOL_ARGUMENT_ALIASES_KEY,
@@ -421,6 +422,50 @@ async def test_stream_logs_one_timing_line_per_request(nim_provider):
     ):
         assert field in timing[0]
     assert "first_answer=-" not in timing[0]
+
+
+async def _timing_outcome_when_client_closes_after(nim_provider, marker: str) -> str:
+    lines: list[str] = []
+    sink = logger.add(
+        lines.append,
+        level="INFO",
+        format="{message}",
+        filter=lambda record: record["function"] == "run_with_timing",
+    )
+    try:
+        with patch.object(
+            nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = _single_stop_chunk()
+            stream = nim_provider.stream_response(make_request(), request_id="req_x")
+            async for event in stream:
+                if marker in event:
+                    break
+            await maybe_await_aclose(stream)
+    finally:
+        logger.remove(sink)
+    (line,) = [line for line in lines if "NIM_REQUEST" in line]
+    return line.split("outcome=")[1].split()[0]
+
+
+@pytest.mark.asyncio
+async def test_timing_counts_a_delivered_answer_as_completed(nim_provider):
+    # Claude Code hangs up as soon as message_stop arrives, before the
+    # stream itself ends; the answer was still delivered in full.
+    outcome = await _timing_outcome_when_client_closes_after(
+        nim_provider, "event: message_stop"
+    )
+
+    assert outcome == "completed"
+
+
+@pytest.mark.asyncio
+async def test_timing_counts_a_client_hangup_mid_answer_as_cancelled(nim_provider):
+    outcome = await _timing_outcome_when_client_closes_after(
+        nim_provider, "event: message_start"
+    )
+
+    assert outcome == "cancelled"
 
 
 @pytest.mark.asyncio

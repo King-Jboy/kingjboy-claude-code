@@ -850,6 +850,10 @@ class _OpenAIChatStreamRunner:
         try:
             async with aclosing(self.run()) as events:
                 async for event in events:
+                    if "event: message_stop" in event:
+                        # Clients hang up as soon as this arrives, before the
+                        # stream ends; the answer was delivered in full.
+                        outcome = "completed"
                     if "content_block_delta" in event:
                         now = loop.time()
                         if first_token is None:
