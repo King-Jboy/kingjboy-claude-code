@@ -26,7 +26,6 @@ from free_claude_code.providers.openai_chat import (
     OpenAIChatProvider,
 )
 
-from .degenerate_output import NimDegenerateOutputError, guard_degenerate_output
 from .native_tool_stream import normalize_nim_native_tool_stream
 from .request_options import NIM_REQUEST_POLICY, build_nim_request_body
 from .retry import (
@@ -120,8 +119,8 @@ class NvidiaNimProvider(OpenAIChatProvider):
         return body
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
-        """Repair leaked MiniMax tool markup and catch degenerate "!!!!" output."""
-        return guard_degenerate_output(normalize_nim_native_tool_stream(stream, _body))
+        """Repair model-native MiniMax tool markup leaked by NVIDIA NIM."""
+        return normalize_nim_native_tool_stream(stream, _body)
 
     def _rotate_on_permission_denied(self) -> bool:
         """Treat NIM 403s as model/request denials, not pool-key failures."""
@@ -133,11 +132,6 @@ class NvidiaNimProvider(OpenAIChatProvider):
 
     def _get_retry_request_body(self, error: Exception, body: dict) -> dict | None:
         """Retry once with a downgraded body when NIM rejects a known field."""
-        if isinstance(error, NimDegenerateOutputError):
-            # Nothing reached the client, and the garbage is not caused by the
-            # request, so the same body is retried at once.
-            logger.warning("NIM_STREAM: retrying after degenerate '!!!!' output")
-            return body
         status_code = getattr(error, "status_code", None)
         bad_request_like = isinstance(error, openai.BadRequestError) or (
             status_code == 400
@@ -194,18 +188,6 @@ class NvidiaNimProvider(OpenAIChatProvider):
 
     def _provider_failure_override(self, error: Exception) -> ExecutionFailure | None:
         """Classify NVIDIA-specific 400/500 responses by their actual semantics."""
-        if isinstance(error, NimDegenerateOutputError):
-            # Reached only once the retries are used up. Garbage is specific
-            # to this request, so it must not pause the whole provider.
-            return ExecutionFailure(
-                kind=FailureKind.UPSTREAM,
-                status_code=502,
-                message=(
-                    "NVIDIA NIM returned degenerate output ('!!!!') on every "
-                    "attempt. Try again."
-                ),
-                retryable=False,
-            )
         if not isinstance(error, openai.BadRequestError | openai.InternalServerError):
             return None
         status = getattr(error, "status_code", None)
