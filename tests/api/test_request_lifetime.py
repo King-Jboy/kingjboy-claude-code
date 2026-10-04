@@ -501,7 +501,9 @@ async def _disconnect_real_app(
     payload: dict[str, object],
     provider: _ControlledProvider,
 ) -> tuple[list[Message], _Lease]:
-    settings = Settings(provider_progress_timeout=60.0)
+    # The progress timeout must stay above the read timeout. pydantic-settings
+    # before 2.15 ignored these field-name arguments, which hid the conflict.
+    settings = Settings(http_read_timeout=30.0, provider_progress_timeout=60.0)
     lease = _Lease(settings, cast(ProviderPort, provider))
     requests = _Requests(lease)
     app = create_app(

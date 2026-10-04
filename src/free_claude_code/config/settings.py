@@ -85,6 +85,7 @@ class LiteralDotEnvSettingsSource(DotEnvSettingsSource):
             env_ignore_empty=source.env_ignore_empty,
             env_parse_none_str=source.env_parse_none_str,
             env_parse_enums=source.env_parse_enums,
+            _init_state=source._init_state,
         )
 
     def _read_env_file(self, file_path: Path) -> Mapping[str, str | None]:

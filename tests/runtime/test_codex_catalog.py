@@ -35,6 +35,12 @@ class FakeRequestRuntime(RequestRuntimePort):
         del provider_id, model_id
         return None
 
+    def cached_model_supports_thinking(
+        self, provider_id: str, model_id: str
+    ) -> bool | None:
+        del provider_id, model_id
+        return None
+
     def cached_prefixed_model_infos(self) -> tuple[ProviderModelInfo, ...]:
         return self._cached_infos
 

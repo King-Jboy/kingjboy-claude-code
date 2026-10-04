@@ -7,6 +7,12 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # grpcio-tools 1.84+ needs protobuf 7, but nvidia-riva-client pins
+      # protobuf 6.33.5, so the update can never resolve. Lift this once
+      # nvidia-riva-client supports protobuf 7.
+      - dependency-name: "grpcio-tools"
+        versions: [">=1.84.0"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

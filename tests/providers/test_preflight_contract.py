@@ -47,11 +47,17 @@ class ProviderWithoutPreflight(BaseProvider):
             yield ""
 
 
+def _instantiate(provider_class: type[BaseProvider]) -> BaseProvider:
+    return provider_class(
+        ProviderConfig(api_key="test", base_url="https://test.invalid")
+    )
+
+
 def test_provider_base_requires_an_explicit_preflight_implementation() -> None:
+    # Instantiating the abstract subclass is the point, so it goes through a
+    # base-class parameter rather than a direct call the type checker rejects.
     with pytest.raises(TypeError, match="preflight_stream"):
-        ProviderWithoutPreflight(
-            ProviderConfig(api_key="test", base_url="https://test.invalid")
-        )
+        _instantiate(ProviderWithoutPreflight)
 
 
 def test_openai_provider_owns_preflight() -> None:
