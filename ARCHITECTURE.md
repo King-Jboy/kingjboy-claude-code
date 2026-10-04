@@ -466,7 +466,7 @@ It receives only a provider resolver and the few scalar collaborators it needs;
 it does not depend on FastAPI, provider implementations, or the full settings
 object. The executor also owns FCC's provider-progress deadline: every wait for
 the next non-empty provider chunk is limited by the Settings-owned
-`PROVIDER_PROGRESS_TIMEOUT`, which defaults to 600 seconds and is projected into
+`PROVIDER_PROGRESS_TIMEOUT`, which defaults to 1260 seconds and is projected into
 the executor as a validated scalar. Admission, retries, backoff, and recovery
 before a chunk all consume that same wait; a non-empty emitted chunk renews the
 next window, while empty keepalives do not. The timeout context ends before the
@@ -799,7 +799,7 @@ closes whichever stream loses.
 NIM reasoning budget control is also treated as a provider-owned best-effort
 downgrade: if an upstream NIM deployment rejects explicit budget control, FCC
 retries without the budget while preserving thinking enablement.
-NIM reads use their own `NVIDIA_NIM_READ_TIMEOUT` (default 540 s) instead of
+NIM reads use their own `NVIDIA_NIM_READ_TIMEOUT` (default 1200 s) instead of
 `HTTP_READ_TIMEOUT`: NIM sends a tool call only once the model has finished it,
 so writing a large file is minutes of silence on an open stream (measured:
 67 s for a 150-line file). `PROVIDER_PROGRESS_TIMEOUT` still bounds that silence,

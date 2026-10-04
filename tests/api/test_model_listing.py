@@ -226,7 +226,7 @@ def test_direct_model_views_exclude_claude_aliases_and_duplicate_variants():
             "xhigh",
             "max",
         ],
-        "inferenceIdleTimeoutSecs": 660,
+        "inferenceIdleTimeoutSecs": 1320,
         "contextWindow": 128000,
     }
     plain = responses["data"][1]

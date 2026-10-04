@@ -479,7 +479,7 @@ def test_admin_config_masks_secrets_and_exposes_manifest(monkeypatch, tmp_path):
     assert progress_timeout_field["label"] == "Provider Progress Timeout"
     assert progress_timeout_field["section"] == "runtime"
     assert progress_timeout_field["type"] == "number"
-    assert progress_timeout_field["value"] == "600.0"
+    assert progress_timeout_field["value"] == "1260.0"
     assert progress_timeout_field["advanced"] is True
     assert progress_timeout_field["restart_required"] is False
     assert "non-empty protocol event" in progress_timeout_field["description"]

@@ -74,7 +74,7 @@ def _make_settings(**overrides):
     mock.provider_rate_window = 60
     mock.provider_max_concurrency = 5
     mock.http_read_timeout = 300.0
-    mock.nvidia_nim_read_timeout = 540.0
+    mock.nvidia_nim_read_timeout = 1200.0
     mock.http_write_timeout = 10.0
     mock.http_connect_timeout = 10.0
     mock.log_raw_sse_events = False
@@ -180,11 +180,11 @@ def test_build_provider_config_huggingface_uses_api_key_and_proxy() -> None:
 def test_nim_uses_its_own_read_timeout() -> None:
     # NIM sends a tool call only once it is complete, so a large file write is
     # minutes of silence that HTTP_READ_TIMEOUT would cut off.
-    settings = _make_settings(http_read_timeout=120.0, nvidia_nim_read_timeout=540.0)
+    settings = _make_settings(http_read_timeout=120.0, nvidia_nim_read_timeout=1200.0)
 
     config = build_provider_config(PROVIDER_CATALOG["nvidia_nim"], settings)
 
-    assert config.http_read_timeout == 540.0
+    assert config.http_read_timeout == 1200.0
 
 
 def test_openrouter_keeps_the_operator_read_timeout() -> None:

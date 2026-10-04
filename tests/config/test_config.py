@@ -1356,43 +1356,45 @@ def test_nim_route_keeps_its_configured_progress_timeout(
     assert settings.provider_progress_timeout == 300
 
 
-def test_nim_read_timeout_defaults_to_nine_minutes(
+def test_nim_read_timeout_defaults_to_twenty_minutes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from free_claude_code.config.settings import Settings
 
     monkeypatch.delenv("NVIDIA_NIM_READ_TIMEOUT", raising=False)
 
-    assert Settings(_env_file=None).nvidia_nim_read_timeout == 540
+    assert Settings(_env_file=None).nvidia_nim_read_timeout == 1200
 
 
-def test_explicit_nim_read_timeout_must_stay_below_progress_timeout(
+def test_progress_timeout_defaults_above_the_nim_read_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Pings do not count as progress, so the watchdog must outlast NIM's
+    # silent tool-call writing for the NIM timeout to apply.
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.delenv("NVIDIA_NIM_READ_TIMEOUT", raising=False)
+    monkeypatch.delenv("PROVIDER_PROGRESS_TIMEOUT", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.provider_progress_timeout == 1260
+    assert settings.provider_progress_timeout > settings.nvidia_nim_read_timeout
+
+
+def test_nim_read_timeout_above_progress_timeout_still_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The shorter limit applies; a NIM value above it never blocks startup,
+    # including when it comes from the .env template.
     from free_claude_code.config.settings import Settings
 
     monkeypatch.setenv("MODEL", "nvidia_nim/test-model")
     monkeypatch.setenv("PINNED_MODELS", "[]")
-    monkeypatch.setenv("NVIDIA_NIM_READ_TIMEOUT", "900")
+    monkeypatch.setenv("NVIDIA_NIM_READ_TIMEOUT", "1200")
     monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "600")
 
-    with pytest.raises(ValidationError, match="NVIDIA_NIM_READ_TIMEOUT"):
-        Settings(_env_file=None)
-
-
-def test_explicit_nim_read_timeout_is_not_checked_without_a_nim_route(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from free_claude_code.config.settings import Settings
-
-    monkeypatch.setenv("MODEL", "open_router/test-model")
-    monkeypatch.setenv("PINNED_MODELS", "[]")
-    for name in ("MODEL_FABLE", "MODEL_OPUS", "MODEL_SONNET", "MODEL_HAIKU"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("NVIDIA_NIM_READ_TIMEOUT", "900")
-    monkeypatch.setenv("PROVIDER_PROGRESS_TIMEOUT", "600")
-
-    assert Settings(_env_file=None).nvidia_nim_read_timeout == 900
+    assert Settings(_env_file=None).nvidia_nim_read_timeout == 1200
 
 
 def test_default_nim_read_timeout_never_blocks_startup(

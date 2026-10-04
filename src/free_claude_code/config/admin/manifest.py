@@ -307,7 +307,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="provider_progress_timeout",
-        default="600.0",
+        default="1260.0",
         description=(
             "Maximum seconds without a non-empty protocol event, including "
             "provider admission, retries, and backoff. Independent of HTTP Read "
@@ -329,7 +329,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="nvidia_nim_read_timeout",
-        default="540",
+        default="1200",
     ),
     ConfigFieldSpec(
         "HTTP_WRITE_TIMEOUT",
