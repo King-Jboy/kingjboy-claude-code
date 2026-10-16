@@ -1500,12 +1500,14 @@ async def test_stream_response_unrelated_internal_error_does_not_downgrade(
 
 
 @pytest.mark.asyncio
-async def test_stream_response_stops_after_one_opaque_midstream_500_retry(
+async def test_stream_response_resends_the_same_request_after_opaque_500s(
     nim_provider,
 ):
-    """Do not replay the same opened NIM stream five times after an opaque 500."""
+    # NVIDIA's hosted models crash on requests that succeed when sent again
+    # (stepfun-ai/step-5-preview, 2026-10-16), so the identical request is
+    # retried before the failure reaches the client.
     req = make_request()
-    error = _make_internal_server_error("unrelated internal provider failure")
+    error = _make_internal_server_error("Internal server error")
 
     async def failed_stream():
         raise error
@@ -1514,20 +1516,18 @@ async def test_stream_response_stops_after_one_opaque_midstream_500_retry(
     with patch.object(
         nim_provider._client.chat.completions, "create", new_callable=AsyncMock
     ) as mock_create:
-        mock_create.side_effect = [failed_stream(), failed_stream()]
+        mock_create.side_effect = [failed_stream() for _ in range(5)]
 
-        with pytest.raises(ExecutionFailure) as exc_info:
+        with pytest.raises(ExecutionFailure):
             [event async for event in nim_provider.stream_response(req)]
 
-    assert mock_create.await_count == 2
-    assert (
-        mock_create.await_args_list[0].kwargs == mock_create.await_args_list[1].kwargs
-    )
-    assert "Provider API request failed" in exc_info.value.message
+    calls = [call.kwargs for call in mock_create.await_args_list]
+    assert len(calls) == 4
+    assert all(call == calls[0] for call in calls)
 
 
 @pytest.mark.asyncio
-async def test_stream_response_recovers_from_an_opaque_500_without_disabling_thinking(
+async def test_stream_response_recovers_from_an_opaque_500_with_thinking_kept(
     nim_provider,
 ):
     req = make_request(model="a-changing-nim-model")
@@ -1543,11 +1543,7 @@ async def test_stream_response_recovers_from_an_opaque_500_without_disabling_thi
     with patch.object(
         nim_provider._client.chat.completions, "create", new_callable=AsyncMock
     ) as mock_create:
-        mock_create.side_effect = [
-            failed_stream(),
-            recovered_stream(),
-            recovered_stream(),
-        ]
+        mock_create.side_effect = [failed_stream(), recovered_stream()]
 
         events = [
             event
@@ -1555,21 +1551,42 @@ async def test_stream_response_recovers_from_an_opaque_500_without_disabling_thi
                 req, reasoning=ReasoningPolicy.on()
             )
         ]
-        future_events = [
-            event
-            async for event in nim_provider.stream_response(
-                req, reasoning=ReasoningPolicy.on()
-            )
-        ]
 
-    assert mock_create.await_count == 3
-    assert "chat_template_kwargs" in mock_create.await_args_list[0].kwargs["extra_body"]
-    assert "chat_template_kwargs" not in mock_create.await_args_list[1].kwargs.get(
-        "extra_body", {}
-    )
-    assert "chat_template_kwargs" in mock_create.await_args_list[2].kwargs["extra_body"]
+    first, second = (call.kwargs for call in mock_create.await_args_list)
+    assert "chat_template_kwargs" in first["extra_body"]
+    assert second == first
+    assert not any("opaque" in key for key in second)
     assert any("Recovered" in event for event in events)
-    assert any("Recovered" in event for event in future_events)
+
+
+@pytest.mark.asyncio
+async def test_stream_response_drops_thinking_flags_only_as_a_last_resort(
+    nim_provider,
+):
+    req = make_request(model="a-changing-nim-model")
+    error = _make_internal_server_error("Internal server error")
+
+    async def failed_stream():
+        raise error
+        yield None
+
+    with patch.object(
+        nim_provider._client.chat.completions, "create", new_callable=AsyncMock
+    ) as mock_create:
+        mock_create.side_effect = [failed_stream() for _ in range(5)]
+
+        with pytest.raises(ExecutionFailure):
+            [
+                event
+                async for event in nim_provider.stream_response(
+                    req, reasoning=ReasoningPolicy.on()
+                )
+            ]
+
+    calls = [call.kwargs for call in mock_create.await_args_list]
+    assert len(calls) == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
+    assert all("chat_template_kwargs" in call["extra_body"] for call in calls[:4])
+    assert "chat_template_kwargs" not in calls[4].get("extra_body", {})
 
 
 @pytest.mark.asyncio

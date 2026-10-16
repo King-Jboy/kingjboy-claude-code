@@ -47,6 +47,13 @@ _NEGATIVE_MAX_TOKENS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _OPAQUE_STREAM_INTERNAL_ERROR_ATTEMPTS = 2
+# NVIDIA's hosted models crash on requests that succeed when sent again
+# (stepfun-ai/step-5-preview, 2026-10-16: the same request failed twice, then
+# succeeded). Resend it unchanged this many times before dropping the
+# chat-template controls as a last resort. The count rides in the body under a
+# private key that _prepare_create_body removes.
+_OPAQUE_SAME_REQUEST_RETRIES = 3
+_OPAQUE_RETRY_COUNT_KEY = "_fcc_nim_opaque_retries"
 _PROFILE = OpenAIChatProfile(
     NIM_REQUEST_POLICY,
     NO_REASONING,
@@ -89,6 +96,8 @@ class NvidiaNimProvider(OpenAIChatProvider):
     def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """Strip private request metadata before calling NVIDIA NIM."""
         body = body_without_nim_tool_argument_aliases(body)
+        if _OPAQUE_RETRY_COUNT_KEY in body:
+            body = {k: v for k, v in body.items() if k != _OPAQUE_RETRY_COUNT_KEY}
         model = _model_id(body)
         if model in self._unsupported_reasoning_content_models:
             body = dict(body)
@@ -157,6 +166,18 @@ class NvidiaNimProvider(OpenAIChatProvider):
             return retry_body
 
         opaque_internal_error = _is_opaque_internal_server_error(error)
+        # Only an unexplained crash is resent: a 500 that carries a known
+        # meaning, such as context-window exhaustion, fails as that.
+        if opaque_internal_error and self._provider_failure_override(error) is None:
+            retries = body.get(_OPAQUE_RETRY_COUNT_KEY, 0)
+            if retries < _OPAQUE_SAME_REQUEST_RETRIES:
+                logger.warning(
+                    "NIM_STREAM: resending the same request after an NVIDIA "
+                    "internal server error ({}/{})",
+                    retries + 1,
+                    _OPAQUE_SAME_REQUEST_RETRIES,
+                )
+                return {**body, _OPAQUE_RETRY_COUNT_KEY: retries + 1}
         if (bad_request_like and "chat_template" in error_text) or (
             opaque_internal_error and _has_chat_template_controls(body)
         ):
