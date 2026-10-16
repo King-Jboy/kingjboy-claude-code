@@ -337,7 +337,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="http_write_timeout",
-        default="10",
+        default="30",
     ),
     ConfigFieldSpec(
         "HTTP_CONNECT_TIMEOUT",
@@ -345,7 +345,7 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         "runtime",
         "number",
         settings_attr="http_connect_timeout",
-        default="10",
+        default="30",
     ),
     ConfigFieldSpec(
         "HOST",

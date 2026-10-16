@@ -381,7 +381,8 @@ class TestSettings:
         monkeypatch.setitem(Settings.model_config, "env_file", ())
         settings = Settings()
         assert settings.http_connect_timeout == HTTP_CONNECT_TIMEOUT_DEFAULT
-        assert HTTP_CONNECT_TIMEOUT_DEFAULT == 10.0
+        assert HTTP_CONNECT_TIMEOUT_DEFAULT == 30.0
+        assert settings.http_write_timeout == 30.0
 
     @pytest.mark.parametrize(
         "values",

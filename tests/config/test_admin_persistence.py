@@ -107,8 +107,8 @@ def test_first_admin_save_persists_runtime_defaults_without_drift(
     assert persisted["PROVIDER_RATE_LIMIT"] == "40"
     assert persisted["PROVIDER_RATE_WINDOW"] == "60"
     assert persisted["HTTP_READ_TIMEOUT"] == "120"
-    assert persisted["HTTP_WRITE_TIMEOUT"] == "10"
-    assert persisted["HTTP_CONNECT_TIMEOUT"] == "10"
+    assert persisted["HTTP_WRITE_TIMEOUT"] == "30"
+    assert persisted["HTTP_CONNECT_TIMEOUT"] == "30"
     assert persisted["HOST"] == "127.0.0.1"
     assert persisted["VOICE_NOTE_ENABLED"] == "true"
     assert persisted["WHISPER_DEVICE"] == "cpu"
@@ -118,8 +118,8 @@ def test_first_admin_save_persists_runtime_defaults_without_drift(
     assert settings.anthropic_auth_token == ""
     assert settings.host == "127.0.0.1"
     assert settings.http_read_timeout == 120.0
-    assert settings.http_write_timeout == 10.0
-    assert settings.http_connect_timeout == 10.0
+    assert settings.http_write_timeout == 30.0
+    assert settings.http_connect_timeout == 30.0
     assert settings.provider_rate_limit == 40
     assert settings.provider_rate_window == 60
 

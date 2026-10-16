@@ -355,7 +355,7 @@ class Settings(BaseSettings):
         validation_alias="NVIDIA_NIM_READ_TIMEOUT",
     )
     http_write_timeout: float = Field(
-        default=10.0,
+        default=30.0,
         gt=0,
         allow_inf_nan=False,
         validation_alias="HTTP_WRITE_TIMEOUT",
