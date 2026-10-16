@@ -54,8 +54,13 @@ _AUTH_BEARER_RE = re.compile(
 )
 
 
-# x-api-key: <key> headers, ?key=<key> query strings, api_key=<key> assignments
-_API_KEY_HEADER_RE = re.compile(r"(\bx-api-key\s*:\s*)([^\s'\",]+)", re.IGNORECASE)
+# Bare Telegram bot token (<bot id>:<secret>), e.g. in a rejected-token error
+_TELEGRAM_BARE_TOKEN_RE = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b")
+# x-api-key / x-goog-api-key / api-key: <key> headers, ?key=<key> query strings,
+# api_key=<key> assignments
+_API_KEY_HEADER_RE = re.compile(
+    r"(\b(?:x-api-key|x-goog-api-key|api-key)\s*:\s*)([^\s'\",]+)", re.IGNORECASE
+)
 _API_KEY_PARAM_RE = re.compile(
     r"(\b(?:key|api_key|apikey|access_token)\s*=\s*['\"]?)([^\s&'\",}]+)",
     re.IGNORECASE,
@@ -65,6 +70,7 @@ _API_KEY_PARAM_RE = re.compile(
 def _redact_sensitive_substrings(message: str) -> str:
     """Remove obvious API tokens and secrets before JSON log line emission."""
     text = _TELEGRAM_BOT_RE.sub(r"\1bot<redacted>\3", message)
+    text = _TELEGRAM_BARE_TOKEN_RE.sub("<redacted>", text)
     text = _AUTH_BEARER_RE.sub(r"\1<redacted>", text)
     text = _API_KEY_HEADER_RE.sub(r"\1<redacted>", text)
     return _API_KEY_PARAM_RE.sub(r"\1<redacted>", text)

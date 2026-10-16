@@ -110,6 +110,34 @@ def test_api_key_headers_and_parameters_redacted_in_log_file(tmp_path) -> None:
     assert "model=x" in text
 
 
+def test_bare_telegram_bot_token_redacted_in_log_file(tmp_path) -> None:
+    # python-telegram-bot names a rejected token in its error message, outside
+    # any api.telegram.org URL; it reached the server log in plain text.
+    log_file = str(tmp_path / "bare-token.log")
+    configure_logging(log_file, force=True, verbose_third_party=False)
+    token = "1234567890:AAEhoKRjWNe6MYsFFQNz9PsZrX4kLC_LUxM"
+    logger.error(
+        "Failed to start messaging platform: The token `{}` was rejected", token
+    )
+    logger.complete()
+    text = Path(log_file).read_text(encoding="utf-8")
+    assert token not in text
+    assert "was rejected" in text
+
+
+def test_google_and_azure_api_key_headers_redacted_in_log_file(tmp_path) -> None:
+    log_file = str(tmp_path / "more-keys.log")
+    configure_logging(log_file, force=True, verbose_third_party=False)
+    secrets = ("AIzaGoogleHeaderSecret", "azure-header-secret")
+    logger.info("headers: x-goog-api-key: {}", secrets[0])
+    logger.info("headers: api-key: {}", secrets[1])
+    logger.complete()
+    text = Path(log_file).read_text(encoding="utf-8")
+    for secret in secrets:
+        assert secret not in text
+    assert "x-goog-api-key" in text
+
+
 def test_httpx_logger_quieted_when_not_verbose_third_party(tmp_path) -> None:
     log_file = str(tmp_path / "quiet.log")
     configure_logging(log_file, force=True, verbose_third_party=False)
