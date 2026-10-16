@@ -1,5 +1,7 @@
 import math
+import re
 
+import pytest
 from fastapi.testclient import TestClient
 
 from free_claude_code.application.model_metadata import ProviderModelInfo
@@ -414,3 +416,67 @@ def test_models_list_query_param_overrides_configured_view():
 
     assert "claude-fable-5" in model_ids
     assert "anthropic/deepseek/deepseek-chat" in model_ids
+
+
+def _responses_view_app():
+    from free_claude_code.config.model_refs import ModelCatalogView
+
+    app = create_test_app(
+        _settings(
+            model="deepseek/deepseek-chat",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["nvidia_nim/meta/llama-3.3-70b-instruct"]',
+        ).model_copy(update={"model_catalog_view": ModelCatalogView.RESPONSES})
+    )
+    _cache_models(app, "deepseek", "deepseek-chat")
+    _cache_models(app, "nvidia_nim", "meta/llama-3.3-70b-instruct")
+    return app
+
+
+@pytest.mark.parametrize(
+    "user_agent", ["claude-code/2.1.252", "claude-cli/2.1.252 (external, cli)"]
+)
+def test_claude_code_gets_the_claude_view_despite_a_configured_direct_view(
+    user_agent: str,
+):
+    # Claude Code 2.1.252 keeps only gateway models whose id contains "claude"
+    # or "anthropic"; the direct view's bare provider/model ids all vanished
+    # from its /model picker.
+    response = TestClient(_responses_view_app()).get(
+        "/v1/models?limit=1000", headers={"User-Agent": user_agent}
+    )
+
+    assert response.status_code == 200
+    model_ids = [item["id"] for item in response.json()["data"]]
+    assert "anthropic/nvidia_nim/meta/llama-3.3-70b-instruct" in model_ids
+    assert all(re.search("claude|anthropic", model_id) for model_id in model_ids)
+
+
+def test_other_clients_keep_the_configured_direct_view():
+    response = TestClient(_responses_view_app()).get(
+        "/v1/models", headers={"User-Agent": "hermes-agent/1.0"}
+    )
+
+    model_ids = [item["id"] for item in response.json()["data"]]
+    assert model_ids == [
+        "deepseek/deepseek-chat",
+        "nvidia_nim/meta/llama-3.3-70b-instruct",
+    ]
+
+
+def test_an_explicit_view_still_wins_for_claude_code():
+    response = TestClient(_responses_view_app()).get(
+        "/v1/models",
+        headers={
+            "User-Agent": "claude-code/2.1.252",
+            "x-model-catalog-view": "responses",
+        },
+    )
+
+    model_ids = [item["id"] for item in response.json()["data"]]
+    assert model_ids == [
+        "deepseek/deepseek-chat",
+        "nvidia_nim/meta/llama-3.3-70b-instruct",
+    ]

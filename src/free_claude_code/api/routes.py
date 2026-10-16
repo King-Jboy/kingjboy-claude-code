@@ -218,8 +218,26 @@ async def list_models(
             header_view = ModelCatalogView(header_view_raw.strip().lower())
         except ValueError:
             header_view = None
-    effective_view = view or header_view or settings.model_catalog_view
+    effective_view = (
+        view
+        or header_view
+        or _client_default_view(request)
+        or settings.model_catalog_view
+    )
     return build_models_list_response(settings, services.requests, view=effective_view)
+
+
+def _client_default_view(request: Request) -> ModelCatalogView | None:
+    """Give Claude Code the Claude view whatever MODEL_CATALOG_VIEW says.
+
+    Claude Code (2.1.252) keeps only gateway models whose id contains "claude"
+    or "anthropic", so the direct views' bare provider/model ids never reach
+    its /model picker. Other clients keep the configured view.
+    """
+    user_agent = request.headers.get("user-agent", "").lower()
+    if user_agent.startswith(("claude-code/", "claude-cli/")):
+        return ModelCatalogView.CLAUDE
+    return None
 
 
 @router.get(
