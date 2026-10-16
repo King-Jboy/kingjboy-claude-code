@@ -1770,3 +1770,37 @@ def test_prepare_create_body_does_not_mutate_input_messages(nim_provider):
     assert orig_msg["content"] == "hi"
     assert "reasoning_content" in body["messages"][0]
     assert body["messages"][0]["content"] == "hi"
+
+
+def _nim_at(base_url: str) -> NvidiaNimProvider:
+    return NvidiaNimProvider(
+        ProviderConfig(
+            api_key="test_key", base_url=base_url, rate_limit=10, rate_window=60
+        ),
+        nim_settings=NimSettings(),
+        admission=immediate_admission(),
+    )
+
+
+async def _listed_ids(provider: NvidiaNimProvider) -> set[str]:
+    payload = {"data": [{"id": "moonshotai/kimi-k3"}, {"id": "z-ai/glm-5.3"}]}
+    with patch.object(
+        provider, "_list_models_payload", new_callable=AsyncMock, return_value=payload
+    ):
+        return {info.model_id for info in await provider.list_model_infos()}
+
+
+@pytest.mark.asyncio
+async def test_hosted_nim_discovery_hides_models_nvidia_no_longer_serves():
+    # NVIDIA's hosted catalog still lists moonshotai/kimi-k3, which answers
+    # HTTP 410 Gone (measured 2026-10-16).
+    ids = await _listed_ids(_nim_at(NVIDIA_NIM_DEFAULT_BASE))
+
+    assert ids == {"z-ai/glm-5.3"}
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_nim_discovery_keeps_every_model():
+    ids = await _listed_ids(_nim_at("http://nim.internal:8000/v1"))
+
+    assert ids == {"moonshotai/kimi-k3", "z-ai/glm-5.3"}

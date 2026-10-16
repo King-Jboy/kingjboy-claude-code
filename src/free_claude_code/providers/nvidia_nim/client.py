@@ -10,7 +10,9 @@ import httpx2
 import openai
 from loguru import logger
 
+from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.config.nim import NimSettings
+from free_claude_code.config.provider_catalog import NVIDIA_NIM_DEFAULT_BASE
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
@@ -40,6 +42,7 @@ from .tool_schema import (
     body_without_nim_tool_argument_aliases,
     nim_tool_argument_aliases_from_body,
 )
+from .unavailable_models import UNAVAILABLE_HOSTED_NIM_MODELS
 
 _DEGRADED_FUNCTION_STATE = "degraded function cannot be invoked"
 _NEGATIVE_MAX_TOKENS_PATTERN = re.compile(
@@ -117,6 +120,15 @@ class NvidiaNimProvider(OpenAIChatProvider):
                 if not extra:
                     body.pop("extra_body", None)
         return body
+
+    async def list_model_infos(self) -> frozenset[ProviderModelInfo]:
+        """Hide models NVIDIA's hosted catalog lists but no longer serves."""
+        infos = await super().list_model_infos()
+        if self._base_url != NVIDIA_NIM_DEFAULT_BASE.rstrip("/"):
+            return infos
+        return frozenset(
+            info for info in infos if info.model_id not in UNAVAILABLE_HOSTED_NIM_MODELS
+        )
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Repair model-native MiniMax tool markup leaked by NVIDIA NIM."""
