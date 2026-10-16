@@ -222,6 +222,42 @@ class TestBuildRequestBody:
         body = build_request_body(req, nim, reasoning=REASONING_ON)
         assert "parallel_tool_calls" not in body
 
+    def test_tool_schema_regex_patterns_are_removed_without_mutating_request(self, req):
+        # stepfun-ai/step-5-preview answered "Internal server error" to every
+        # request carrying a pattern with a lookahead or large bounded
+        # repetitions (Claude Code's ArtifactData tool). The client still
+        # validates arguments against its own schema.
+        segment = r"(?!\.\.?(?:\/|$))[A-Za-z0-9_\-.~:@+]{1,200}"
+        tool_schema = {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "pattern": f"^{segment}$"},
+                "paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "pattern": f"^{segment}(?:/{segment}){{0,14}}$",
+                    },
+                },
+                "pattern": {"type": "string", "description": "A Grep regex"},
+            },
+            "required": ["collection", "pattern"],
+        }
+        req.tools = [
+            Tool(name="ArtifactData", description="data", input_schema=tool_schema)
+        ]
+
+        body = build_request_body(req, NimSettings(), reasoning=REASONING_OFF)
+
+        properties = body["tools"][0]["function"]["parameters"]["properties"]
+        assert properties["collection"] == {"type": "string"}
+        assert properties["paths"]["items"] == {"type": "string"}
+        assert properties["pattern"] == {
+            "type": "string",
+            "description": "A Grep regex",
+        }
+        assert tool_schema["properties"]["collection"]["pattern"] == f"^{segment}$"
+
     def test_tool_schema_boolean_subschemas_are_removed_without_mutating_request(
         self, req
     ):

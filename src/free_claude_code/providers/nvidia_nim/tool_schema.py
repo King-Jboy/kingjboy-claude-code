@@ -94,12 +94,20 @@ def body_without_nim_tool_argument_aliases(body: dict[str, Any]) -> dict[str, An
 
 
 def _sanitize_nim_schema_node(value: Any) -> tuple[bool, Any]:
-    """Remove boolean JSON Schema subschemas that hosted NIM rejects."""
+    """Remove JSON Schema parts that hosted NIM rejects or crashes on.
+
+    Boolean subschemas are rejected. ``pattern`` regexes are dropped: hosted
+    models compile tool schemas into a grammar, and stepfun-ai/step-5-preview
+    answers "Internal server error" to lookaheads and large bounded
+    repetitions. The client still validates arguments against its own schema.
+    """
     if isinstance(value, bool):
         return False, None
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
+            if key == "pattern" and isinstance(item, str):
+                continue
             if key in _SCHEMA_VALUE_KEYS:
                 keep, sanitized_item = _sanitize_nim_schema_node(item)
                 if keep:
