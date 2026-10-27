@@ -12,7 +12,6 @@ import httpx
 from free_claude_code.application.errors import InvalidRequestError
 from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.core.anthropic.models import MessagesRequest
-from free_claude_code.core.anthropic.openai_tool_names import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.streaming import anthropic_ping_frame
 from free_claude_code.core.diagnostics import (
     ERROR_DETAIL_DISPLAY_CAP_BYTES,
@@ -27,6 +26,7 @@ from free_claude_code.core.openai_responses import (
     ResponsesStreamFailure,
     build_responses_provider_request,
 )
+from free_claude_code.core.openai_tool_names import OpenAIToolNameCodec
 from free_claude_code.core.reasoning import (
     DEFAULT_REASONING_POLICY,
     ReasoningPolicy,
