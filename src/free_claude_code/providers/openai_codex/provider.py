@@ -20,6 +20,8 @@ from free_claude_code.core.diagnostics import (
     extract_upstream_error_detail,
 )
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
+from free_claude_code.core.history_replay import ReplayOrigin, prepare_history
+from free_claude_code.providers.history_replay import history_retry_body
 from free_claude_code.core.openai_responses import (
     ResponsesConversionError,
     ResponsesProviderStream,
@@ -44,6 +46,7 @@ from free_claude_code.providers.failure_policy import (
     is_context_window_error_code,
 )
 from free_claude_code.providers.stream_recovery import (
+    HoldbackSignal,
     RecoveryController,
     RecoveryFailureAction,
 )
@@ -217,7 +220,8 @@ class OpenAICodexProvider(BaseProvider):
         # Codex itself omits the output cap and uses separate internal metadata.
         body.pop("max_output_tokens", None)
         body.pop("metadata", None)
-        return body
+        origin = ReplayOrigin("openai_codex", "responses", "", "", request.model)
+        return prepare_history(body, origin)
 
     async def _run_stream(
         self,
@@ -255,6 +259,7 @@ class OpenAICodexProvider(BaseProvider):
                 message_id=message_id,
                 model=response_model,
                 input_tokens=input_tokens,
+                origin=ReplayOrigin("openai_codex", "responses", "", "", response_model),
                 log_raw_events=self._config.log_raw_sse_events,
                 tool_names=tool_names,
             )
@@ -345,19 +350,27 @@ class OpenAICodexProvider(BaseProvider):
                     raise error
                 stream_opened = True
 
-                async for sse_item in _sse_with_keepalive(_iter_sse(response)):
-                    if sse_item is None:
-                        for event in recovery.flush():
-                            yield event
-                        message_started_committed = True
-                        yield anthropic_ping_frame()
-                        continue
-                    event_type, payload = sse_item
-                    if not attempt.accepted:
-                        await attempt.succeeded()
-                    for event in stream.feed(event_type, payload):
-                        for held in recovery.push(event):
-                            yield held
+                async with recovery.read_stream(
+                    _sse_with_keepalive(_iter_sse(response))
+                ) as sse_items:
+                    async for sse_item in sse_items:
+                        if sse_item is HoldbackSignal.EXPIRED:
+                            for event in recovery.flush():
+                                yield event
+                            message_started_committed = True
+                            continue
+                        if sse_item is None:
+                            for event in recovery.flush():
+                                yield event
+                            message_started_committed = True
+                            yield anthropic_ping_frame()
+                            continue
+                        event_type, payload = sse_item
+                        if not attempt.accepted:
+                            await attempt.succeeded()
+                        for event in stream.feed(event_type, payload):
+                            for held in recovery.push(event):
+                                yield held
                 if not stream.completed:
                     raise _TruncatedResponsesStream(
                         "OpenAI Responses stream ended without a terminal event."
@@ -391,6 +404,13 @@ class OpenAICodexProvider(BaseProvider):
                     attempts_remaining=retry_session.attempts_remaining,
                     retryable_override=retryable,
                 )
+                if not message_started_committed:
+                    repaired_body = history_retry_body(error, body, "responses")
+                    if repaired_body is not None and retry_session.can_attempt:
+                        body = repaired_body
+                        recovery.discard()
+                        continue
+
                 should_early_retry = (
                     decision.action == RecoveryFailureAction.EARLY_RETRY
                     or (

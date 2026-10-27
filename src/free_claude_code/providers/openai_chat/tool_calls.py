@@ -2,10 +2,14 @@
 
 import json
 import uuid
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .tool_call_identity import (
+    AmbiguousToolCallIdentityError,
+    ToolCallIdentityResolver,
+)
 from free_claude_code.core.anthropic import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import (
@@ -31,6 +35,7 @@ class OpenAIToolCallCollector:
 
     def __init__(self) -> None:
         self._calls: dict[int, _CollectedToolCall] = {}
+        self._identities = ToolCallIdentityResolver()
 
     @property
     def has_calls(self) -> bool:
@@ -38,13 +43,11 @@ class OpenAIToolCallCollector:
 
     def add(self, tool_call: Any) -> None:
         """Add one SDK tool-call delta without emitting downstream state."""
-        raw_index = getattr(tool_call, "index", 0)
-        index = raw_index if isinstance(raw_index, int) and raw_index >= 0 else 0
+        index = self._identities.resolve(
+            getattr(tool_call, "index", None), getattr(tool_call, "id", None)
+        )
         state = self._calls.setdefault(index, _CollectedToolCall(index=index))
-
-        tool_id = getattr(tool_call, "id", None)
-        if tool_id:
-            state.tool_id = str(tool_id)
+        state.tool_id = self._identities.tool_id(index)
 
         function = getattr(tool_call, "function", None)
         incoming_name = getattr(function, "name", None)
@@ -67,9 +70,13 @@ class OpenAIToolCallCollector:
         tool_argument_aliases: dict[str, dict[str, str]] | None = None,
     ) -> tuple[dict[str, Any], ...] | None:
         """Return complete schema-valid calls, or None when output is incomplete."""
-        schemas = tool_schemas_by_name(request)
+        schemas = (
+            request
+            if isinstance(request, Mapping)
+            else tool_schemas_by_name(request)
+        )
         completed: list[dict[str, Any]] = []
-        for index in sorted(self._calls):
+        for index in sorted(self._calls, key=self._identities.order_key):
             state = self._calls[index]
             wire_name = state.name.strip()
             name = tool_names.decode(wire_name) if tool_names is not None else wire_name
@@ -196,6 +203,9 @@ class OpenAIToolCallAssembler:
     ) -> None:
         self._record_extra_content = record_extra_content
         self._reserved_tool_ids = {tool_id for tool_id in reserved_tool_ids if tool_id}
+        self._identities = ToolCallIdentityResolver()
+        self._candidate_tool_ids: dict[int, str] = {}
+        self._public_tool_ids: dict[int, str] = {}
 
     def process_tool_call(
         self,
@@ -208,17 +218,37 @@ class OpenAIToolCallAssembler:
         tool_argument_alias_buffers: dict[int, str] | None = None,
     ) -> Iterator[str]:
         """Process a single tool-call delta and yield Anthropic SSE events."""
-        raw_index = tc.get("index", 0)
-        tc_index = raw_index if isinstance(raw_index, int) else 0
-        if tc_index < 0:
-            tc_index = len(ledger.blocks.tool_states)
+        tc_index = self._identities.resolve(tc.get("index"), tc.get("id"))
+        yield from self._process_resolved_tool_call(
+            tc_index,
+            tc,
+            ledger,
+            tool_names=tool_names,
+            tool_name_buffers=tool_name_buffers,
+            tool_argument_aliases=tool_argument_aliases,
+            tool_argument_alias_buffers=tool_argument_alias_buffers,
+        )
 
+    def _process_resolved_tool_call(
+        self,
+        tc_index: int,
+        tc: dict[str, Any],
+        ledger: AnthropicStreamLedger,
+        *,
+        tool_names: OpenAIToolNameCodec | None = None,
+        tool_name_buffers: dict[int, str] | None = None,
+        tool_argument_aliases: dict[str, dict[str, str]] | None = None,
+        tool_argument_alias_buffers: dict[int, str] | None = None,
+    ) -> Iterator[str]:
+        """Process one tool-call delta whose slot is already assigned."""
         fn_delta = tc.get("function", {})
         incoming_name = fn_delta.get("name")
         arguments = fn_delta.get("arguments", "") or ""
 
-        if tc.get("id") is not None:
-            ledger.blocks.set_stream_tool_id(tc_index, tc.get("id"))
+        tc_id = tc.get("id")
+        if tc_id is not None:
+            self._candidate_tool_ids[tc_index] = str(tc_id)
+            ledger.blocks.set_stream_tool_id(tc_index, tc_id)
 
         raw_extra_content = tc.get("extra_content")
         extra_content = (
@@ -240,25 +270,12 @@ class OpenAIToolCallAssembler:
                 ledger.blocks.register_tool_name(tc_index, resolved_name)
 
         state = ledger.blocks.tool_states.get(tc_index)
-        resolved_id = (state.tool_id if state and state.tool_id else None) or tc.get(
-            "id"
-        )
         resolved_name = (state.name if state else "") or ""
 
         if not state or not state.started:
             name_ok = bool((resolved_name or "").strip())
             if name_ok:
-                candidate_id = str(resolved_id) if resolved_id else None
-                if (
-                    candidate_id is not None
-                    and candidate_id not in self._reserved_tool_ids
-                ):
-                    tool_id = candidate_id
-                else:
-                    tool_id = f"tool_{uuid.uuid4()}"
-                    while tool_id in self._reserved_tool_ids:
-                        tool_id = f"tool_{uuid.uuid4()}"
-                self._reserved_tool_ids.add(tool_id)
+                tool_id = self._assign_public_tool_id(tc_index)
                 display_name = (resolved_name or "").strip() or "tool_call"
                 start_extra_content = state.extra_content if state else extra_content
                 if start_extra_content:
@@ -300,6 +317,36 @@ class OpenAIToolCallAssembler:
             tool_argument_alias_buffers=tool_argument_alias_buffers,
         )
 
+    def _assign_public_tool_id(self, tool_index: int) -> str:
+        assigned = self._public_tool_ids.get(tool_index)
+        if assigned is not None:
+            return assigned
+        candidate = self._candidate_tool_ids.get(tool_index)
+        if candidate is not None and candidate not in self._reserved_tool_ids:
+            tool_id = candidate
+        else:
+            tool_id = f"tool_{uuid.uuid4()}"
+            while tool_id in self._reserved_tool_ids:
+                tool_id = f"tool_{uuid.uuid4()}"
+        self._reserved_tool_ids.add(tool_id)
+        self._public_tool_ids[tool_index] = tool_id
+        return tool_id
+
+    def process_completed_calls(
+        self,
+        calls: Iterable[dict[str, Any]],
+        ledger: AnthropicStreamLedger,
+    ) -> Iterator[str]:
+        """Replace abandoned, unstarted tools with collected recovery calls."""
+        self._identities = ToolCallIdentityResolver()
+        self._candidate_tool_ids.clear()
+        self._public_tool_ids.clear()
+        ledger.blocks.tool_states.clear()
+        for call in calls:
+            yield from self._process_resolved_tool_call(
+                self._identities.allocate(), call, ledger
+            )
+
     def flush_task_arg_buffers(self, ledger: AnthropicStreamLedger) -> Iterator[str]:
         """Emit buffered Task args as a single JSON delta."""
         for tool_index, out in ledger.blocks.flush_task_arg_buffers():
@@ -317,9 +364,9 @@ class OpenAIToolCallAssembler:
         """Resolve names held only because they also prefix a generated alias."""
         for tool_index, name in list(tool_name_buffers.items()):
             tool_name_buffers.pop(tool_index, None)
-            yield from self.process_tool_call(
+            yield from self._process_resolved_tool_call(
+                tool_index,
                 {
-                    "index": tool_index,
                     "function": {"name": name, "arguments": ""},
                 },
                 ledger,

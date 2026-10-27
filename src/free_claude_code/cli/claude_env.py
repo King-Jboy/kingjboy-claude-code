@@ -98,6 +98,12 @@ def build_claude_proxy_env(
     env["CLAUDE_CODE_AUTO_MODE_SERVER"] = "0"
     env["CLAUDE_CODE_DISABLE_ADVISOR_TOOL"] = "1"
     env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(context_window)
+    # Keep Claude waiting while FCC handles provider recovery.
+    env["CLAUDE_ENABLE_STREAM_WATCHDOG"] = "0"
+    env["CLAUDE_ENABLE_BYTE_WATCHDOG"] = "0"
+    env["API_FORCE_IDLE_TIMEOUT"] = "0"
+    # Zero retains Claude's 5-minute non-streaming timeout. Use its timer cap.
+    env["API_TIMEOUT_MS"] = "2147483647"
     env["DISABLE_AUTOUPDATER"] = "1"
     env["DISABLE_FEEDBACK_COMMAND"] = "1"
     env["DISABLE_ERROR_REPORTING"] = "1"

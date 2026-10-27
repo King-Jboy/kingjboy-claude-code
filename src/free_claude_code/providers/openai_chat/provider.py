@@ -72,6 +72,7 @@ from free_claude_code.providers.key_pool import ApiKeyPool
 from free_claude_code.providers.model_listing import extract_openai_model_infos
 from free_claude_code.providers.openai_stream import OpenAIStreamAdapter
 from free_claude_code.providers.stream_recovery import (
+    HoldbackSignal,
     RecoveryController,
     RecoveryFailureAction,
     TruncatedProviderStreamError,
@@ -82,6 +83,7 @@ from .output_cap import clamp_output_tokens, parse_output_token_cap
 from .profiles import OpenAIChatProfile
 from .reasoning_details import StructuredReasoningStream
 from .request_policy import build_openai_chat_request_body
+from .tool_call_identity import AmbiguousToolCallIdentityError
 from .tool_calls import (
     OpenAIToolCallAssembler,
     OpenAIToolCallCollector,
@@ -1014,134 +1016,141 @@ class _OpenAIChatStreamRunner:
                 if self._headers_at is None:
                     self._headers_at = asyncio.get_running_loop().time()
                 tool_argument_aliases = self._provider._tool_argument_aliases(body)
-                async for chunk in _chunks_with_keepalive(
-                    stream,
-                    quiet_after=UPSTREAM_QUIET_KEEPALIVE_SECONDS,
-                    interval=KEEPALIVE_INTERVAL_SECONDS,
-                ):
-                    if chunk is _KEEPALIVE:
-                        # message_start is still sitting in the holdback buffer,
-                        # and a ping ahead of it would be an illegal event order.
-                        # Releasing it here is what commits the response.
-                        for event in recovery.flush():
-                            yield event
-                        yield anthropic_ping_frame()
-                        continue
-                    if not attempt.accepted:
-                        await attempt.succeeded()
-                    chunk_usage = getattr(chunk, "usage", None)
-                    if chunk_usage is not None:
-                        usage_info = chunk_usage
-
-                    if not chunk.choices:
-                        continue
-
-                    choice = chunk.choices[0]
-                    delta = choice.delta
-                    if delta is None:
-                        continue
-
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
-                        if is_context_window_finish_reason(finish_reason):
-                            raise context_window_exceeded_provider_failure()
-                        logger.debug("{} finish_reason: {}", tag, finish_reason)
-
-                    reasoning = self._provider._profile.reasoning_delta(delta)
-                    if output_reasoning:
-                        if structured_reasoning is not None:
-                            for event in structured_reasoning.events(
-                                delta,
-                                ledger,
-                                native_reasoning=reasoning,
-                            ):
-                                for out_event in hold_event(event):
-                                    yield out_event
-                        elif reasoning is not None:
-                            for event in hold_events(ledger.ensure_thinking_block()):
+                async with recovery.read_stream(
+                    _chunks_with_keepalive(
+                        stream,
+                        quiet_after=UPSTREAM_QUIET_KEEPALIVE_SECONDS,
+                        interval=KEEPALIVE_INTERVAL_SECONDS,
+                    )
+                ) as chunks:
+                    async for chunk in chunks:
+                        if chunk is HoldbackSignal.EXPIRED:
+                            for event in recovery.flush():
                                 yield event
-                            if reasoning:
-                                for event in hold_event(
-                                    ledger.emit_thinking_delta(reasoning)
-                                ):
-                                    yield event
+                            continue
+                        if chunk is _KEEPALIVE:
+                            # message_start is still sitting in the holdback buffer,
+                            # and a ping ahead of it would be an illegal event order.
+                            # Releasing it here is what commits the response.
+                            for event in recovery.flush():
+                                yield event
+                            yield anthropic_ping_frame()
+                            continue
+                        if not attempt.accepted:
+                            await attempt.succeeded()
+                        chunk_usage = getattr(chunk, "usage", None)
+                        if chunk_usage is not None:
+                            usage_info = chunk_usage
 
-                    for event in self._provider._handle_extra_reasoning(
-                        delta,
-                        ledger,
-                        output_reasoning=output_reasoning,
-                    ):
-                        for out_event in hold_event(event):
-                            yield out_event
+                        if not chunk.choices:
+                            continue
 
-                    native_tool_calls = delta.tool_calls
-                    if native_tool_calls:
-                        released_text = function_tag_parser.disable()
-                        if released_text:
-                            for event in hold_events(
-                                _iter_visible_text_events(
+                        choice = chunk.choices[0]
+                        delta = choice.delta
+                        if delta is None:
+                            continue
+
+                        if choice.finish_reason:
+                            finish_reason = choice.finish_reason
+                            if is_context_window_finish_reason(finish_reason):
+                                raise context_window_exceeded_provider_failure()
+                            logger.debug("{} finish_reason: {}", tag, finish_reason)
+
+                        reasoning = self._provider._profile.reasoning_delta(delta)
+                        if output_reasoning:
+                            if structured_reasoning is not None:
+                                for event in structured_reasoning.events(
+                                    delta,
                                     ledger,
-                                    released_text,
-                                )
-                            ):
-                                yield event
-
-                    if delta.content:
-                        for part in think_parser.feed(delta.content):
-                            if part.type == ContentType.THINKING:
-                                if not output_reasoning:
-                                    continue
-                                for event in hold_events(
-                                    ledger.ensure_thinking_block()
+                                    native_reasoning=reasoning,
                                 ):
+                                    for out_event in hold_event(event):
+                                        yield out_event
+                            elif reasoning is not None:
+                                for event in hold_events(ledger.ensure_thinking_block()):
                                     yield event
-                                for event in hold_event(
-                                    ledger.emit_thinking_delta(part.content)
-                                ):
-                                    yield event
-                            else:
-                                safe_text = function_tag_parser.feed(part.content)
-                                if safe_text:
-                                    for event in hold_events(
-                                        _iter_text_parser_events(
-                                            ledger,
-                                            heuristic_parser,
-                                            safe_text,
-                                            tool_names=self._tool_names,
-                                        )
+                                if reasoning:
+                                    for event in hold_event(
+                                        ledger.emit_thinking_delta(reasoning)
                                     ):
                                         yield event
 
-                    if native_tool_calls:
-                        for event in hold_events(ledger.close_content_blocks()):
-                            yield event
-                        for tool_call in native_tool_calls:
-                            extra_content = tool_call_extra_content(tool_call)
-                            fn = getattr(tool_call, "function", None)
-                            tool_call_info = {
-                                "index": tool_call.index,
-                                "id": tool_call.id,
-                                "function": {
-                                    "name": getattr(fn, "name", None)
-                                    if fn is not None
-                                    else None,
-                                    "arguments": (getattr(fn, "arguments", "") or "")
-                                    if fn is not None
-                                    else "",
-                                },
-                            }
-                            if extra_content:
-                                tool_call_info["extra_content"] = extra_content
-                            for event in self._tool_calls.process_tool_call(
-                                tool_call_info,
-                                ledger,
-                                tool_names=self._tool_names,
-                                tool_name_buffers=tool_name_buffers,
-                                tool_argument_aliases=tool_argument_aliases,
-                                tool_argument_alias_buffers=tool_argument_alias_buffers,
-                            ):
-                                for out_event in hold_event(event):
-                                    yield out_event
+                        for event in self._provider._handle_extra_reasoning(
+                            delta,
+                            ledger,
+                            output_reasoning=output_reasoning,
+                        ):
+                            for out_event in hold_event(event):
+                                yield out_event
+
+                        native_tool_calls = delta.tool_calls
+                        if native_tool_calls:
+                            released_text = function_tag_parser.disable()
+                            if released_text:
+                                for event in hold_events(
+                                    _iter_visible_text_events(
+                                        ledger,
+                                        released_text,
+                                    )
+                                ):
+                                    yield event
+
+                        if delta.content:
+                            for part in think_parser.feed(delta.content):
+                                if part.type == ContentType.THINKING:
+                                    if not output_reasoning:
+                                        continue
+                                    for event in hold_events(
+                                        ledger.ensure_thinking_block()
+                                    ):
+                                        yield event
+                                    for event in hold_event(
+                                        ledger.emit_thinking_delta(part.content)
+                                    ):
+                                        yield event
+                                else:
+                                    safe_text = function_tag_parser.feed(part.content)
+                                    if safe_text:
+                                        for event in hold_events(
+                                            _iter_text_parser_events(
+                                                ledger,
+                                                heuristic_parser,
+                                                safe_text,
+                                                tool_names=self._tool_names,
+                                            )
+                                        ):
+                                            yield event
+
+                        if native_tool_calls:
+                            for event in hold_events(ledger.close_content_blocks()):
+                                yield event
+                            for tool_call in native_tool_calls:
+                                extra_content = tool_call_extra_content(tool_call)
+                                fn = getattr(tool_call, "function", None)
+                                tool_call_info = {
+                                    "index": tool_call.index,
+                                    "id": tool_call.id,
+                                    "function": {
+                                        "name": getattr(fn, "name", None)
+                                        if fn is not None
+                                        else None,
+                                        "arguments": (getattr(fn, "arguments", "") or "")
+                                        if fn is not None
+                                        else "",
+                                    },
+                                }
+                                if extra_content:
+                                    tool_call_info["extra_content"] = extra_content
+                                for event in self._tool_calls.process_tool_call(
+                                    tool_call_info,
+                                    ledger,
+                                    tool_names=self._tool_names,
+                                    tool_name_buffers=tool_name_buffers,
+                                    tool_argument_aliases=tool_argument_aliases,
+                                    tool_argument_alias_buffers=tool_argument_alias_buffers,
+                                ):
+                                    for out_event in hold_event(event):
+                                        yield out_event
 
                 if finish_reason is None:
                     raise TruncatedProviderStreamError(
@@ -1275,8 +1284,10 @@ class _OpenAIChatStreamRunner:
                             ),
                         )
                 generated_output = has_committed_sse_output(ledger)
+                identity_failure = isinstance(error, AmbiguousToolCallIdentityError)
                 complete_tool_salvageable = (
-                    generated_output
+                    not identity_failure
+                    and generated_output
                     and ledger.has_emitted_tool_block()
                     and all_emitted_tools_complete(ledger, self._request)
                 )
@@ -1683,7 +1694,14 @@ class _OpenAIChatStreamRunner:
                         )
                     if attempt.failure_retryable is not None:
                         retryable = attempt.failure_retryable
-                if not retryable or not retry_session.can_attempt:
+                if (
+                    not retryable
+                    or not retry_session.can_attempt
+                    or (
+                        isinstance(error, AmbiguousToolCallIdentityError)
+                        and terminal_seen
+                    )
+                ):
                     raise
                 trace_event(
                     stage="provider",
@@ -1781,8 +1799,7 @@ class _OpenAIChatStreamRunner:
             events.append(ledger.emit_text_delta(text_suffix))
         if recovered.tool_calls:
             events.extend(ledger.close_content_blocks())
-            for tool_call in recovered.tool_calls:
-                events.extend(self._tool_calls.process_tool_call(tool_call, ledger))
+            events.extend(self._tool_calls.process_completed_calls(recovered.tool_calls, ledger))
         text_tool_uses = getattr(recovered, "text_tool_uses", ())
         if text_tool_uses:
             events.extend(

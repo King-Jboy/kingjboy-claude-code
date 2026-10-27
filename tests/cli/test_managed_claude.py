@@ -264,3 +264,15 @@ def test_managed_claude_parser_returns_raw_for_non_json() -> None:
     )
 
     assert events == [{"type": "raw", "content": "not json"}]
+
+
+def test_claude_proxy_env_watchdog_and_timeouts() -> None:
+    env = build_claude_proxy_env(
+        proxy_root_url="http://127.0.0.1:8080",
+        auth_token="test-token",
+        base_env={},
+    )
+    assert env["CLAUDE_ENABLE_STREAM_WATCHDOG"] == "0"
+    assert env["CLAUDE_ENABLE_BYTE_WATCHDOG"] == "0"
+    assert env["API_FORCE_IDLE_TIMEOUT"] == "0"
+    assert env["API_TIMEOUT_MS"] == "2147483647"

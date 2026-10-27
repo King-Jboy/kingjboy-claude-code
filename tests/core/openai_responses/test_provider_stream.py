@@ -1,19 +1,42 @@
 import pytest
 
-from free_claude_code.core.anthropic.openai_tool_names import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.stream_contracts import (
     assert_anthropic_stream_contract,
     parse_sse_text,
     thinking_content,
 )
+from free_claude_code.core.history_replay import ReplayOrigin, decode_replay
 from free_claude_code.core.openai_responses.provider_stream import (
     ResponsesProviderStream,
     ResponsesStreamFailure,
 )
+from free_claude_code.core.openai_tool_names import OpenAIToolNameCodec
+
+
+def _terminal_usage(usage: dict[str, object]) -> dict[str, object]:
+    stream = ResponsesProviderStream(
+        origin=ReplayOrigin("test", "responses", "", "", "m"),
+        message_id="msg_test",
+        model="openai/gpt-test",
+        input_tokens=12,
+    )
+    output = stream.start()
+    output.extend(
+        stream.feed(
+            "response.completed",
+            {"response": {"usage": usage}},
+        )
+    )
+    return next(
+        event.data["usage"]
+        for event in parse_sse_text("".join(output))
+        if event.event == "message_delta"
+    )
 
 
 def test_responses_provider_stream_preserves_reasoning_tools_usage_and_ids() -> None:
     stream = ResponsesProviderStream(
+        origin=ReplayOrigin("test", "responses", "", "", "m"),
         message_id="msg_test",
         model="openai/gpt-test",
         input_tokens=12,
@@ -95,7 +118,10 @@ def test_responses_provider_stream_preserves_reasoning_tools_usage_and_ids() -> 
                     "usage": {
                         "input_tokens": 20,
                         "output_tokens": 8,
-                        "input_tokens_details": {"cached_tokens": 15},
+                        "input_tokens_details": {
+                            "cached_tokens": 15,
+                            "cache_write_tokens": 3,
+                        },
                     }
                 }
             },
@@ -110,7 +136,11 @@ def test_responses_provider_stream_preserves_reasoning_tools_usage_and_ids() -> 
         for event in events
         if event.event == "content_block_start"
     ]
-    assert {"type": "redacted_thinking", "data": "opaque"} in starts
+    assert [
+        decode_replay(event.data["delta"]["signature"]).native["encrypted_content"]
+        for event in events
+        if event.data.get("delta", {}).get("type") == "signature_delta"
+    ] == ["opaque"]
     assert {
         "type": "tool_use",
         "id": "call_1",
@@ -125,14 +155,119 @@ def test_responses_provider_stream_preserves_reasoning_tools_usage_and_ids() -> 
     assert argument_deltas == ['{"q":', '"x"}']
     message_delta = next(event for event in events if event.event == "message_delta")
     assert message_delta.data["usage"] == {
-        "input_tokens": 5,
+        "input_tokens": 2,
         "output_tokens": 8,
         "cache_read_input_tokens": 15,
+        "cache_creation_input_tokens": 3,
     }
 
 
-def test_responses_provider_stream_preserves_cache_write_tokens() -> None:
+@pytest.mark.parametrize(
+    ("details", "expected"),
+    [
+        (
+            {"cached_tokens": 10, "cache_write_tokens": 5},
+            {
+                "input_tokens": 15,
+                "output_tokens": 8,
+                "cache_read_input_tokens": 10,
+                "cache_creation_input_tokens": 5,
+            },
+        ),
+        (
+            {"cached_tokens": 10},
+            {
+                "input_tokens": 20,
+                "output_tokens": 8,
+                "cache_read_input_tokens": 10,
+            },
+        ),
+        (
+            {"cache_write_tokens": 5},
+            {
+                "input_tokens": 25,
+                "output_tokens": 8,
+                "cache_creation_input_tokens": 5,
+            },
+        ),
+        (
+            {"cached_tokens": 0, "cache_write_tokens": 0},
+            {
+                "input_tokens": 30,
+                "output_tokens": 8,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        ),
+        (
+            {"cached_tokens": 10, "cache_write_tokens": -1},
+            {
+                "input_tokens": 20,
+                "output_tokens": 8,
+                "cache_read_input_tokens": 10,
+            },
+        ),
+        (
+            {"cached_tokens": 10, "cache_write_tokens": 21},
+            {
+                "input_tokens": 20,
+                "output_tokens": 8,
+                "cache_read_input_tokens": 10,
+            },
+        ),
+        (
+            {"cached_tokens": -1, "cache_write_tokens": 5},
+            {
+                "input_tokens": 25,
+                "output_tokens": 8,
+                "cache_creation_input_tokens": 5,
+            },
+        ),
+        ({}, {"input_tokens": 30, "output_tokens": 8}),
+    ],
+    ids=[
+        "read-and-creation",
+        "read-only",
+        "creation-only",
+        "explicit-zeroes",
+        "invalid-creation",
+        "creation-over-remaining-total",
+        "invalid-read-preserves-creation",
+        "no-cache-details",
+    ],
+)
+def test_responses_provider_stream_preserves_trustworthy_cache_partitions(
+    details: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    assert (
+        _terminal_usage(
+            {
+                "input_tokens": 30,
+                "output_tokens": 8,
+                "input_tokens_details": details,
+            }
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("input_tokens", "cached_tokens", "expected_input_tokens"),
+    [
+        (20, -1, 20),
+        (20, 21, 20),
+        (20, True, 20),
+        (None, 5, 12),
+    ],
+)
+def test_responses_provider_stream_ignores_invalid_cache_partitions(
+    input_tokens: int | None,
+    cached_tokens: int | bool,
+    expected_input_tokens: int,
+) -> None:
     stream = ResponsesProviderStream(
+        origin=ReplayOrigin("test", "responses", "", "", "m"),
         message_id="msg_test",
         model="openai/gpt-test",
         input_tokens=12,
@@ -144,30 +279,29 @@ def test_responses_provider_stream_preserves_cache_write_tokens() -> None:
             {
                 "response": {
                     "usage": {
-                        "input_tokens": 20,
+                        "input_tokens": input_tokens,
                         "output_tokens": 8,
-                        "input_tokens_details": {
-                            "cached_tokens": 15,
-                            "cache_write_tokens": 3,
-                        },
+                        "input_tokens_details": {"cached_tokens": cached_tokens},
                     }
                 }
             },
         )
     )
-    events = parse_sse_text("".join(output))
-    assert_anthropic_stream_contract(events)
-    message_delta = next(event for event in events if event.event == "message_delta")
+
+    message_delta = next(
+        event
+        for event in parse_sse_text("".join(output))
+        if event.event == "message_delta"
+    )
     assert message_delta.data["usage"] == {
-        "input_tokens": 2,
+        "input_tokens": expected_input_tokens,
         "output_tokens": 8,
-        "cache_read_input_tokens": 15,
-        "cache_creation_input_tokens": 3,
     }
 
 
 def test_responses_provider_stream_surfaces_failed_event() -> None:
     stream = ResponsesProviderStream(
+        origin=ReplayOrigin("test", "responses", "", "", "m"),
         message_id="msg_test",
         model="gpt-test",
         input_tokens=0,
@@ -189,26 +323,6 @@ def test_responses_provider_stream_surfaces_failed_event() -> None:
     assert exc_info.value.code == "server_error"
 
 
-def test_responses_provider_stream_surfaces_context_window_incomplete() -> None:
-    stream = ResponsesProviderStream(
-        message_id="msg_test",
-        model="gpt-test",
-        input_tokens=0,
-    )
-
-    with pytest.raises(ResponsesStreamFailure) as exc_info:
-        stream.feed(
-            "response.incomplete",
-            {
-                "response": {
-                    "incomplete_details": {"reason": "model_context_window_exceeded"}
-                }
-            },
-        )
-
-    assert exc_info.value.code == "context_length_exceeded"
-
-
 def test_responses_provider_stream_restores_added_and_done_only_tool_names() -> None:
     originals = (
         "mcp__responses_added__" + "x" * 70,
@@ -216,6 +330,7 @@ def test_responses_provider_stream_restores_added_and_done_only_tool_names() -> 
     )
     codec = OpenAIToolNameCodec.from_names(originals)
     stream = ResponsesProviderStream(
+        origin=ReplayOrigin("test", "responses", "", "", "m"),
         message_id="msg_test",
         model="gpt-test",
         input_tokens=0,

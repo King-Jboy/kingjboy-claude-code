@@ -1,3 +1,5 @@
+import pytest
+import asyncio
 """Provider stream commit-boundary and recovery policy."""
 
 import httpx
@@ -5,6 +7,7 @@ import httpx2
 import openai
 
 from free_claude_code.providers.stream_recovery import (
+    HoldbackSignal,
     RecoveryController,
     RecoveryFailureAction,
     RecoveryHoldbackBuffer,
@@ -267,3 +270,158 @@ def test_holdback_discard_drops_uncommitted_events() -> None:
     holdback.discard()
 
     assert holdback.flush() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", [None, TimeoutError("upstream"), StopAsyncIteration()]
+)
+@pytest.mark.parametrize("expired_before_read", [False, True])
+async def test_deadline_preserves_the_pending_read_and_its_outcome(
+    monkeypatch, error, expired_before_read
+):
+    now = [0.0]
+    monkeypatch.setattr(
+        "free_claude_code.providers.stream_recovery.RecoveryHoldbackBuffer",
+        lambda: RecoveryHoldbackBuffer(
+            holdback_seconds=0.01,
+            now=(lambda: now[0]) if expired_before_read else None,
+        ),
+    )
+    recovery = RecoveryController()
+    recovery.push("buffered")
+    if expired_before_read:
+        now[0] = 1.0
+    release = asyncio.Event()
+    reads = []
+
+    class Source:
+        async def __anext__(self):
+            reads.append("read")
+            await release.wait()
+            if error is not None:
+                raise error
+            return "next"
+
+        def __aiter__(self):
+            return self
+
+    async with recovery.read_stream(Source()) as stream:
+        assert await asyncio.wait_for(anext(stream), 1) is HoldbackSignal.EXPIRED
+        assert reads == ["read"]
+        assert recovery.flush() == ["buffered"]
+        release.set()
+        if error is None:
+            assert await anext(stream) == "next"
+        else:
+            with pytest.raises(type(error)) as caught:
+                await anext(stream)
+            assert caught.value is error
+        assert reads == ["read"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired_before_read", [False, True])
+async def test_events_without_output_cannot_extend_a_buffer_deadline(
+    monkeypatch, expired_before_read
+):
+    now = [0.0]
+    monkeypatch.setattr(
+        "free_claude_code.providers.stream_recovery.RecoveryHoldbackBuffer",
+        lambda: RecoveryHoldbackBuffer(now=lambda: now[0]),
+    )
+    recovery = RecoveryController()
+    recovery.push("held")
+    if expired_before_read:
+        now[0] = 1.0
+    reads = []
+
+    async def source():
+        reads.append("first")
+        now[0] = 1.0
+        yield "ignored"
+        reads.append("second")
+        yield "next"
+
+    upstream = source()
+    try:
+        async with recovery.read_stream(upstream) as stream:
+            assert await anext(stream) == "ignored"
+            assert await anext(stream) is HoldbackSignal.EXPIRED
+            assert reads == ["first"]
+            assert recovery.flush() == ["held"]
+            assert await anext(stream) == "next"
+    finally:
+        await upstream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_empty_buffer_does_not_wake_or_read_ahead():
+    recovery = RecoveryController()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    read_count = 0
+
+    async def source():
+        nonlocal read_count
+        while True:
+            read_count += 1
+            entered.set()
+            await release.wait()
+            yield "next"
+
+    upstream = source()
+    read = None
+    try:
+        async with recovery.read_stream(upstream) as stream:
+            read = asyncio.create_task(anext(stream))
+            await asyncio.wait_for(entered.wait(), 1)
+            assert not read.done()
+            release.set()
+            assert await read == "next"
+            assert read_count == 1
+    finally:
+        release.set()
+        if read is not None:
+            read.cancel()
+            await asyncio.gather(read, return_exceptions=True)
+        await upstream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_drains_read_before_leaving_scope():
+    recovery = RecoveryController()
+    recovery.push("held")
+    entered = asyncio.Event()
+    closing = asyncio.Event()
+    close_release = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def source():
+        try:
+            entered.set()
+            await asyncio.Event().wait()
+            yield "unreachable"
+        finally:
+            closing.set()
+            await close_release.wait()
+            closed.set()
+
+    async def consume():
+        async with recovery.read_stream(source()) as stream:
+            await anext(stream)
+
+    consumer = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        consumer.cancel()
+        await asyncio.wait_for(closing.wait(), 1)
+        consumer.cancel()
+        await asyncio.sleep(0)
+        assert not consumer.done()
+        assert not closed.is_set()
+    finally:
+        close_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(consumer, 1)
+    assert closed.is_set()
