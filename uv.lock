@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14.0"
 
 [[package]]
@@ -630,7 +630,7 @@ wheels = [
 
 [[package]]
 name = "free-claude-code"
-version = "6.20.92"
+version = "6.20.94"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

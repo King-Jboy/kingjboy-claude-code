@@ -880,3 +880,39 @@ async def test_flaky_model_recovery_episode_does_not_stall_healthy_model() -> No
     )
     await healthy_attempt.succeeded()
     await healthy_attempt.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failure_override_propagates_effective_error_into_recovery_episode() -> (
+    None
+):
+    overridden = ExecutionFailure(
+        kind=FailureKind.OVERLOADED,
+        message="degraded function",
+        status_code=503,
+        retryable=True,
+    )
+    controller = _controller(max_attempts=2)
+    owner_session = controller.new_retry_session()
+    first = await controller.open_attempt(owner_session)
+    assert await first.retry(
+        _status_error(400),
+        provider_failure_override=lambda _err: overridden,
+    )
+    await first.aclose()
+    assert controller._episode is not None
+    assert controller._episode.last_error is overridden
+
+    waiter_task = asyncio.create_task(
+        controller.open_attempt(controller.new_retry_session())
+    )
+    await asyncio.sleep(0)
+    second = await controller.open_attempt(owner_session)
+    assert not await second.retry(
+        _status_error(400),
+        provider_failure_override=lambda _err: overridden,
+    )
+    await second.aclose()
+    with pytest.raises(ProviderRecoveryExhausted) as exc_info:
+        await waiter_task
+    assert exc_info.value.last_error is overridden

@@ -557,3 +557,13 @@ def test_think_tag_parser_preserves_whitespace_when_no_think_tag():
     assert len(chunks2) == 1
     assert chunks2[0].type == ContentType.TEXT
     assert chunks2[0].content == "\n\nHello world"
+
+
+def test_heuristic_tool_parser_holds_control_token_at_index_zero():
+    parser = HeuristicToolParser()
+    filtered1, tools1 = parser.feed("<|im_end")
+    assert filtered1 == ""
+    assert tools1 == []
+    filtered2, tools2 = parser.feed("|>Visible answer")
+    assert filtered2 == "Visible answer"
+    assert tools2 == []

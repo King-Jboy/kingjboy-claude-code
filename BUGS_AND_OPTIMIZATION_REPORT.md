@@ -1,4 +1,4 @@
-# Free Claude Code (`v6.20.92`) — Bug Audit, Maintainability Refactor & Faster-Response Optimization Report
+# Free Claude Code (`v6.20.94`) — Bug Audit, Maintainability Refactor & Faster-Response Optimization Report
 
 ---
 
@@ -39,6 +39,35 @@
   1. `tests/conftest.py` disabled `.env` loading via `env_file=None` but did not strip ambient container environment variables (`PORT`, `HOST`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.), causing `test_empty_numeric_settings_use_defaults` and `test_catalog_publication_tracks_warm_refresh_and_direct_cache` to fail whenever the host environment injected `PORT=8080` or `GEMINI_API_KEY`.
   2. `tests/cli/test_cli.py` mocked `asyncio.subprocess.Process` with `AsyncMock()`, making synchronous `StreamWriter.write()` and `StreamWriter.close()` return unawaited coroutines in 14 test methods.
 - **Fix Applied**: Sanitized ambient provider/server env vars in `tests/conftest.py` and added `_make_mock_process()` with synchronous `stdin.write`/`stdin.close` in `tests/cli/test_cli.py`.
+
+### Bug 7: `HeuristicToolParser._split_incomplete_control_token_tail` Leaks Control Tokens When Split at Index 0 (`core/anthropic/tools.py:157-177`)
+- **Severity**: Medium-High (Leaks raw model control tokens such as `<|im_end|>` or `<|tool_calls_section_begin|>` into visible assistant text when chunk boundaries split at index 0).
+- **Bad Logic / Root Cause**: When a chunk starts at index 0 with `"<|"` (e.g., Chunk 1 is `"<|im_end"`, Chunk 2 is `"|>"`), `start = self._buffer.rfind("<|")` is `0`, so `_split_incomplete_control_token_tail()` returned `prefix = ""`. In `feed()`, `if safe_prefix:` evaluated `""` as falsy and fell through to the `else:` branch, immediately flushing `self._buffer` (`"<|im_end"`) into `filtered_output_parts` instead of holding it in `self._buffer`. Additionally, if literal text contained `<|` followed by `|`, `>`, or `> 80` characters, it held the tail until stream completion even though `_CONTROL_TOKEN_RE` (`<\|[^|>]{1,80}\|>`) could never match.
+- **Fix Applied**: Updated `_split_incomplete_control_token_tail()` to return `tuple[str, bool]` (`(prefix, held_tail)`) after verifying `len(tail_body) <= 80` and `"|" not in tail_body and ">" not in tail_body`, and updated `feed()` to hold `self._buffer` whenever `held_tail` is `True`.
+
+### Bug 8: `_OpenAIChatStreamRunner._repair_tool_args` Fails to Restore NIM Parameter Aliases (`_fcc_arg_*`) or Sanitize `Task` `run_in_background` (`providers/openai_chat/provider.py:1895-2025`)
+- **Severity**: High (Breaks midstream JSON tool-argument repair for NVIDIA NIM aliased tools and bypasses `Task` `run_in_background=False` safety enforcement).
+- **Bad Logic / Root Cause**:
+  1. For tools with NIM parameter aliases (`tool_argument_aliases`, e.g., `_fcc_arg_type` -> `type`), the partial prefix buffered in `tool_argument_alias_buffers[tool_index]` uses the wire alias (`_fcc_arg_type`), whereas `schemas` requires the original Anthropic parameter name (`type`). Validating `repair_prefix + suffix` without restoring aliases caused schema validation to fail for required aliased parameters, or emitted raw `_fcc_arg_*` keys and left `tool_argument_alias_buffers[tool_index]` unpopped (causing duplicate emission in `flush_tool_argument_alias_buffers()`).
+  2. For the `Task` tool, repairing `state.task_arg_buffer` emitted raw JSON directly without routing through `ledger.blocks.buffer_task_args()`, bypassing `run_in_background = False` coercion and leaving `state.task_arg_buffer` unconsumed.
+- **Fix Applied**: Updated `_repair_tool_args()` to restore wire aliases before schema validation and emission, pop `tool_argument_alias_buffers[tool_index]`, and route `Task` buffer repairs through `ledger.blocks.buffer_task_args()`.
+
+### Bug 9: `StrictSlidingWindowLimiter` Uses `_times[0]` Instead of `_times[len(_times) - _rate_limit]` After Dynamic Capacity Reduction (`core/rate_limit.py:55-97`)
+- **Severity**: Medium (Causes multi-wake busy sleep loops in `_acquire` and under-reports wait times in `next_available_in` when `ApiKeyPool` lowers `_rate_limit` during key cooldowns).
+- **Bad Logic / Root Cause**: `set_rate_limit()` dynamically lowers `_rate_limit` while preserving already-recorded timestamps in `_times`. When `len(_times) > _rate_limit`, expiring `_times[0]` only reduces `len(_times)` by 1 (still `>= _rate_limit`). Both `next_available_in()` and `_acquire()` computed sleep delay from `self._times[0]` instead of `self._times[len(self._times) - self._rate_limit]`.
+- **Fix Applied**: Updated `next_available_in()` and `_acquire()` in `src/free_claude_code/core/rate_limit.py` to compute wait time from `unlock_index = len(self._times) - self._rate_limit`.
+
+### Bug 10: `ProviderAttempt.retry` and `retry_after_acceptance` Record Raw `error` Instead of `effective_error` in Recovery Episodes (`providers/admission.py:165-193`)
+- **Severity**: Medium (Exposes raw HTTP 400 errors instead of overridden `ExecutionFailure(OVERLOADED, 503)` when retries exhaust on `ProviderRecoveryExhausted`).
+- **Bad Logic / Root Cause**: When `provider_failure_override(error)` upgrades a provider error (such as NIM HTTP 400 `"DEGRADED function cannot be invoked"` -> `ExecutionFailure(OVERLOADED, 503, retryable=True)`), `retry()` and `retry_after_acceptance()` checked `is_retryable_provider_error(effective_error)` but passed `error=error` into `_attempt_failed` / `_accepted_attempt_failed`.
+- **Fix Applied**: Updated `ProviderAttempt.retry()` and `retry_after_acceptance()` in `src/free_claude_code/providers/admission.py` to pass `error=effective_error`.
+
+### Bug 11: Unawaited Background `warmup()` Coroutine on Init & `_client_for_key` Mock-Option Cache Collision (`providers/openai_chat/provider.py:259-340`)
+- **Severity**: Medium (Leaks `RuntimeWarning: coroutine 'connect_tcp.<locals>.try_connect' was never awaited` when short-lived providers close, and returns stale cached clients when `with_options` is rebound).
+- **Bad Logic / Root Cause**:
+  1. `_prewarm_and_keepalive()` immediately fired `await self.warmup()` before `await asyncio.sleep(45.0)`, causing every provider instantiation inside a running event loop to open an unawaited TCP connection that leaked `connect_tcp` coroutines on teardown; additionally `cleanup()` cancelled `_keepalive_task` without awaiting it before closing the underlying client.
+  2. `_client_for_key(key)` keyed its cache by `(id(self._client), key)` without `id(getattr(self._client, "with_options", None))`.
+- **Fix Applied**: Updated `_prewarm_and_keepalive()` to sleep before issuing background keepalive probes, awaited cancelled `_keepalive_task` in `cleanup()`, and included `id(with_options)` in `_client_for_key`'s cache key.
 
 ---
 

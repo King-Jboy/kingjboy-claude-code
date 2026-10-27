@@ -172,7 +172,7 @@ class ProviderAttempt:
         should_retry = await self._controller._attempt_failed(
             self._session,
             self._permit,
-            error=error,
+            error=effective_error,
             status=status,
         )
         self._resolved = True
@@ -200,7 +200,7 @@ class ProviderAttempt:
             return False
         return self._controller._accepted_attempt_failed(
             self._session,
-            error=error,
+            error=effective_error,
             status=retryable_upstream_status(effective_error),
         )
 

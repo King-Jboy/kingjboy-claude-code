@@ -1,6 +1,7 @@
 """Concrete OpenAI-compatible provider and per-request stream execution."""
 
 import asyncio
+import json
 import sys
 import uuid
 from collections import OrderedDict
@@ -271,7 +272,7 @@ class OpenAIChatProvider(BaseProvider):
         self._admission = admission
         self._default_headers = default_headers
         self._client = self._build_client(api_key_provider or self._api_key)
-        self._key_clients: dict[tuple[int, str], Any] = {}
+        self._key_clients: dict[tuple[int, int, str], Any] = {}
         self._key_pool = (
             ApiKeyPool(
                 config.api_keys,
@@ -323,7 +324,11 @@ class OpenAIChatProvider(BaseProvider):
 
     def _client_for_key(self, key: str) -> Any:
         """Return a cached per-key AsyncOpenAI view sharing the underlying HTTP pool."""
-        cache_key = (id(self._client), key)
+        cache_key = (
+            id(self._client),
+            id(getattr(self._client, "with_options", None)),
+            key,
+        )
         cached = self._key_clients.get(cache_key)
         if cached is None:
             cached = self._client.with_options(api_key=key)
@@ -336,8 +341,7 @@ class OpenAIChatProvider(BaseProvider):
         return self._key_pool
 
     async def _prewarm_and_keepalive(self) -> None:
-        """Pre-warm TLS socket to upstream and keep it active across idle gaps."""
-        await self.warmup()
+        """Keep the upstream TLS socket warm across idle gaps."""
         while True:
             await asyncio.sleep(45.0)
             await self.warmup()
@@ -353,8 +357,12 @@ class OpenAIChatProvider(BaseProvider):
 
     async def cleanup(self) -> None:
         """Release HTTP client resources."""
-        if hasattr(self, "_keepalive_task") and self._keepalive_task is not None:
-            self._keepalive_task.cancel()
+        task = getattr(self, "_keepalive_task", None)
+        if task is not None:
+            self._keepalive_task = None
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
         client = getattr(self, "_client", None)
         if client is not None:
             await client.close()
@@ -1891,21 +1899,48 @@ class _OpenAIChatStreamRunner:
         retry_session: ProviderRetrySession,
     ) -> list[str] | None:
         schemas = tool_schemas_by_name(self._request)
+        tool_argument_aliases = self._provider._tool_argument_aliases(body)
         events: list[str] = []
         for tool_index, state in started_tool_states(ledger):
             block = ledger.tool_block_for_tool_index(tool_index)
             emitted_prefix = block.content if block is not None else ""
             repair_prefix = emitted_prefix
+            from_task_buffer = False
+            from_alias_buffer = False
             if not repair_prefix and state.name == "Task" and state.task_arg_buffer:
                 repair_prefix = state.task_arg_buffer
+                from_task_buffer = True
             if not repair_prefix and tool_index in tool_argument_alias_buffers:
                 repair_prefix = tool_argument_alias_buffers[tool_index]
+                from_alias_buffer = True
+            aliases = tool_argument_aliases.get(state.name, {})
+            candidate_for_validation = (
+                self._tool_calls._restore_aliased_tool_arguments(repair_prefix, aliases)
+                if aliases
+                else repair_prefix
+            )
             if (
-                parse_complete_tool_input(repair_prefix, state.name, schemas)
+                candidate_for_validation is not None
+                and parse_complete_tool_input(
+                    candidate_for_validation, state.name, schemas
+                )
                 is not None
             ):
-                if not emitted_prefix and repair_prefix:
-                    events.append(ledger.emit_tool_delta(tool_index, repair_prefix))
+                if not emitted_prefix and candidate_for_validation:
+                    if from_task_buffer:
+                        parsed_task = ledger.blocks.buffer_task_args(tool_index, "")
+                        if parsed_task is not None:
+                            events.append(
+                                ledger.emit_tool_delta(
+                                    tool_index, json.dumps(parsed_task)
+                                )
+                            )
+                    else:
+                        if from_alias_buffer:
+                            tool_argument_alias_buffers.pop(tool_index, None)
+                        events.append(
+                            ledger.emit_tool_delta(tool_index, candidate_for_validation)
+                        )
                 continue
 
             schema = schemas.get(state.name)
@@ -1916,6 +1951,7 @@ class _OpenAIChatStreamRunner:
                 input_schema=schema.input_schema if schema is not None else None,
             )
             accepted_suffix: str | None = None
+            restored_full_json: str | None = None
             repair_attempt = 0
             while retry_session.can_attempt:
                 repair_attempt += 1
@@ -1924,6 +1960,31 @@ class _OpenAIChatStreamRunner:
                     include_reasoning=False,
                     retry_session=retry_session,
                 )
+                if aliases and not emitted_prefix:
+                    # Restore wire aliases before validating against the original tool schema.
+                    restored_candidate = (
+                        self._tool_calls._restore_aliased_tool_arguments(
+                            repair_prefix + recovered.text.strip(), aliases
+                        )
+                    )
+                    if (
+                        restored_candidate is not None
+                        and parse_complete_tool_input(
+                            restored_candidate, state.name, schemas
+                        )
+                        is not None
+                    ):
+                        accepted_suffix = recovered.text.strip()
+                        restored_full_json = restored_candidate
+                        trace_event(
+                            stage="provider",
+                            event="provider.recovery.tool_repaired",
+                            source="provider",
+                            provider=self._provider._provider_name,
+                            tool_name=state.name,
+                            attempt=repair_attempt,
+                        )
+                        break
                 repair = accept_tool_json_repair(
                     repair_prefix,
                     recovered.text,
@@ -1943,9 +2004,25 @@ class _OpenAIChatStreamRunner:
                     break
             if accepted_suffix is None:
                 return None
-            to_emit = (
-                accepted_suffix if emitted_prefix else repair_prefix + accepted_suffix
-            )
+            if from_task_buffer:
+                parsed_task = ledger.blocks.buffer_task_args(
+                    tool_index, accepted_suffix
+                )
+                if parsed_task is not None:
+                    events.append(
+                        ledger.emit_tool_delta(tool_index, json.dumps(parsed_task))
+                    )
+                continue
+            if from_alias_buffer:
+                tool_argument_alias_buffers.pop(tool_index, None)
+            if restored_full_json is not None and not emitted_prefix:
+                to_emit = restored_full_json
+            else:
+                to_emit = (
+                    accepted_suffix
+                    if emitted_prefix
+                    else repair_prefix + accepted_suffix
+                )
             if to_emit:
                 events.append(ledger.emit_tool_delta(tool_index, to_emit))
         if not all_emitted_tools_complete(ledger, self._request):

@@ -338,17 +338,21 @@ class HeuristicToolParser:
     def _strip_control_tokens(self, text: str) -> str:
         return _CONTROL_TOKEN_RE.sub("", text)
 
-    def _split_incomplete_control_token_tail(self) -> str:
+    def _split_incomplete_control_token_tail(self) -> tuple[str, bool]:
         start = self._buffer.rfind(_CONTROL_TOKEN_START)
         if start == -1:
-            return ""
+            return "", False
         end = self._buffer.find(_CONTROL_TOKEN_END, start)
         if end != -1:
-            return ""
+            return "", False
+
+        tail_body = self._buffer[start + len(_CONTROL_TOKEN_START) :]
+        if len(tail_body) > 80 or "|" in tail_body or ">" in tail_body:
+            return "", False
 
         prefix = self._buffer[:start]
         self._buffer = self._buffer[start:]
-        return prefix
+        return prefix, True
 
     def feed(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         """Feed text and return safe text plus detected tool calls."""
@@ -365,9 +369,10 @@ class HeuristicToolParser:
                     self._buffer = self._buffer[idx:]
                     self._state = ParserState.MATCHING_FUNCTION
                 else:
-                    safe_prefix = self._split_incomplete_control_token_tail()
-                    if safe_prefix:
-                        filtered_output_parts.append(safe_prefix)
+                    safe_prefix, held_tail = self._split_incomplete_control_token_tail()
+                    if held_tail:
+                        if safe_prefix:
+                            filtered_output_parts.append(safe_prefix)
                         break
 
                     filtered_output_parts.append(self._buffer)

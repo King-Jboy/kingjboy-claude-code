@@ -74,3 +74,23 @@ def test_strict_window_rejects_invalid_config():
         StrictSlidingWindowLimiter(rate_limit=0, rate_window=1.0)
     with pytest.raises(ValueError):
         StrictSlidingWindowLimiter(rate_limit=1, rate_window=0.0)
+
+
+@pytest.mark.asyncio
+async def test_strict_window_dynamic_rate_limit_reduction_waits_for_excess_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 10.0
+    monkeypatch.setattr(rate_limit_module.time, "monotonic", lambda: now)
+    lim = StrictSlidingWindowLimiter(rate_limit=3, rate_window=60.0)
+    await lim.acquire()
+    now = 20.0
+    await lim.acquire()
+    now = 30.0
+    await lim.acquire()
+
+    # Lower capacity from 3 -> 1 while 3 timestamps [10.0, 20.0, 30.0] are recorded.
+    # For len(_times) < 1 to hold, timestamps at index 0 (10.0), 1 (20.0), and 2 (30.0)
+    # must expire; the 1-slot window only unlocks when the latest excess timestamp (30.0) expires at t=90.0.
+    lim.set_rate_limit(1)
+    assert lim.next_available_in() == pytest.approx(60.0)

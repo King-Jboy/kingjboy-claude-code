@@ -76,7 +76,8 @@ class StrictSlidingWindowLimiter:
         self._evict_expired(now)
         if len(self._times) < self._rate_limit:
             return 0.0
-        return max(0.0, (self._times[0] + self._rate_window) - now)
+        unlock_index = len(self._times) - self._rate_limit
+        return max(0.0, (self._times[unlock_index] + self._rate_window) - now)
 
     def _evict_expired(self, now: float) -> None:
         """Drop timestamps that have left the trailing window."""
@@ -97,8 +98,9 @@ class StrictSlidingWindowLimiter:
                     self._times.append(time.monotonic())
                     return True
 
-                oldest = self._times[0]
-                wait_time = max(0.0, (oldest + self._rate_window) - now)
+                unlock_index = len(self._times) - self._rate_limit
+                oldest_blocking = self._times[unlock_index]
+                wait_time = max(0.0, (oldest_blocking + self._rate_window) - now)
 
             if wait_time > 0:
                 await asyncio.sleep(wait_time)
