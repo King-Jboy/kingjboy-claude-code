@@ -1,4 +1,4 @@
-# Free Claude Code (`v6.20.91`) — Complete Codebase Summary & Module Reference
+# Free Claude Code (`v6.20.92`) — Complete Codebase Summary & Module Reference
 
 ## 1. Executive Overview
 
