@@ -317,3 +317,25 @@ def test_admin_shows_the_dotenv_auth_token_the_server_uses(
 
     assert entry["value"] == "file-token"
     assert entry["source"] != "process"
+
+
+def test_repo_env_settings_survive_when_managed_env_has_partial_or_unmanaged_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    managed = _managed_env(tmp_path, monkeypatch, "CUSTOM_TOKEN=keep-me\n")
+    (tmp_path / ".env").write_text(
+        "MODEL=deepseek/deepseek-chat\nDEEPSEEK_API_KEY=repo-deepseek-key\n",
+        encoding="utf-8",
+    )
+    for key in ("MODEL", "DEEPSEEK_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    prepared = prepare_admin_update({"GROQ_API_KEY": "groq-key"})
+    assert prepared.valid, prepared.errors
+    commit_prepared_admin_update(prepared)
+
+    saved = dotenv_values_from_file(managed)
+    assert saved["CUSTOM_TOKEN"] == "keep-me"
+    assert saved["MODEL"] == "deepseek/deepseek-chat"
+    assert saved["DEEPSEEK_API_KEY"] == "repo-deepseek-key"
+    assert saved["GROQ_API_KEY"] == "groq-key"

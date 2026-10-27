@@ -62,9 +62,11 @@ def dotenv_values_from_text(text: str) -> dict[str, str]:
 def template_values() -> dict[str, str]:
     """Return .env.example values plus manifest defaults for newer fields."""
 
-    values = dotenv_values_from_text(load_env_template_or_empty())
+    raw_template = dotenv_values_from_text(load_env_template_or_empty())
+    values = {field.key: field.default for field in FIELDS}
     for field in FIELDS:
-        values.setdefault(field.key, field.default)
+        if field.key in raw_template and not field.secret:
+            values[field.key] = field.default or raw_template[field.key]
     return values
 
 

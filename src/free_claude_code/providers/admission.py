@@ -30,11 +30,18 @@ DEFAULT_UPSTREAM_JITTER = 1.0
 class ProviderRetrySession:
     """One non-multiplying upstream-attempt budget for a logical execution."""
 
-    def __init__(self, *, max_attempts: int, request_id: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_attempts: int,
+        request_id: str | None = None,
+        model: str | None = None,
+    ) -> None:
         if max_attempts <= 0:
             raise ValueError("max_attempts must be > 0")
         self._max_attempts = max_attempts
         self._request_id = request_id
+        self._model = model
         self._attempts_started = 0
         self._terminal_error: Exception | None = None
         self._retry_not_before: float | None = None
@@ -46,6 +53,14 @@ class ProviderRetrySession:
     @property
     def request_id(self) -> str | None:
         return self._request_id
+
+    @property
+    def model(self) -> str | None:
+        return self._model
+
+    @model.setter
+    def model(self, value: str | None) -> None:
+        self._model = value
 
     @property
     def attempts_started(self) -> int:
@@ -249,7 +264,7 @@ class ProviderAdmissionController:
         )
         self._concurrency_sem = asyncio.Semaphore(max_concurrency)
         self._condition = asyncio.Condition()
-        self._episode: _RecoveryEpisode | None = None
+        self._episodes: dict[str | None, _RecoveryEpisode] = {}
         self._next_generation = 1
         logger.info(
             "Provider admission initialized for {} ({} req / {}s, "
@@ -261,15 +276,58 @@ class ProviderAdmissionController:
             max_attempts,
         )
 
+    @property
+    def _episode(self) -> _RecoveryEpisode | None:
+        return self._episodes.get(None)
+
+    @_episode.setter
+    def _episode(self, value: _RecoveryEpisode | None) -> None:
+        if value is None:
+            self._episodes.pop(None, None)
+        else:
+            self._episodes[None] = value
+
+    def _episode_for(self, session: ProviderRetrySession) -> _RecoveryEpisode | None:
+        return self._episodes.get(session.model)
+
+    def _set_episode_for(
+        self,
+        session: ProviderRetrySession,
+        episode: _RecoveryEpisode | None,
+    ) -> None:
+        if episode is None:
+            self._episodes.pop(session.model, None)
+        else:
+            self._episodes[session.model] = episode
+
+    def set_rate_limit(self, rate_limit: int) -> None:
+        """Retune the proactive sliding-window capacity as pool keys change state."""
+        self._proactive_limiter.set_rate_limit(max(1, rate_limit))
+
+    def try_acquire_hedge_slot(self) -> bool:
+        """Acquire a non-blocking rate and concurrency slot for a speculative hedge."""
+        if self._concurrency_sem.locked():
+            return False
+        if not self._proactive_limiter.try_acquire():
+            return False
+        self._concurrency_sem._value -= 1
+        return True
+
+    def release_hedge_slot(self) -> None:
+        """Release the extra concurrency slot held while two hedged opens race."""
+        self._concurrency_sem.release()
+
     def new_retry_session(
         self,
         *,
         request_id: str | None = None,
+        model: str | None = None,
     ) -> ProviderRetrySession:
         """Return a fresh logical-execution retry budget."""
         return ProviderRetrySession(
             max_attempts=self._max_attempts,
             request_id=request_id,
+            model=model,
         )
 
     async def open_attempt(self, session: ProviderRetrySession) -> ProviderAttempt:
@@ -351,7 +409,7 @@ class ProviderAdmissionController:
             sleep_delay: float | None = None
             claimed_generation: int | None = None
             async with self._condition:
-                episode = self._episode
+                episode = self._episode_for(session)
                 if episode is None:
                     return _GatePermit(generation=None, probe=False)
 
@@ -363,6 +421,7 @@ class ProviderAdmissionController:
                         leader=session,
                         ready_at=now,
                         last_error=episode.last_error,
+                        scope_model=session.model,
                     )
 
                 if episode.leader is None:
@@ -382,7 +441,7 @@ class ProviderAdmissionController:
                     try:
                         await self._condition.wait()
                     except asyncio.CancelledError:
-                        current = self._episode
+                        current = self._episode_for(session)
                         if (
                             current is not None
                             and current.generation == episode.generation
@@ -402,7 +461,7 @@ class ProviderAdmissionController:
                     )
                     await asyncio.sleep(sleep_delay)
                 async with self._condition:
-                    episode = self._episode
+                    episode = self._episode_for(session)
                     if (
                         episode is not None
                         and episode.generation == claimed_generation
@@ -443,7 +502,7 @@ class ProviderAdmissionController:
         session: ProviderRetrySession,
         permit: _GatePermit,
     ) -> bool:
-        episode = self._episode
+        episode = self._episode_for(session)
         if not permit.probe:
             return episode is None
         return (
@@ -465,7 +524,7 @@ class ProviderAdmissionController:
             episode = self._matching_probe(session, permit)
             if episode is None:
                 return
-            self._episode = None
+            self._set_episode_for(session, None)
             self._condition.notify_all()
         trace_event(
             stage="provider",
@@ -505,7 +564,7 @@ class ProviderAdmissionController:
             episode = self._matching_probe(session, permit)
             if episode is None:
                 return
-            self._episode = None
+            self._set_episode_for(session, None)
             self._condition.notify_all()
         trace_event(
             stage="provider",
@@ -548,7 +607,7 @@ class ProviderAdmissionController:
         exhausted_episode = False
 
         async with self._condition:
-            episode = self._episode
+            episode = self._episode_for(session)
             matching_probe = self._matching_probe(session, permit)
             if can_retry:
                 if episode is None:
@@ -556,6 +615,7 @@ class ProviderAdmissionController:
                         leader=session,
                         ready_at=time.monotonic() + delay,
                         last_error=error,
+                        scope_model=session.model,
                     )
                     became_leader = True
                 elif matching_probe is not None:
@@ -579,6 +639,7 @@ class ProviderAdmissionController:
                         ready_at=time.monotonic(),
                         last_error=error,
                         request_id=session.request_id,
+                        scope_model=session.model,
                     )
                 episode.last_error = error
                 episode.leader = None
@@ -716,6 +777,7 @@ class ProviderAdmissionController:
         ready_at: float,
         last_error: Exception,
         request_id: str | None = None,
+        scope_model: str | None = None,
     ) -> _RecoveryEpisode:
         episode = _RecoveryEpisode(
             generation=self._next_generation,
@@ -724,7 +786,8 @@ class ProviderAdmissionController:
             last_error=last_error,
         )
         self._next_generation += 1
-        self._episode = episode
+        model_key = leader.model if leader is not None else scope_model
+        self._episodes[model_key] = episode
         trace_event(
             stage="provider",
             event="provider.recovery.opened",
@@ -740,7 +803,7 @@ class ProviderAdmissionController:
         session: ProviderRetrySession,
         permit: _GatePermit,
     ) -> _RecoveryEpisode | None:
-        episode = self._episode
+        episode = self._episode_for(session)
         if (
             not permit.probe
             or episode is None
@@ -773,7 +836,7 @@ class ProviderAdmissionController:
         generation: int,
     ) -> None:
         async with self._condition:
-            episode = self._episode
+            episode = self._episode_for(session)
             if (
                 episode is None
                 or episode.generation != generation
@@ -794,7 +857,7 @@ class ProviderAdmissionController:
         belongs to nobody and would block the next leader forever.
         """
         async with self._condition:
-            episode = self._episode
+            episode = self._episode_for(session)
             if episode is None or episode.leader is not session:
                 return
             episode.leader = None

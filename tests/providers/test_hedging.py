@@ -223,3 +223,48 @@ async def test_tls_warmup_issues_head_request():
 
     # Calling cleanup cancels keepalive task without errors
     await provider.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_hedged_open_does_not_exceed_admission_concurrency_bulkhead():
+    """When admission concurrency has no spare slot, hedging waits on Key 1 instead of breaching max_concurrency."""
+    from free_claude_code.providers.admission import ProviderAdmissionController
+
+    keys = ["key-1", "key-2"]
+    config = _pooled_config(keys, hedge_delay=0.02)
+    admission = ProviderAdmissionController(
+        provider_name="open_router",
+        rate_limit=100,
+        rate_window=60.0,
+        max_concurrency=1,
+        base_delay=0.0,
+        max_delay=0.0,
+        jitter=0.0,
+    )
+    provider = OpenRouterProvider(config, admission=admission)
+
+    calls: list[str] = []
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            calls.append(api_key)
+            await asyncio.sleep(0.05)
+            return DummyStream(api_key)
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.close = AsyncMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    session = admission.new_retry_session()
+    stream, _, attempt = await provider._create_stream({"model": "test-model"}, session)
+    await attempt.aclose()
+    await provider.cleanup()
+
+    assert stream is not None
+    assert calls == ["key-1"]

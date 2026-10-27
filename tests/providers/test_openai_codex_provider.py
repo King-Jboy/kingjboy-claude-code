@@ -802,3 +802,95 @@ async def test_iter_sse_handles_eof_done_without_trailing_newline() -> None:
     events = [event async for event in _iter_sse(response)]
     assert len(events) == 1
     assert events[0][0] == "response.output_item.added"
+
+
+def test_codex_provider_uses_canonical_package_version() -> None:
+    from free_claude_code.core.version import package_version
+    from free_claude_code.providers.openai_codex.provider import FCC_VERSION
+
+    assert package_version() == FCC_VERSION
+
+
+@pytest.mark.asyncio
+async def test_sse_with_keepalive_emits_keepalive_during_upstream_silence() -> None:
+    import asyncio
+
+    from free_claude_code.providers.openai_codex.provider import _sse_with_keepalive
+
+    async def slow_events() -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        await asyncio.sleep(0.08)
+        yield ("response.output_text.delta", {"delta": "ok"})
+
+    items = [
+        item
+        async for item in _sse_with_keepalive(
+            slow_events(),
+            quiet_after=0.02,
+            interval=0.01,
+        )
+    ]
+
+    assert None in items
+    assert [item for item in items if item is not None] == [
+        ("response.output_text.delta", {"delta": "ok"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_keepalive_committed_stream_without_output_still_early_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import free_claude_code.providers.openai_codex.provider as codex_provider_mod
+
+    monkeypatch.setattr(codex_provider_mod, "UPSTREAM_QUIET_KEEPALIVE_SECONDS", 0.01)
+    monkeypatch.setattr(codex_provider_mod, "KEEPALIVE_INTERVAL_SECONDS", 0.005)
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await asyncio.sleep(0.03)
+            return httpx.Response(
+                200,
+                text=_sse(
+                    (
+                        "response.created",
+                        {"type": "response.created", "response": {"id": "first"}},
+                    ),
+                ),
+                headers={"content-type": "text/event-stream"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            text=_complete_stream("recovered-after-ping"),
+            headers={"content-type": "text/event-stream"},
+            request=request,
+        )
+
+    client = httpx.AsyncClient(
+        base_url="https://chatgpt.com/backend-api/codex/",
+        transport=httpx.MockTransport(handler),
+    )
+    provider = OpenAICodexProvider(
+        _config(), auth=_FakeAuth(), admission=_admission(), client=client
+    )
+
+    body = await _collect(
+        provider.stream_response(
+            _request(),
+            request_id="req_keepalive_retry",
+            response_model="claude-opus-4",
+        )
+    )
+
+    events = parse_sse_text(body)
+    assert_anthropic_stream_contract(events)
+    assert attempts == 2
+    assert body.count("event: message_start") == 1
+    assert any(event.event == "ping" for event in events)
+    assert text_content(events) == "recovered-after-ping"
+    await client.aclose()

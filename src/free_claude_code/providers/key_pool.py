@@ -2,6 +2,7 @@
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from loguru import logger
@@ -32,8 +33,11 @@ class ApiKeyPool:
         *,
         rate_limit: int,
         rate_window: float,
+        on_capacity_change: Callable[[int], None] | None = None,
     ) -> None:
         self._lock = threading.RLock()
+        self._rate_limit = rate_limit
+        self._on_capacity_change = on_capacity_change
         unique_keys = tuple(dict.fromkeys(key for key in keys if key))
         self._keys = tuple(
             _KeyState(
@@ -45,10 +49,29 @@ class ApiKeyPool:
         )
         self._by_key = {state.key: state for state in self._keys}
 
+    def active_key_count(self, now: float | None = None) -> int:
+        """Return how many credentials are currently eligible for traffic."""
+        with self._lock:
+            check_now = time.monotonic() if now is None else now
+            return sum(
+                1
+                for state in self._keys
+                if not state.failed and check_now >= state.unavailable_until
+            )
+
+    def active_rate_limit(self, now: float | None = None) -> int:
+        """Return the aggregate RPM capacity of currently eligible keys."""
+        return max(1, self.active_key_count(now)) * self._rate_limit
+
+    def _notify_capacity(self, now: float | None = None) -> None:
+        if self._on_capacity_change is not None:
+            self._on_capacity_change(self.active_rate_limit(now))
+
     def get_next_key(self) -> str | None:
         """Reserve the longest-idle key that currently has RPM capacity."""
         with self._lock:
             now = time.monotonic()
+            self._notify_capacity(now)
             eligible = sorted(
                 (
                     state
@@ -68,6 +91,7 @@ class ApiKeyPool:
         with self._lock:
             if state := self._by_key.get(key):
                 state.consecutive_failures = 0
+                self._notify_capacity()
 
     def mark_failed(self, key: str) -> None:
         """Temporarily hold failed keys, then retire only persistent failures."""
@@ -78,12 +102,15 @@ class ApiKeyPool:
             state.consecutive_failures += 1
             if state.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 state.failed = True
+                self._notify_capacity()
                 logger.warning(
                     "key_pool: permanently disabled a credential after {} failures.",
                     state.consecutive_failures,
                 )
                 return
-            state.unavailable_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
+            now = time.monotonic()
+            state.unavailable_until = now + _FAILURE_COOLDOWN_SECONDS
+            self._notify_capacity(now)
             logger.warning(
                 "key_pool: credential failure {}/{}; holding it for {} seconds.",
                 state.consecutive_failures,
@@ -97,10 +124,12 @@ class ApiKeyPool:
             state = self._by_key.get(key)
             if state is None:
                 return
+            now = time.monotonic()
             state.unavailable_until = max(
                 state.unavailable_until,
-                time.monotonic() + _RATE_LIMIT_COOLDOWN_SECONDS,
+                now + _RATE_LIMIT_COOLDOWN_SECONDS,
             )
+            self._notify_capacity(now)
             logger.warning(
                 "key_pool: credential is rate limited; holding it for {} seconds.",
                 int(_RATE_LIMIT_COOLDOWN_SECONDS),

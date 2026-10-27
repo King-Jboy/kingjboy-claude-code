@@ -197,6 +197,7 @@ class _CollectedRecoveryOutput:
     text: str
     thinking: str
     tool_calls: tuple[dict[str, Any], ...]
+    text_tool_uses: tuple[dict[str, Any], ...] = ()
 
 
 def _iter_visible_text_events(
@@ -273,6 +274,7 @@ class OpenAIChatProvider(BaseProvider):
                 config.api_keys,
                 rate_limit=config.key_rate_limit,
                 rate_window=config.key_rate_window,
+                on_capacity_change=getattr(self._admission, "set_rate_limit", None),
             )
             if config.api_keys and config.key_rate_limit is not None
             else None
@@ -502,6 +504,12 @@ class OpenAIChatProvider(BaseProvider):
         used_retry_kinds: set[str] = set()
 
         while retry_session.can_attempt:
+            if isinstance(body.get("model"), str) and body["model"]:
+                retry_session.model = body["model"]
+            if self._key_pool is not None and hasattr(
+                self._admission, "set_rate_limit"
+            ):
+                self._admission.set_rate_limit(self._key_pool.active_rate_limit())
             attempt = await self._admission.open_attempt(retry_session)
             stream: Any | None = None
             retain_attempt = False
@@ -629,6 +637,7 @@ class OpenAIChatProvider(BaseProvider):
             return await self._open_chat_stream_sequential(create_body)
 
         tasks: dict[asyncio.Task[Any], str] = {}
+        hedge_slot_held = False
         try:
             task1: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key1))
             tasks[task1] = key1
@@ -646,8 +655,21 @@ class OpenAIChatProvider(BaseProvider):
                 if isinstance(exc, BaseException):
                     raise exc
 
-            # Key 1 did not return within hedge_delay. Speculatively launch Key 2.
-            key2 = key_pool.get_next_key()
+            # Key 1 did not return within hedge_delay. Speculatively launch Key 2
+            # only if provider admission has spare concurrency and rate capacity.
+            can_hedge = (
+                self._admission.try_acquire_hedge_slot()
+                if hasattr(self._admission, "try_acquire_hedge_slot")
+                else True
+            )
+            key2 = key_pool.get_next_key() if can_hedge else None
+            if can_hedge and (key2 is None or key2 == key1):
+                if hasattr(self._admission, "release_hedge_slot"):
+                    self._admission.release_hedge_slot()
+                key2 = None
+            elif can_hedge:
+                hedge_slot_held = True
+
             if key2 is None or key2 == key1:
                 try:
                     stream = await task1
@@ -677,6 +699,10 @@ class OpenAIChatProvider(BaseProvider):
                 )
                 for finished in done_tasks:
                     k = tasks.pop(finished)
+                    if hedge_slot_held and len(tasks) < 2:
+                        if hasattr(self._admission, "release_hedge_slot"):
+                            self._admission.release_hedge_slot()
+                        hedge_slot_held = False
                     exc = finished.exception()
                     if exc is None:
                         winner_stream = finished.result()
@@ -692,6 +718,8 @@ class OpenAIChatProvider(BaseProvider):
                 raise last_exc
             return await self._open_chat_stream_sequential(create_body)
         finally:
+            if hedge_slot_held and hasattr(self._admission, "release_hedge_slot"):
+                self._admission.release_hedge_slot()
             # A loser may already hold an open stream (both opens can finish
             # in one tick); _cancel_task closes it as well as cancelling.
             for remaining_task in list(tasks.keys()):
@@ -910,6 +938,8 @@ class _OpenAIChatStreamRunner:
         )
         request_stream_usage(body)
         self._downstream_model = body.get("model")
+        if isinstance(self._downstream_model, str) and self._downstream_model:
+            retry_session.model = self._downstream_model
         output_reasoning = self._reasoning.output_enabled
         trace_event(
             stage="provider",
@@ -1508,9 +1538,38 @@ class _OpenAIChatStreamRunner:
                 )
                 text_parts: list[str] = []
                 thinking_parts: list[str] = []
+                text_tool_uses: list[dict[str, Any]] = []
                 tool_calls = OpenAIToolCallCollector()
                 terminal_seen = False
                 recovery_think_parser = ThinkTagParser()
+                recovery_function_tag_parser = FunctionTagToolParser(self._request)
+                recovery_heuristic_parser = HeuristicToolParser()
+
+                for_parts = (
+                    recovery_function_tag_parser,
+                    recovery_heuristic_parser,
+                    text_parts,
+                    text_tool_uses,
+                )
+
+                def _consume_visible_text(
+                    raw_text: str,
+                    _state: tuple[
+                        FunctionTagToolParser,
+                        HeuristicToolParser,
+                        list[str],
+                        list[dict[str, Any]],
+                    ] = for_parts,
+                ) -> None:
+                    fn_parser, heur_parser, t_parts, t_tools = _state
+                    safe_text = fn_parser.feed(raw_text)
+                    if not safe_text:
+                        return
+                    filtered_text, detected_tools = heur_parser.feed(safe_text)
+                    if filtered_text:
+                        t_parts.append(filtered_text)
+                    t_tools.extend(detected_tools)
+
                 async for chunk in stream:
                     if not attempt.accepted:
                         await attempt.succeeded()
@@ -1529,6 +1588,19 @@ class _OpenAIChatStreamRunner:
                         reasoning = self._provider._profile.reasoning_delta(delta)
                         if reasoning:
                             thinking_parts.append(reasoning)
+                    native_tool_calls = getattr(delta, "tool_calls", None)
+                    if (
+                        isinstance(native_tool_calls, list | tuple)
+                        and native_tool_calls
+                    ):
+                        released_text = recovery_function_tag_parser.disable()
+                        if released_text:
+                            filtered_text, detected_tools = (
+                                recovery_heuristic_parser.feed(released_text)
+                            )
+                            if filtered_text:
+                                text_parts.append(filtered_text)
+                            text_tool_uses.extend(detected_tools)
                     content = getattr(delta, "content", None)
                     if isinstance(content, str) and content:
                         for part in recovery_think_parser.feed(content):
@@ -1536,8 +1608,7 @@ class _OpenAIChatStreamRunner:
                                 if include_reasoning:
                                     thinking_parts.append(part.content)
                             else:
-                                text_parts.append(part.content)
-                    native_tool_calls = getattr(delta, "tool_calls", None)
+                                _consume_visible_text(part.content)
                     if isinstance(native_tool_calls, list | tuple):
                         for tool_call in native_tool_calls:
                             tool_calls.add(tool_call)
@@ -1548,7 +1619,24 @@ class _OpenAIChatStreamRunner:
                         if include_reasoning:
                             thinking_parts.append(remaining.content)
                     else:
-                        text_parts.append(remaining.content)
+                        _consume_visible_text(remaining.content)
+
+                fallback_text, function_tag_tools = (
+                    recovery_function_tag_parser.finish()
+                )
+                if fallback_text:
+                    filtered_text, detected_tools = recovery_heuristic_parser.feed(
+                        fallback_text
+                    )
+                    if filtered_text:
+                        text_parts.append(filtered_text)
+                    text_tool_uses.extend(detected_tools)
+                text_tool_uses.extend(function_tag_tools)
+
+                heuristic_tools = recovery_heuristic_parser.flush()
+                if heuristic_text := recovery_heuristic_parser.flush_text():
+                    text_parts.append(heuristic_text)
+                text_tool_uses.extend(heuristic_tools)
 
                 completed_tool_calls = tool_calls.completed_calls(
                     self._request,
@@ -1561,7 +1649,11 @@ class _OpenAIChatStreamRunner:
                     raise TruncatedProviderStreamError(
                         "Recovery stream ended with an incomplete tool call."
                     )
-                if not terminal_seen and not completed_tool_calls:
+                if (
+                    not terminal_seen
+                    and not completed_tool_calls
+                    and not text_tool_uses
+                ):
                     raise TruncatedProviderStreamError(
                         "Recovery stream ended without finish_reason."
                     )
@@ -1569,6 +1661,7 @@ class _OpenAIChatStreamRunner:
                     text="".join(text_parts),
                     thinking="".join(thinking_parts),
                     tool_calls=completed_tool_calls or (),
+                    text_tool_uses=tuple(text_tool_uses),
                 )
             except Exception as error:
                 last_error = error
@@ -1690,6 +1783,15 @@ class _OpenAIChatStreamRunner:
             events.extend(ledger.close_content_blocks())
             for tool_call in recovered.tool_calls:
                 events.extend(self._tool_calls.process_tool_call(tool_call, ledger))
+        text_tool_uses = getattr(recovered, "text_tool_uses", ())
+        if text_tool_uses:
+            events.extend(
+                _iter_text_tool_use_events(
+                    ledger,
+                    text_tool_uses,
+                    tool_names=self._tool_names,
+                )
+            )
         if not events:
             return None
         events.extend(ledger.close_all_blocks())

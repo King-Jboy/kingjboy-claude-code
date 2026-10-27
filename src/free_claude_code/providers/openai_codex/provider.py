@@ -4,7 +4,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
-from importlib.metadata import PackageNotFoundError, version
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -13,6 +13,7 @@ from free_claude_code.application.errors import InvalidRequestError
 from free_claude_code.application.model_metadata import ProviderModelInfo
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.openai_tool_names import OpenAIToolNameCodec
+from free_claude_code.core.anthropic.streaming import anthropic_ping_frame
 from free_claude_code.core.diagnostics import (
     ERROR_DETAIL_DISPLAY_CAP_BYTES,
     attach_upstream_error_body,
@@ -30,6 +31,7 @@ from free_claude_code.core.reasoning import (
     ReasoningPolicy,
 )
 from free_claude_code.core.trace import trace_event
+from free_claude_code.core.version import package_version
 from free_claude_code.providers.admission import (
     ProviderAdmissionController,
     ProviderAttempt,
@@ -41,15 +43,69 @@ from free_claude_code.providers.failure_policy import (
     context_window_exceeded_provider_failure,
     is_context_window_error_code,
 )
-from free_claude_code.providers.stream_recovery import RecoveryController
+from free_claude_code.providers.stream_recovery import (
+    RecoveryController,
+    RecoveryFailureAction,
+)
 
 from .auth import OpenAIAccess, OpenAIAuthManager, OpenAIReconnectRequired
 from .login import OPENAI_CODEX_ORIGINATOR
 
-try:
-    FCC_VERSION = version("free-claude-code")
-except PackageNotFoundError:
-    FCC_VERSION = "dev"
+FCC_VERSION = package_version()
+
+KEEPALIVE_INTERVAL_SECONDS = 1.5
+UPSTREAM_QUIET_KEEPALIVE_SECONDS = 5.0
+
+
+async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
+    """Return whether ``task`` finished within ``timeout`` seconds."""
+    if task.done():
+        return True
+    done, _ = await asyncio.wait((task,), timeout=timeout)
+    return bool(done)
+
+
+def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> float:
+    if quiet >= quiet_after:
+        return interval
+    return max(0.0, quiet_after - quiet)
+
+
+async def _discard_pending_task(task: asyncio.Task[Any]) -> None:
+    if task.done():
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def _sse_with_keepalive(
+    events: AsyncIterator[tuple[str, dict[str, Any]]],
+    *,
+    quiet_after: float = UPSTREAM_QUIET_KEEPALIVE_SECONDS,
+    interval: float = KEEPALIVE_INTERVAL_SECONDS,
+) -> AsyncIterator[tuple[str, dict[str, Any]] | None]:
+    """Yield upstream Responses SSE events, emitting None during long silences."""
+    iterator = aiter(events)
+    quiet = 0.0
+    while True:
+        next_task = asyncio.ensure_future(anext(iterator))
+        try:
+            while not await _settled_within(
+                next_task, _keepalive_wait_step(quiet, quiet_after, interval)
+            ):
+                quiet += _keepalive_wait_step(quiet, quiet_after, interval)
+                if quiet >= quiet_after:
+                    yield None
+        except BaseException:
+            await _discard_pending_task(next_task)
+            raise
+        try:
+            item = next_task.result()
+        except StopAsyncIteration:
+            return
+        quiet = 0.0
+        yield item
 
 
 class _TruncatedResponsesStream(RetryableProviderProtocolError):
@@ -172,11 +228,16 @@ class OpenAICodexProvider(BaseProvider):
         response_model: str,
         tool_names: OpenAIToolNameCodec,
     ) -> AsyncIterator[str]:
-        retry_session = self._admission.new_retry_session(request_id=request_id)
+        downstream_model = body.get("model")
+        retry_session = self._admission.new_retry_session(
+            request_id=request_id,
+            model=downstream_model if isinstance(downstream_model, str) else None,
+        )
         recovery = RecoveryController()
         message_id = f"msg_{uuid.uuid4()}"
         session_id = str(uuid.uuid4())
         authentication_recovered = False
+        message_started_committed = False
         trace_event(
             stage="provider",
             event="provider.request.sent",
@@ -184,7 +245,7 @@ class OpenAICodexProvider(BaseProvider):
             provider="openai",
             request_id=request_id,
             gateway_model=response_model,
-            downstream_model=body.get("model"),
+            downstream_model=downstream_model,
             item_count=len(body.get("input", [])),
             tool_count=len(body.get("tools", [])),
         )
@@ -197,9 +258,12 @@ class OpenAICodexProvider(BaseProvider):
                 log_raw_events=self._config.log_raw_sse_events,
                 tool_names=tool_names,
             )
-            for event in stream.start():
-                for held in recovery.push(event):
-                    yield held
+            if message_started_committed:
+                stream.ledger.message_started = True
+            else:
+                for event in stream.start():
+                    for held in recovery.push(event):
+                        yield held
 
             response: httpx.Response | None = None
             attempt: ProviderAttempt | None = None
@@ -207,26 +271,54 @@ class OpenAICodexProvider(BaseProvider):
             try:
                 access = await self._auth.access()
                 attempt = await self._admission.open_attempt(retry_session)
-                response = await self._client.send(
-                    self._client.build_request(
-                        "POST",
-                        "responses",
-                        json=body,
-                        headers={
-                            **self._client_headers,
-                            **_auth_headers(access),
-                            "Accept": "text/event-stream",
-                            "session_id": session_id,
-                        },
-                    ),
-                    stream=True,
+                send_task = asyncio.ensure_future(
+                    self._client.send(
+                        self._client.build_request(
+                            "POST",
+                            "responses",
+                            json=body,
+                            headers={
+                                **self._client_headers,
+                                **_auth_headers(access),
+                                "Accept": "text/event-stream",
+                                "session_id": session_id,
+                            },
+                        ),
+                        stream=True,
+                    )
                 )
+                try:
+                    waited = 0.0
+                    while not await _settled_within(
+                        send_task, KEEPALIVE_INTERVAL_SECONDS
+                    ):
+                        waited += KEEPALIVE_INTERVAL_SECONDS
+                        if (
+                            recovery.committed
+                            or waited >= UPSTREAM_QUIET_KEEPALIVE_SECONDS
+                        ):
+                            for event in recovery.flush():
+                                yield event
+                            message_started_committed = True
+                            yield anthropic_ping_frame()
+                except BaseException:
+                    if (
+                        send_task.done()
+                        and not send_task.cancelled()
+                        and send_task.exception() is None
+                    ):
+                        response = send_task.result()
+                    else:
+                        await _discard_pending_task(send_task)
+                    raise
+                response = send_task.result()
                 if response.status_code == 401 and not authentication_recovered:
                     await _read_bounded_body(response)
                     await self._auth.recover_unauthorized(access.access_token)
                     await attempt.retry_immediately()
                     authentication_recovered = True
-                    recovery.discard()
+                    if not message_started_committed:
+                        recovery.discard()
                     continue
                 if not response.is_success:
                     body_bytes, body_truncated = await _read_bounded_body(response)
@@ -253,7 +345,14 @@ class OpenAICodexProvider(BaseProvider):
                     raise error
                 stream_opened = True
 
-                async for event_type, payload in _iter_sse(response):
+                async for sse_item in _sse_with_keepalive(_iter_sse(response)):
+                    if sse_item is None:
+                        for event in recovery.flush():
+                            yield event
+                        message_started_committed = True
+                        yield anthropic_ping_frame()
+                        continue
+                    event_type, payload = sse_item
                     if not attempt.accepted:
                         await attempt.succeeded()
                     for event in stream.feed(event_type, payload):
@@ -287,20 +386,27 @@ class OpenAICodexProvider(BaseProvider):
                 decision = recovery.advance_failure(
                     error,
                     stream_opened=stream_opened,
-                    generated_output=recovery.committed,
+                    generated_output=stream.generated_output,
                     complete_tool_salvageable=False,
                     attempts_remaining=retry_session.attempts_remaining,
                     retryable_override=retryable,
                 )
                 should_early_retry = (
-                    not decision.committed
-                    and decision.retryable
-                    and retry_session.can_attempt
+                    decision.action == RecoveryFailureAction.EARLY_RETRY
+                    or (
+                        (not decision.committed or not stream.generated_output)
+                        and decision.retryable
+                        and retry_session.can_attempt
+                    )
                 )
                 if should_early_retry and attempt is not None and attempt.accepted:
                     should_early_retry = await attempt.retry_after_acceptance(error)
                 if should_early_retry:
-                    recovery.discard()
+                    if decision.committed:
+                        message_started_committed = True
+                        recovery.flush()
+                    else:
+                        recovery.discard()
                     trace_event(
                         stage="provider",
                         event="provider.recovery.early_retry",

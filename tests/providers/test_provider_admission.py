@@ -862,3 +862,21 @@ async def test_provider_controllers_do_not_share_recovery_state() -> None:
     probe = await first.open_attempt(first_session)
     await probe.succeeded()
     await probe.aclose()
+
+
+@pytest.mark.asyncio
+async def test_flaky_model_recovery_episode_does_not_stall_healthy_model() -> None:
+    controller = _controller(base_delay=5.0, max_delay=5.0)
+    flaky_session = controller.new_retry_session(model="stealth/flaky-model")
+    flaky_attempt = await controller.open_attempt(flaky_session)
+
+    assert await flaky_attempt.retry(_status_error(502))
+    await flaky_attempt.aclose()
+
+    healthy_session = controller.new_retry_session(model="anthropic/healthy-model")
+    healthy_attempt = await asyncio.wait_for(
+        controller.open_attempt(healthy_session),
+        timeout=0.5,
+    )
+    await healthy_attempt.succeeded()
+    await healthy_attempt.aclose()

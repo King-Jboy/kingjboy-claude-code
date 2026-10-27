@@ -2282,3 +2282,56 @@ async def test_openai_compat_stream_ends_with_contract_when_tool_name_never_arri
         error = await _collect_stream_error(provider, request)
 
     assert "Provider stream ended without finish_reason." in error.message
+
+
+@pytest.mark.asyncio
+async def test_midstream_recovery_parses_function_tag_tool_calls() -> None:
+    """When midstream recovery continues a stream that emits <function=...> markup, it emits a tool_use block."""
+    provider = _make_provider()
+    request = _make_request(
+        tools=[
+            {
+                "name": "Read",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"file_path": {"type": "string"}},
+                    "required": ["file_path"],
+                },
+            }
+        ]
+    )
+    prefix = "x" * 66_000
+    first_stream = AsyncStreamMock(
+        [_make_chunk(content=prefix)],
+        error=httpx.ReadError("midstream drop"),
+    )
+    recovery_stream = AsyncStreamMock(
+        [
+            _make_chunk(
+                content=(
+                    f"{prefix}<tool_call>\n<function=Read>\n"
+                    "<parameter=file_path>\nREADME.md\n</parameter>\n"
+                    "</function>\n</tool_call>"
+                )
+            ),
+            _make_chunk(finish_reason="stop"),
+        ]
+    )
+
+    with patch.object(
+        provider._client.chat.completions,
+        "create",
+        new_callable=AsyncMock,
+        side_effect=[first_stream, recovery_stream],
+    ) as mock_create:
+        events = await _collect_stream(provider, request)
+
+    assert mock_create.await_count == 2
+    parsed = parse_sse_text("".join(events))
+    tool_starts = [
+        event.data["content_block"]
+        for event in parsed
+        if event.event == "content_block_start"
+        and event.data.get("content_block", {}).get("type") == "tool_use"
+    ]
+    assert [block["name"] for block in tool_starts] == ["Read"]

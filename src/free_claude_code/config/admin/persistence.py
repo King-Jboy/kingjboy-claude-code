@@ -14,7 +14,7 @@ from free_claude_code.config.paths import managed_env_path
 from free_claude_code.config.settings import Settings
 
 from .manifest import FIELD_BY_KEY, FIELDS, SECTIONS, ConfigFieldSpec
-from .sources import dotenv_values_from_file, is_locked_source, template_values
+from .sources import dotenv_values_from_file, is_locked_source
 from .validation import settings_from_values
 from .values import MASKED_SECRET, load_value_state, normalize_for_env
 
@@ -68,19 +68,20 @@ def target_values_with_updates(updates: Mapping[str, Any]) -> dict[str, str]:
     """Return managed env values after applying admin updates."""
 
     state = load_value_state()
-    values = template_values()
+    values = {field.key: field.default for field in FIELDS}
 
-    # Preserve existing managed values when present. If no managed config exists,
-    # seed the first write from effective repo values to migrate legacy setups.
+    # Seed from effective repo/template/default values first, then overlay any
+    # existing managed values so partial or unmanaged-only ~/.fcc/.env files do
+    # not drop repo_env settings or drift from manifest defaults.
+    for key, entry in state.items():
+        if entry["source"] in {"repo_env", "template", "default"}:
+            values[key] = str(entry["value"])
+
     managed_values = dotenv_values_from_file(managed_env_path())
     if managed_values:
         values.update(
             {key: val for key, val in managed_values.items() if key in values}
         )
-    else:
-        for key, entry in state.items():
-            if entry["source"] in {"repo_env", "template", "default"}:
-                values[key] = str(entry["value"])
 
     for key, value in updates.items():
         field = FIELD_BY_KEY.get(key)
