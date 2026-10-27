@@ -7,6 +7,7 @@ from free_claude_code.core.anthropic.conversion import (
 )
 from free_claude_code.core.anthropic.models import (
     ContentBlockDocument,
+    ContentBlockToolResult,
     ContentBlockWebFetchToolResult,
     Message,
     MessagesRequest,
@@ -398,3 +399,53 @@ def test_messages_request_accepts_deferred_tool_and_mcp_content_blocks() -> None
         "role": "user",
         "content": f"{deferred_notice}\nHow are you doing today",
     }
+
+
+def test_tool_result_is_error_field_and_mcp_conversion() -> None:
+    tool_res = ContentBlockToolResult.model_validate(
+        {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": "failed",
+            "is_error": True,
+        }
+    )
+    assert tool_res.is_error is True
+    assert tool_res.model_dump()["is_error"] is True
+
+    req = MessagesRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "mcp_tool_use",
+                            "id": "mcp_1",
+                            "name": "mcp__scrape",
+                            "input": {"url": "https://example.com"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "mcp_tool_result",
+                            "tool_use_id": "mcp_1",
+                            "content": "scraped content",
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+    body = build_base_request_body(req)
+    # Check that assistant message has tool_calls
+    assert body["messages"][0]["role"] == "assistant"
+    assert body["messages"][0]["tool_calls"][0]["id"] == "mcp_1"
+    # Check that user tool result was mapped to a tool role message
+    assert body["messages"][1]["role"] == "tool"
+    assert body["messages"][1]["tool_call_id"] == "mcp_1"
+    assert body["messages"][1]["content"] == "scraped content"

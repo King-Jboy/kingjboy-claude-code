@@ -149,7 +149,7 @@ def _tool_call_ids(tool_calls: list[dict[str, Any]]) -> list[str]:
 
 def _index_first_tool_use(blocks: list[Any]) -> int | None:
     for i, block in enumerate(blocks):
-        if get_block_type(block) == "tool_use":
+        if get_block_type(block) in {"tool_use", "mcp_tool_use"}:
             return i
     return None
 
@@ -158,7 +158,7 @@ def _iter_tool_uses_in_order(blocks: list[Any]) -> list[dict[str, Any]]:
     return [
         _tool_call_from_tool_use(block)
         for block in blocks
-        if get_block_type(block) == "tool_use"
+        if get_block_type(block) in {"tool_use", "mcp_tool_use"}
     ]
 
 
@@ -168,12 +168,24 @@ def _deferred_post_tool_blocks(
     return [
         b
         for i, b in enumerate(content)
-        if i > first_tool_index and get_block_type(b) != "tool_use"
+        if i > first_tool_index
+        and get_block_type(b) not in {"tool_use", "mcp_tool_use"}
     ]
+
+
+_INLINE_TOOL_METADATA_BLOCK_TYPES = frozenset(
+    {
+        "tool_reference",
+        "tool_addition",
+        "tool_definition",
+    }
+)
 
 
 def _assert_no_forbidden_assistant_block(block: Any) -> None:
     block_type = get_block_type(block)
+    if block_type in _INLINE_TOOL_METADATA_BLOCK_TYPES:
+        return
     if block_type == "image":
         raise OpenAIConversionError(
             "Assistant image blocks are not supported for OpenAI chat conversion."
@@ -187,15 +199,6 @@ def _assert_no_forbidden_assistant_block(block: Any) -> None:
             "OpenAI chat conversion does not support Anthropic server tool blocks "
             f"({block_type!r} in an assistant message). Remove the unsupported block."
         )
-
-
-_INLINE_TOOL_METADATA_BLOCK_TYPES = frozenset(
-    {
-        "tool_reference",
-        "tool_addition",
-        "tool_definition",
-    }
-)
 
 
 def _openai_system_text(
@@ -396,9 +399,15 @@ class _OpenAIChatHistoryLedger:
         text_blocks: list[Any] = []
         for block in blocks:
             block_type = get_block_type(block)
-            if block_type == "tool_result":
+            if block_type in {
+                "tool_result",
+                "mcp_tool_result",
+                "tool_search_tool_result",
+            }:
                 self._add_text_blocks(text_blocks)
                 self._record_tool_result(block)
+            elif block_type in _INLINE_TOOL_METADATA_BLOCK_TYPES:
+                continue
             else:
                 text_blocks.append(block)
         self._add_text_blocks(text_blocks)
@@ -700,7 +709,7 @@ class AnthropicToOpenAIConverter:
                 # Opaque provider continuation data; do not materialize as model-visible text
                 # or native reasoning fields for OpenAI chat upstreams.
                 continue
-            elif block_type == "tool_use":
+            elif block_type in {"tool_use", "mcp_tool_use"}:
                 tool_calls.append(_tool_call_from_tool_use(block))
             elif block_type == "document":
                 content_parts.append(DOCUMENT_OMITTED_NOTICE)
@@ -782,9 +791,15 @@ class AnthropicToOpenAIConverter:
             elif block_type == "document":
                 flush_tool_results()
                 content_parts.append({"type": "text", "text": DOCUMENT_OMITTED_NOTICE})
-            elif block_type == "tool_result":
+            elif block_type in {
+                "tool_result",
+                "mcp_tool_result",
+                "tool_search_tool_result",
+            }:
                 flush_content()
                 tool_results.append(_openai_chat_tool_result(block))
+            elif block_type in _INLINE_TOOL_METADATA_BLOCK_TYPES:
+                continue
 
         flush_tool_results()
         flush_content()

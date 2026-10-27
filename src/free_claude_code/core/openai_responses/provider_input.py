@@ -264,7 +264,7 @@ def _assistant_items(
                     "encrypted_content": str(get_block_attr(block, "data", "")),
                 }
             )
-        elif kind == "tool_use":
+        elif kind in {"tool_use", "mcp_tool_use"}:
             items.append(
                 {
                     "type": "function_call",
@@ -281,6 +281,7 @@ def _assistant_items(
             "server_tool_use",
             "web_search_tool_result",
             "web_fetch_tool_result",
+            "tool_search_tool_result",
         }:
             native = (
                 block
@@ -292,7 +293,17 @@ def _assistant_items(
                     [{"type": "output_text", "text": tool_history_context(native)}]
                 )
             )
+        elif kind in {
+            "tool_reference",
+            "tool_addition",
+            "tool_definition",
+        }:
+            continue
         else:
+            text = get_block_attr(block, "text", None)
+            if text is not None:
+                text_parts.append({"type": "output_text", "text": str(text)})
+                continue
             raise ResponsesConversionError(
                 f"OpenAI Responses cannot represent assistant content block {kind!r}."
             )
@@ -325,7 +336,11 @@ def _user_items(content: Any) -> list[dict[str, Any]]:
             )
         elif block_type == "image":
             message_parts.append(_image_part(block))
-        elif block_type == "tool_result":
+        elif block_type in {
+            "tool_result",
+            "mcp_tool_result",
+            "tool_search_tool_result",
+        }:
             flush_message()
             tool_content = get_block_attr(block, "content")
             try:
@@ -359,6 +374,10 @@ def _user_items(content: Any) -> list[dict[str, Any]]:
                 "OpenAI Responses provider does not support Anthropic document blocks."
             )
         else:
+            text = get_block_attr(block, "text", None)
+            if text is not None:
+                message_parts.append({"type": "input_text", "text": str(text)})
+                continue
             raise ResponsesConversionError(
                 f"OpenAI Responses cannot represent user content block {block_type!r}."
             )
@@ -387,6 +406,13 @@ def _message_text(content: Any, *, context: str) -> str:
             "tool_addition",
             "tool_definition",
         }:
+            continue
+        if block_type in {
+            "tool_result",
+            "mcp_tool_result",
+            "tool_search_tool_result",
+        }:
+            parts.append(str(get_block_attr(block, "content", "")))
             continue
         if block_type != "text":
             raise ResponsesConversionError(f"{context} must contain only text.")

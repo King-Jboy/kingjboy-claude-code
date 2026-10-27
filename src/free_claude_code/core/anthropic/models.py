@@ -60,6 +60,7 @@ class ContentBlockToolResult(_AnthropicBlockBase):
     type: Literal["tool_result"]
     tool_use_id: str
     content: str | list[Any] | dict[str, Any] | None = ""
+    is_error: bool | None = None
 
 
 class ContentBlockThinking(_AnthropicBlockBase):

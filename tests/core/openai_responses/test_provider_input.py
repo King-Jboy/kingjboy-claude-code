@@ -644,3 +644,72 @@ def test_build_responses_provider_request_rejects_unknown_request_fields() -> No
             request,
             reasoning=ReasoningPolicy.provider_default(),
         )
+
+
+def test_build_responses_provider_request_accepts_mcp_and_deferred_tool_blocks() -> (
+    None
+):
+    request = MessagesRequest.model_validate(
+        {
+            "model": "gpt-test",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "mcp_tool_use",
+                            "id": "mcp_call_1",
+                            "name": "mcp__tool__search",
+                            "input": {"query": "test"},
+                        },
+                        {
+                            "type": "tool_reference",
+                            "tool_name": "deferred_tool",
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "mcp_tool_result",
+                            "tool_use_id": "mcp_call_1",
+                            "content": "mcp result text",
+                        },
+                        {
+                            "type": "tool_search_tool_result",
+                            "tool_use_id": "search_call_1",
+                            "content": "loaded schema",
+                        },
+                        {
+                            "type": "tool_addition",
+                            "tool": {"type": "tool_reference", "name": "advisor"},
+                        },
+                        {"type": "text", "text": "continue"},
+                    ],
+                },
+            ],
+        }
+    )
+
+    body = build_responses_provider_request(
+        request,
+        reasoning=ReasoningPolicy.provider_default(),
+    )
+    items = body["input"]
+    # Check that mcp_tool_use became a function_call
+    assert any(
+        item.get("type") == "function_call" and item.get("call_id") == "mcp_call_1"
+        for item in items
+    )
+    # Check that mcp_tool_result and tool_search_tool_result became function_call_output
+    assert any(
+        item.get("type") == "function_call_output"
+        and item.get("call_id") == "mcp_call_1"
+        for item in items
+    )
+    assert any(
+        item.get("type") == "function_call_output"
+        and item.get("call_id") == "search_call_1"
+        for item in items
+    )
