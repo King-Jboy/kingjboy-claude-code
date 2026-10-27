@@ -1654,7 +1654,7 @@ class _OpenAIChatStreamRunner:
                 text_tool_uses.extend(heuristic_tools)
 
                 completed_tool_calls = tool_calls.completed_calls(
-                    self._request,
+                    tool_schemas_by_name(self._request),
                     tool_names=self._tool_names,
                     tool_argument_aliases=self._provider._tool_argument_aliases(
                         accepted_body
