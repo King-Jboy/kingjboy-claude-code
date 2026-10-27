@@ -1,19 +1,18 @@
 """Provider-owned stream holdback and recovery decisions."""
 
+import asyncio
 import ssl
 import time
-import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
 
-from free_claude_code.core.async_tasks import wait_owned
-
 import httpx
 import httpx2
 import openai
 
+from free_claude_code.core.async_tasks import wait_owned
 from free_claude_code.core.failures import ExecutionFailure
 
 from .failure_policy import RetryableProviderProtocolError, retryable_transient_status
@@ -157,7 +156,6 @@ class _HoldbackReader[EventT](AsyncIterator[EventT | HoldbackSignal]):
             await asyncio.gather(pending, return_exceptions=True)
 
         await wait_owned(asyncio.create_task(drain()))
-
 
 
 class RecoveryController:

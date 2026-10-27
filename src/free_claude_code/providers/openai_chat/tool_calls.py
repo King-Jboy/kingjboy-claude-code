@@ -6,16 +6,16 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .tool_call_identity import (
-    AmbiguousToolCallIdentityError,
-    ToolCallIdentityResolver,
-)
 from free_claude_code.core.anthropic import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import (
     AnthropicStreamLedger,
     parse_complete_tool_input,
     tool_schemas_by_name,
+)
+
+from .tool_call_identity import (
+    ToolCallIdentityResolver,
 )
 
 RecordToolExtraContent = Callable[[str, dict[str, Any]], None]
@@ -71,9 +71,7 @@ class OpenAIToolCallCollector:
     ) -> tuple[dict[str, Any], ...] | None:
         """Return complete schema-valid calls, or None when output is incomplete."""
         schemas = (
-            request
-            if isinstance(request, Mapping)
-            else tool_schemas_by_name(request)
+            request if isinstance(request, Mapping) else tool_schemas_by_name(request)
         )
         completed: list[dict[str, Any]] = []
         for index in sorted(self._calls, key=self._identities.order_key):

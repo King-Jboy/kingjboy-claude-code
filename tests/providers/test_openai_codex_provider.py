@@ -897,9 +897,13 @@ async def test_keepalive_committed_stream_without_output_still_early_retries(
 
 
 @pytest.mark.asyncio
-async def test_codex_multiturn_reasoning_preserves_origin_and_recovers_on_rejection() -> None:
-    from free_claude_code.core.history_replay import is_replay, ReplayOrigin
-    from free_claude_code.core.openai_responses.provider_stream import ResponsesProviderStream
+async def test_codex_multiturn_reasoning_preserves_origin_and_recovers_on_rejection() -> (
+    None
+):
+    from free_claude_code.core.history_replay import ReplayOrigin, is_replay
+    from free_claude_code.core.openai_responses.provider_stream import (
+        ResponsesProviderStream,
+    )
 
     stream = ResponsesProviderStream(
         message_id="msg_turn1",
@@ -908,30 +912,79 @@ async def test_codex_multiturn_reasoning_preserves_origin_and_recovers_on_reject
         origin=ReplayOrigin("openai_codex", "responses", "", "", "claude-opus-4"),
     )
     events_t1 = stream.start()
-    events_t1.extend(stream.feed("response.output_item.added", {"item": {"type": "reasoning", "id": "rs_turn1"}}))
-    events_t1.extend(stream.feed("response.reasoning_text.delta", {"item_id": "rs_turn1", "delta": "Thinking step"}))
-    events_t1.extend(stream.feed("response.output_item.done", {"item": {"type": "reasoning", "id": "rs_turn1", "encrypted_content": "enc_123"}}))
-    events_t1.extend(stream.feed("response.output_item.added", {"item": {"type": "message", "id": "msg_out"}}))
-    events_t1.extend(stream.feed("response.output_text.delta", {"item_id": "msg_out", "delta": "Hello"}))
-    events_t1.extend(stream.feed("response.output_item.done", {"item": {"type": "message", "id": "msg_out"}}))
-    events_t1.extend(stream.feed("response.completed", {"response": {"usage": {"input_tokens": 10, "output_tokens": 5}}}))
+    events_t1.extend(
+        stream.feed(
+            "response.output_item.added",
+            {"item": {"type": "reasoning", "id": "rs_turn1"}},
+        )
+    )
+    events_t1.extend(
+        stream.feed(
+            "response.reasoning_text.delta",
+            {"item_id": "rs_turn1", "delta": "Thinking step"},
+        )
+    )
+    events_t1.extend(
+        stream.feed(
+            "response.output_item.done",
+            {
+                "item": {
+                    "type": "reasoning",
+                    "id": "rs_turn1",
+                    "encrypted_content": "enc_123",
+                }
+            },
+        )
+    )
+    events_t1.extend(
+        stream.feed(
+            "response.output_item.added", {"item": {"type": "message", "id": "msg_out"}}
+        )
+    )
+    events_t1.extend(
+        stream.feed(
+            "response.output_text.delta", {"item_id": "msg_out", "delta": "Hello"}
+        )
+    )
+    events_t1.extend(
+        stream.feed(
+            "response.output_item.done", {"item": {"type": "message", "id": "msg_out"}}
+        )
+    )
+    events_t1.extend(
+        stream.feed(
+            "response.completed",
+            {"response": {"usage": {"input_tokens": 10, "output_tokens": 5}}},
+        )
+    )
 
     parsed_t1 = parse_sse_text("".join(events_t1))
-    sig_delta = next(e for e in parsed_t1 if e.data.get("delta", {}).get("type") == "signature_delta")
+    sig_delta = next(
+        e for e in parsed_t1 if e.data.get("delta", {}).get("type") == "signature_delta"
+    )
     signature = sig_delta.data["delta"]["signature"]
     assert is_replay(signature)
 
-    request = MessagesRequest.model_validate({
-        "model": "claude-opus-4",
-        "messages": [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "Thinking step", "signature": signature},
-                {"type": "text", "text": "Hello"}
-            ]},
-            {"role": "user", "content": "How are you?"}
-        ]
-    })
+    request = MessagesRequest.model_validate(
+        {
+            "model": "claude-opus-4",
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "Thinking step",
+                            "signature": signature,
+                        },
+                        {"type": "text", "text": "Hello"},
+                    ],
+                },
+                {"role": "user", "content": "How are you?"},
+            ],
+        }
+    )
 
     client = httpx.AsyncClient(base_url="https://chatgpt.com/backend-api/codex/")
     provider = OpenAICodexProvider(
@@ -939,7 +992,9 @@ async def test_codex_multiturn_reasoning_preserves_origin_and_recovers_on_reject
     )
 
     body = provider._build_body(request, reasoning=ReasoningPolicy.provider_default())
-    reasoning_item = next(item for item in body["input"] if item.get("type") == "reasoning")
+    reasoning_item = next(
+        item for item in body["input"] if item.get("type") == "reasoning"
+    )
     assert reasoning_item["id"] == "rs_turn1"
     assert reasoning_item["encrypted_content"] == "enc_123"
     assert reasoning_item.get("summary", []) == []

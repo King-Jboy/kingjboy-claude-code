@@ -21,7 +21,6 @@ from free_claude_code.core.diagnostics import (
 )
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.history_replay import ReplayOrigin, prepare_history
-from free_claude_code.providers.history_replay import history_retry_body
 from free_claude_code.core.openai_responses import (
     ResponsesConversionError,
     ResponsesProviderStream,
@@ -45,6 +44,7 @@ from free_claude_code.providers.failure_policy import (
     context_window_exceeded_provider_failure,
     is_context_window_error_code,
 )
+from free_claude_code.providers.history_replay import history_retry_body
 from free_claude_code.providers.stream_recovery import (
     HoldbackSignal,
     RecoveryController,
@@ -259,7 +259,9 @@ class OpenAICodexProvider(BaseProvider):
                 message_id=message_id,
                 model=response_model,
                 input_tokens=input_tokens,
-                origin=ReplayOrigin("openai_codex", "responses", "", "", response_model),
+                origin=ReplayOrigin(
+                    "openai_codex", "responses", "", "", response_model
+                ),
                 log_raw_events=self._config.log_raw_sse_events,
                 tool_names=tool_names,
             )

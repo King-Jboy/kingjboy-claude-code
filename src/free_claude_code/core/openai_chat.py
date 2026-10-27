@@ -4,6 +4,7 @@ import json
 
 from free_claude_code.core.json_types import JsonObject, JsonValue
 
+
 class ChatToolResultImages(dict[str, JsonValue]):
     """Relocated tool output, retaining turn ownership until serialization."""
 

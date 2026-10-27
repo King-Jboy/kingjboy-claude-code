@@ -1,10 +1,11 @@
-import pytest
-import asyncio
 """Provider stream commit-boundary and recovery policy."""
+
+import asyncio
 
 import httpx
 import httpx2
 import openai
+import pytest
 
 from free_claude_code.providers.stream_recovery import (
     HoldbackSignal,

@@ -1067,7 +1067,9 @@ class _OpenAIChatStreamRunner:
                                     for out_event in hold_event(event):
                                         yield out_event
                             elif reasoning is not None:
-                                for event in hold_events(ledger.ensure_thinking_block()):
+                                for event in hold_events(
+                                    ledger.ensure_thinking_block()
+                                ):
                                     yield event
                                 if reasoning:
                                     for event in hold_event(
@@ -1134,7 +1136,9 @@ class _OpenAIChatStreamRunner:
                                         "name": getattr(fn, "name", None)
                                         if fn is not None
                                         else None,
-                                        "arguments": (getattr(fn, "arguments", "") or "")
+                                        "arguments": (
+                                            getattr(fn, "arguments", "") or ""
+                                        )
                                         if fn is not None
                                         else "",
                                     },
@@ -1799,7 +1803,9 @@ class _OpenAIChatStreamRunner:
             events.append(ledger.emit_text_delta(text_suffix))
         if recovered.tool_calls:
             events.extend(ledger.close_content_blocks())
-            events.extend(self._tool_calls.process_completed_calls(recovered.tool_calls, ledger))
+            events.extend(
+                self._tool_calls.process_completed_calls(recovered.tool_calls, ledger)
+            )
         text_tool_uses = getattr(recovered, "text_tool_uses", ())
         if text_tool_uses:
             events.extend(

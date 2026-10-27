@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from free_claude_code.core.anthropic.stream_contracts import parse_sse_text
-from free_claude_code.core.anthropic.streaming import ToolSchema, AnthropicStreamLedger
 from free_claude_code.core.anthropic import OpenAIToolNameCodec
+from free_claude_code.core.anthropic.stream_contracts import parse_sse_text
+from free_claude_code.core.anthropic.streaming import AnthropicStreamLedger, ToolSchema
 from free_claude_code.providers.failure_policy import RetryableToolProtocolError
 from free_claude_code.providers.openai_chat.tool_calls import (
     OpenAIToolCallAssembler,
@@ -359,14 +359,17 @@ async def test_recovery_import_discards_unstarted_call_state(recovered_ids):
     starts = [
         event.data["content_block"]
         for event in events
-        if event.event == "content_block_start" and event.data["content_block"]["type"] == "tool_use"
+        if event.event == "content_block_start"
+        and event.data["content_block"]["type"] == "tool_use"
     ]
     assert len(starts) == 2
     assert len({start["id"] for start in starts}) == 2
     assert "abandoned" not in {start["id"] for start in starts}
     assert "extra_content" not in starts[0]
     assert starts[1]["extra_content"] == {"new": True}
-    assert [b.content for b in ledger._content_blocks.values() if b.block_type == "tool_use"] == [
+    assert [
+        b.content for b in ledger._content_blocks.values() if b.block_type == "tool_use"
+    ] == [
         "{}",
         '{"path":"b"}',
     ]
@@ -435,10 +438,7 @@ async def test_collector_identity_failure_respects_stop_and_closes_attempts(
                 retry_session=retry_session,
             )
             assert [item["id"] for item in result.tool_calls] == ["winner"]
-            assert (
-                result.tool_calls[0]["function"]["arguments"]
-                == '{"path":"winning"}'
-            )
+            assert result.tool_calls[0]["function"]["arguments"] == '{"path":"winning"}'
     assert retry_session.attempts_started == (1 if stop else 2)
     assert first.closed is True
     assert winner.closed is not bool(stop)
@@ -533,7 +533,9 @@ def test_name_prefix_without_output_state_reserves_its_own_slot():
         if event.event == "content_block_start"
     ]
     assert starts == ["call_a", "call_b"]
-    assert {state.tool_id: state.content for state in ledger._content_blocks.values()} == {
+    assert {
+        state.tool_id: state.content for state in ledger._content_blocks.values()
+    } == {
         "call_a": '{"path":"a"}',
         "call_b": '{"path":"b"}',
     }

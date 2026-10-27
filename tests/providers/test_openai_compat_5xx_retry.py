@@ -9,6 +9,7 @@ from httpx2 import Request, Response
 
 from free_claude_code.config.nim import NimSettings
 from free_claude_code.core.failures import ExecutionFailure
+from free_claude_code.providers.admission import UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
 from tests.providers.request_factory import make_messages_request
@@ -151,7 +152,7 @@ async def test_nim_stream_connection_error_exhausted_emits_cause_chain(caplog):
     ):
         [e async for e in provider.stream_response(req, request_id="req_conn")]
 
-    assert mock_create.await_count == 5
+    assert mock_create.await_count == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
     error_traces = [
         call.kwargs
         for call in trace.call_args_list
@@ -160,12 +161,15 @@ async def test_nim_stream_connection_error_exhausted_emits_cause_chain(caplog):
     assert error_traces[-1]["request_id"] == "req_conn"
     assert error_traces[-1]["exc_type"] == "APIConnectionError"
     assert error_traces[-1]["downstream_model"] == req.model
-    assert error_traces[-1]["attempts_started"] == 5
-    assert error_traces[-1]["max_attempts"] == 5
+    assert error_traces[-1]["attempts_started"] == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
+    assert error_traces[-1]["max_attempts"] == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
     assert "body" not in error_traces[-1]
     assert "error_message" not in error_traces[-1]
     assert "downstream_model=test-model" in caplog.text
-    assert "attempts_started=5/5" in caplog.text
+    assert (
+        f"attempts_started={UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS}/{UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS}"
+        in caplog.text
+    )
     assert "Caused by:\nConnectError: upstream disconnected" in exc_info.value.message
 
 
@@ -210,5 +214,5 @@ async def test_nim_stream_openai_5xx_exhausted_emits_user_message(
         with pytest.raises(ExecutionFailure) as exc_info:
             [e async for e in provider.stream_response(req)]
 
-    assert mock_create.await_count == 5
+    assert mock_create.await_count == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
     assert expect_substr in exc_info.value.message.lower()
