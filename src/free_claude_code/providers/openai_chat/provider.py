@@ -1543,7 +1543,9 @@ class _OpenAIChatStreamRunner:
             for out_event in hold_event(event):
                 yield out_event
 
-        for event in self._tool_calls.flush_task_arg_buffers(ledger):
+        for event in self._tool_calls.flush_task_arg_buffers(
+            ledger, tool_argument_aliases
+        ):
             for out_event in hold_event(event):
                 yield out_event
 

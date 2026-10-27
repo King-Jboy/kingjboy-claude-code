@@ -471,3 +471,36 @@ class TestMessagingRateLimiter:
         assert results[1] == "delivered"
         assert limiter._worker_task is not None
         assert not limiter._worker_task.done()
+
+    @pytest.mark.asyncio
+    async def test_fire_and_forget_superseded_task_does_not_retry_or_invoke_stale_callback(
+        self,
+    ):
+        limiter = self.create_limiter(rate_limit=5, rate_window=1.0)
+        delivered: list[str] = []
+        stale_failure = MagicMock()
+        fresh_failure = MagicMock()
+
+        async def stale_edit() -> None:
+            delivered.append("v1_attempt")
+            raise ConnectionError("connect timeout")
+
+        async def fresh_edit() -> None:
+            delivered.append("v2_final")
+
+        limiter.fire_and_forget(
+            stale_edit,
+            dedup_key="edit:chat1:msg1",
+            on_failure=stale_failure,
+        )
+        await asyncio.sleep(0.05)
+        limiter.fire_and_forget(
+            fresh_edit,
+            dedup_key="edit:chat1:msg1",
+            on_failure=fresh_failure,
+        )
+        await asyncio.sleep(1.3)
+
+        assert delivered == ["v1_attempt", "v2_final"]
+        stale_failure.assert_not_called()
+        fresh_failure.assert_not_called()

@@ -61,6 +61,7 @@ class MessagingRateLimiter:
         self._shutdown = asyncio.Event()
         self._worker_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._fire_and_forget_generations: dict[str, int] = {}
         self._active_futures: list[asyncio.Future[Any]] = []
         self._closed = False
         self._paused_until = 0
@@ -185,6 +186,7 @@ class MessagingRateLimiter:
             ]
             self._queue_list.clear()
             self._queue_map.clear()
+            self._fire_and_forget_generations.clear()
             for future in queued_futures:
                 if not future.done():
                     future.cancel()
@@ -299,55 +301,69 @@ class MessagingRateLimiter:
         if dedup_key is None:
             dedup_key = f"task_{id(func)}_{asyncio.get_running_loop().time()}"
 
+        generation = self._fire_and_forget_generations.get(dedup_key, 0) + 1
+        self._fire_and_forget_generations[dedup_key] = generation
+
         async def _wrapped() -> None:
             max_retries = 2
-            for attempt in range(max_retries + 1):
-                try:
-                    await self.enqueue(func, dedup_key)
-                    return
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    # Only retry transient connectivity issues that might have slipped through
-                    # or occurred between platform checks.
-                    if attempt < max_retries and any(
-                        x in error_msg for x in ["connect", "timeout", "broken"]
-                    ):
-                        wait = 2**attempt
-                        if self._log_error_details:
-                            logger.warning(
-                                "Limiter fire_and_forget transient error (attempt {}): {}. Retrying in {}s...",
-                                attempt + 1,
-                                e,
-                                wait,
-                            )
-                        else:
-                            logger.warning(
-                                "Limiter fire_and_forget transient error (attempt {}): exc_type={}. Retrying in {}s...",
-                                attempt + 1,
-                                type(e).__name__,
-                                wait,
-                            )
-                        await asyncio.sleep(wait)
-                        continue
+            try:
+                for attempt in range(max_retries + 1):
+                    if self._fire_and_forget_generations.get(dedup_key) != generation:
+                        return
+                    try:
+                        await self.enqueue(func, dedup_key)
+                        return
+                    except Exception as e:
+                        if (
+                            self._fire_and_forget_generations.get(dedup_key)
+                            != generation
+                        ):
+                            return
+                        error_msg = str(e).lower()
+                        # Only retry transient connectivity issues that might have slipped through
+                        # or occurred between platform checks.
+                        if attempt < max_retries and any(
+                            x in error_msg for x in ["connect", "timeout", "broken"]
+                        ):
+                            wait = 2**attempt
+                            if self._log_error_details:
+                                logger.warning(
+                                    "Limiter fire_and_forget transient error (attempt {}): {}. Retrying in {}s...",
+                                    attempt + 1,
+                                    e,
+                                    wait,
+                                )
+                            else:
+                                logger.warning(
+                                    "Limiter fire_and_forget transient error (attempt {}): exc_type={}. Retrying in {}s...",
+                                    attempt + 1,
+                                    type(e).__name__,
+                                    wait,
+                                )
+                            await asyncio.sleep(wait)
+                            continue
 
-                    logger.error(
-                        "Final error in fire_and_forget for key {}: {}",
-                        dedup_key,
-                        format_exception_for_log(
-                            e,
-                            log_full_message=self._log_error_details,
-                        ),
-                    )
-                    if on_failure is not None:
-                        try:
-                            on_failure(e)
-                        except Exception as callback_error:
-                            logger.error(
-                                "Failure callback for key {} raised: exc_type={}",
-                                dedup_key,
-                                type(callback_error).__name__,
-                            )
-                    break
+                        logger.error(
+                            "Final error in fire_and_forget for key {}: {}",
+                            dedup_key,
+                            format_exception_for_log(
+                                e,
+                                log_full_message=self._log_error_details,
+                            ),
+                        )
+                        if on_failure is not None:
+                            try:
+                                on_failure(e)
+                            except Exception as callback_error:
+                                logger.error(
+                                    "Failure callback for key {} raised: exc_type={}",
+                                    dedup_key,
+                                    type(callback_error).__name__,
+                                )
+                        break
+            finally:
+                if self._fire_and_forget_generations.get(dedup_key) == generation:
+                    self._fire_and_forget_generations.pop(dedup_key, None)
 
         task = asyncio.create_task(_wrapped(), name=f"msg-limiter:{dedup_key}")
         self._background_tasks.add(task)

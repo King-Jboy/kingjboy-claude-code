@@ -599,7 +599,7 @@ def _string_claim(payload: dict[str, Any], key: str) -> str | None:
 
 def _integer_claim(payload: dict[str, Any], key: str) -> int | None:
     value = payload.get(key)
-    return value if isinstance(value, int) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _is_transient_refresh_error(error: httpx.HTTPError) -> bool:

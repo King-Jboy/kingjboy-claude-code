@@ -465,7 +465,7 @@ class ResponsesStreamAssembler:
 
 def _event_index(data: Mapping[str, Any]) -> int | None:
     value = data.get("index")
-    return value if isinstance(value, int) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _string_value(value: Any) -> str:

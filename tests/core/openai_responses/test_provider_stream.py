@@ -387,3 +387,67 @@ def test_responses_provider_stream_restores_added_and_done_only_tool_names() -> 
     ]
     assert [start["name"] for start in starts] == list(originals)
     assert all(codec.encode(name) not in event_text for name in originals)
+
+
+def test_responses_provider_stream_buffers_tool_deltas_before_name_is_known() -> None:
+    stream = ResponsesProviderStream(
+        origin=ReplayOrigin("test", "responses", "", "", "m"),
+        message_id="msg_test",
+        model="gpt-test",
+        input_tokens=5,
+    )
+    output = stream.start()
+    output.extend(
+        stream.feed(
+            "response.function_call_arguments.delta",
+            {"item_id": "fc_late", "delta": '{"q":'},
+        )
+    )
+    output.extend(
+        stream.feed(
+            "response.function_call_arguments.delta",
+            {"item_id": "fc_late", "delta": '"hello"}'},
+        )
+    )
+    output.extend(
+        stream.feed(
+            "response.output_item.done",
+            {
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_late",
+                    "call_id": "call_late",
+                    "name": "search_docs",
+                    "arguments": '{"q":"hello"}',
+                }
+            },
+        )
+    )
+    output.extend(
+        stream.feed(
+            "response.completed",
+            {"response": {"usage": {"input_tokens": 5, "output_tokens": 4}}},
+        )
+    )
+
+    events = parse_sse_text("".join(output))
+    assert_anthropic_stream_contract(events)
+    starts = [
+        event.data["content_block"]
+        for event in events
+        if event.event == "content_block_start"
+    ]
+    assert starts == [
+        {
+            "type": "tool_use",
+            "id": "call_late",
+            "name": "search_docs",
+            "input": {},
+        }
+    ]
+    deltas = [
+        event.data["delta"]["partial_json"]
+        for event in events
+        if event.data.get("delta", {}).get("type") == "input_json_delta"
+    ]
+    assert deltas == ['{"q":', '"hello"}']

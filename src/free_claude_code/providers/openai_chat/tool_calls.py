@@ -343,9 +343,20 @@ class OpenAIToolCallAssembler:
                 self._identities.allocate(), call, ledger
             )
 
-    def flush_task_arg_buffers(self, ledger: AnthropicStreamLedger) -> Iterator[str]:
+    def flush_task_arg_buffers(
+        self,
+        ledger: AnthropicStreamLedger,
+        tool_argument_aliases: dict[str, dict[str, str]] | None = None,
+    ) -> Iterator[str]:
         """Emit buffered Task args as a single JSON delta."""
+        task_aliases = (
+            tool_argument_aliases.get("Task", {}) if tool_argument_aliases else {}
+        )
         for tool_index, out in ledger.blocks.flush_task_arg_buffers():
+            if task_aliases:
+                restored = self._restore_aliased_tool_arguments(out, task_aliases)
+                if restored is not None:
+                    out = restored
             yield ledger.emit_tool_delta(tool_index, out)
 
     def flush_tool_name_buffers(
@@ -410,14 +421,16 @@ class OpenAIToolCallAssembler:
         state = ledger.blocks.tool_states.get(tc_index)
         if state is None:
             return
-        if state.name == "Task":
-            parsed = ledger.blocks.buffer_task_args(tc_index, args)
-            if parsed is not None:
-                yield ledger.emit_tool_delta(tc_index, json.dumps(parsed))
-            return
         aliases = (
             tool_argument_aliases.get(state.name, {}) if tool_argument_aliases else {}
         )
+        if state.name == "Task":
+            parsed = ledger.blocks.buffer_task_args(tc_index, args)
+            if parsed is not None:
+                if aliases:
+                    parsed = _restore_tool_argument_alias_value(parsed, aliases)
+                yield ledger.emit_tool_delta(tc_index, json.dumps(parsed))
+            return
         if aliases:
             if tool_argument_alias_buffers is None:
                 restored = self._restore_aliased_tool_arguments(args, aliases)

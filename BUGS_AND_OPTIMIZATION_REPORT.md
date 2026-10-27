@@ -1,4 +1,4 @@
-# Free Claude Code (`v6.20.94`) — Bug Audit, Maintainability Refactor & Faster-Response Optimization Report
+# Free Claude Code (`v6.20.95`) — Bug Audit, Maintainability Refactor & Faster-Response Optimization Report
 
 ---
 
@@ -69,6 +69,26 @@
   2. `_client_for_key(key)` keyed its cache by `(id(self._client), key)` without `id(getattr(self._client, "with_options", None))`.
 - **Fix Applied**: Updated `_prewarm_and_keepalive()` to sleep before issuing background keepalive probes, awaited cancelled `_keepalive_task` in `cleanup()`, and included `id(with_options)` in `_client_for_key`'s cache key.
 
+### Bug 12: `MessagingRateLimiter.fire_and_forget` Stale Retry Overwrites Newer Deduplicated Message Edits (`messaging/limiter.py:86-127`)
+- **Severity**: High (Out-of-order stale message overwrite and stale `on_failure` callback execution during live Discord/Telegram transcript streaming).
+- **Bad Logic / Root Cause**: `fire_and_forget()` spawned an independent `_wrapped()` retry loop (`max_retries = 2`) for every call even when `dedup_key` was identical (`edit:{chat_id}:{message_id}`). If an earlier edit `v1` failed with a transient network error (`connect`, `timeout`, `broken`) and slept for `1s` while a newer edit `v2` was queued and delivered for the same `dedup_key`, `v1` woke up and re-enqueued its stale closure with the same `dedup_key`, overwriting the live transcript message with outdated content (or firing a superseded `on_failure` callback).
+- **Fix Applied**: Added per-`dedup_key` generation tracking (`self._fire_and_forget_generations: dict[str, int]`) in `MessagingRateLimiter` so superseded `fire_and_forget` tasks abort immediately instead of retrying or invoking stale failure callbacks.
+
+### Bug 13: `ResponsesProviderStream._tool_delta` Emits Empty Tool Name When Argument Deltas Arrive Before `output_item.added` (`core/openai_responses/provider_stream.py:194-268`)
+- **Severity**: High (Emits malformed `tool_use` content block with `"name": ""` and wrong `id` when Responses API `function_call_arguments.delta` precedes `output_item.added` / `output_item.done`).
+- **Bad Logic / Root Cause**: When `response.function_call_arguments.delta` arrived before `state.name` was populated, `_tool_delta()` immediately called `_ensure_tool_started(state)` with `name=""` and `call_id=item_id`. When `response.output_item.done` later supplied the tool's real `name` and `call_id`, `_ensure_tool_started(state)` was a no-op because `state.started` was already `True`. Furthermore, `_item_added()` unconditionally overwrote `self._tools[item_id]` if `_tool_delta()` had already created a `_ToolState`.
+- **Fix Applied**: Added `pending_deltas: list[str]` to `_ToolState`, buffered argument deltas while `not state.name and not state.started`, updated `_item_added()` to merge metadata into any existing `_ToolState`, and flushed pending deltas once the tool name is resolved (or on stream termination).
+
+### Bug 14: `OpenAIToolCallAssembler` Skips NIM Parameter Alias Restoration (`_fcc_arg_*`) on `Task` Tool Calls (`providers/openai_chat/tool_calls.py:130-169`)
+- **Severity**: Medium-High (Leaks raw `_fcc_arg_*` wire parameter names into `Task` tool arguments on NVIDIA NIM).
+- **Bad Logic / Root Cause**: `_emit_tool_arg_delta()` intercepted `if state.name == "Task":` and buffered arguments before consulting `tool_argument_aliases`, and `flush_task_arg_buffers()` never restored `tool_argument_aliases`.
+- **Fix Applied**: Restored `tool_argument_aliases` on `Task` tool arguments in both `_emit_tool_arg_delta()` and `flush_task_arg_buffers()`, and passed `tool_argument_aliases` from `_OpenAIChatStreamRunner`.
+
+### Bug 15: Python `bool`-is-`int` Subclass Pitfall in JWT Expiry, Event Index, and Token Usage Coercion (`providers/openai_codex/auth.py:72`, `core/openai_responses/streaming/assembler.py:523`, `core/anthropic/streaming/ledger.py:42`)
+- **Severity**: Medium (Accepts boolean `True`/`False` as integer `1`/`0` in JWT `exp` claims, Responses stream indices, and token usage counters).
+- **Bad Logic / Root Cause**: In Python, `isinstance(True, int)` is `True`. `_integer_claim()` in `auth.py`, `_event_index()` in `assembler.py`, and `_safe_usage_int()` / `message_delta()` in `ledger.py` checked `isinstance(value, int)` without `and not isinstance(value, bool)`.
+- **Fix Applied**: Excluded `bool` values explicitly in `_integer_claim()`, `_event_index()`, `_safe_usage_int()`, and `AnthropicStreamLedger.message_delta()`.
+
 ---
 
 ## Part 2: Faster-Response Optimizations Implemented & Verified
@@ -97,11 +117,11 @@ All **6 high-impact response-speed optimizations** have now been implemented acr
   Switched `format_sse_event()` to `fast_json_dumps(data)` (`orjson`) and precomputed `_PING_SSE_FRAME = 'event: ping\ndata: {"type":"ping"}\n\n'`.
 - **Verified Speedup**: **5x–8x faster per-chunk SSE serialization** and zero-allocation keepalive ping emission.
 
-### Optimization 4: Eliminated Unconditional `plan.request.model_dump()` in Automatic WebSearch (`api/web_tools/automatic_search.py:51` & `api/handlers/messages.py:140`) — **Saves 5ms to 40ms of CPU blocking per turn**
+### Optimization 4: Eliminated Unconditional `model_dump()` in Automatic WebSearch & Responses Handler (`api/web_tools/automatic_search.py:51`, `api/handlers/messages.py:140`, & `api/handlers/responses.py:50`) — **Saves 5ms to 40ms of CPU blocking per turn**
 - **Bottleneck Found**:
-  `stream_automatic_web_search_response` unconditionally executed `raw_log_payload=plan.request.model_dump()` on every request even when `log_raw_api_payloads` was `False` (the default).
+  `stream_automatic_web_search_response` and `ResponsesHandler.create` unconditionally executed `model_dump()` on every request even when `log_raw_api_payloads` was `False` (the default).
 - **Optimization Applied**:
-  Added `log_raw_payloads: bool = False` to `stream_automatic_web_search_response` and guarded `plan.request.model_dump() if log_raw_payloads else None`.
+  Guarded `plan.request.model_dump() if log_raw_payloads else None` in `stream_automatic_web_search_response` and `request_data.model_dump(...) if self._settings.log_raw_api_payloads else None` in `ResponsesHandler.create`.
 
 ### Optimization 5: Single-Pass Lazy `_RequestInspectionView` (`api/detection.py`) — **Reduces ingress classification overhead by ~80%**
 - **Bottleneck Found**:

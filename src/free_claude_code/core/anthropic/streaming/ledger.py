@@ -30,7 +30,7 @@ except Exception:
 
 
 def _safe_usage_int(value: object) -> int:
-    return value if isinstance(value, int) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 @dataclass
@@ -221,14 +221,14 @@ class AnthropicStreamLedger:
         safe_in = _safe_usage_int(
             self.input_tokens if input_tokens is None else input_tokens
         )
-        safe_out = output_tokens if isinstance(output_tokens, int) else 0
+        safe_out = _safe_usage_int(output_tokens)
         usage = {"input_tokens": safe_in, "output_tokens": safe_out}
         if usage_fields:
             usage.update(
                 {
                     key: value
                     for key, value in usage_fields.items()
-                    if isinstance(value, int)
+                    if isinstance(value, int) and not isinstance(value, bool)
                 }
             )
         return self._emitter.event(

@@ -42,6 +42,7 @@ class _ToolState:
     started: bool = False
     received_delta: bool = False
     stopped: bool = False
+    pending_deltas: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -121,11 +122,26 @@ class ResponsesProviderStream:
             return []
         item_id = _string(item.get("id"))
         if item.get("type") == "function_call" and item_id:
-            self._tools[item_id] = _ToolState(
-                tool_index=len(self._tools),
-                call_id=_string(item.get("call_id")) or item_id,
-                name=self._tool_names.decode(_string(item.get("name"))),
-            )
+            call_id = _string(item.get("call_id"))
+            decoded_name = self._tool_names.decode(_string(item.get("name")))
+            state = self._tools.get(item_id)
+            if state is None:
+                state = _ToolState(
+                    tool_index=len(self._tools),
+                    call_id=call_id or item_id,
+                    name=decoded_name,
+                )
+                self._tools[item_id] = state
+            else:
+                if call_id:
+                    state.call_id = call_id
+                if decoded_name and not state.name:
+                    state.name = decoded_name
+            if state.name and state.pending_deltas:
+                events = [] if state.started else self._close_text()
+                events.extend(self._ensure_tool_started(state))
+                events.extend(self._flush_pending_tool_deltas(state))
+                return events
         if item.get("type") == "message" and self.ledger.blocks.text_started:
             return [self.ledger.stop_text_block()]
         if item.get("type") == "reasoning":
@@ -227,11 +243,31 @@ class ResponsesProviderStream:
                 name="",
             )
             self._tools[item_id] = state
+        if not state.name and not state.started:
+            if delta:
+                state.pending_deltas.append(delta)
+                state.received_delta = True
+            return []
         events = [] if state.started else self._close_text()
         events.extend(self._ensure_tool_started(state))
+        events.extend(self._flush_pending_tool_deltas(state))
         if delta:
             events.append(self.ledger.emit_tool_delta(state.tool_index, delta))
             state.received_delta = True
+            self.generated_output = True
+        return events
+
+    def _flush_pending_tool_deltas(self, state: _ToolState) -> list[str]:
+        if not state.pending_deltas:
+            return []
+        pending = list(state.pending_deltas)
+        state.pending_deltas.clear()
+        events = [
+            self.ledger.emit_tool_delta(state.tool_index, delta)
+            for delta in pending
+            if delta
+        ]
+        if events:
             self.generated_output = True
         return events
 
@@ -242,18 +278,23 @@ class ResponsesProviderStream:
         item_type = item.get("type")
         item_id = _string(item.get("id"))
         if item_type == "function_call":
+            call_id = _string(item.get("call_id"))
             state = self._tools.get(item_id)
             if state is None:
                 state = _ToolState(
                     tool_index=len(self._tools),
-                    call_id=_string(item.get("call_id")) or item_id,
+                    call_id=call_id or item_id,
                     name=self._tool_names.decode(_string(item.get("name"))),
                 )
                 self._tools[item_id] = state
-            if not state.name:
-                state.name = self._tool_names.decode(_string(item.get("name")))
+            else:
+                if call_id and not state.started:
+                    state.call_id = call_id
+                if not state.name:
+                    state.name = self._tool_names.decode(_string(item.get("name")))
             events = [] if state.started else self._close_text()
             events.extend(self._ensure_tool_started(state))
+            events.extend(self._flush_pending_tool_deltas(state))
             arguments = item.get("arguments")
             if not state.received_delta and isinstance(arguments, str) and arguments:
                 events.append(self.ledger.emit_tool_delta(state.tool_index, arguments))
@@ -328,6 +369,10 @@ class ResponsesProviderStream:
                 events.append(self.ledger.content_block_stop(state.block_index))
                 state.stopped = True
         for state in self._tools.values():
+            if not state.started and state.pending_deltas:
+                events.extend(self._close_text())
+                events.extend(self._ensure_tool_started(state))
+                events.extend(self._flush_pending_tool_deltas(state))
             if state.started and not state.stopped:
                 events.append(self.ledger.stop_tool_block(state.tool_index))
                 state.stopped = True

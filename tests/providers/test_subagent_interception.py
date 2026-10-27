@@ -61,6 +61,42 @@ async def test_task_tool_interception():
     assert args_passed["run_in_background"] is False
 
 
+def test_task_tool_restores_nim_parameter_aliases() -> None:
+    sse = MagicMock()
+    sse.blocks = StreamBlockLedger()
+    tool_calls = OpenAIToolCallAssembler()
+
+    tc = {
+        "index": 0,
+        "id": "tool_alias_1",
+        "function": {
+            "name": "Task",
+            "arguments": json.dumps(
+                {
+                    "description": "test task",
+                    "_fcc_arg_type": "subagent",
+                    "run_in_background": True,
+                }
+            ),
+        },
+    }
+
+    list(
+        tool_calls.process_tool_call(
+            tc,
+            sse,
+            tool_argument_aliases={"Task": {"_fcc_arg_type": "type"}},
+        )
+    )
+
+    calls = sse.emit_tool_delta.call_args_list
+    assert len(calls) == 1
+    args_passed = json.loads(calls[0][0][1])
+    assert args_passed["type"] == "subagent"
+    assert "_fcc_arg_type" not in args_passed
+    assert args_passed["run_in_background"] is False
+
+
 if __name__ == "__main__":
     import asyncio
 
