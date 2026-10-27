@@ -19,6 +19,7 @@ from free_claude_code.core.anthropic.streaming import (
     AnthropicStreamLedger,
     make_response_recovery_body,
     make_text_recovery_body,
+    tool_schemas_by_name,
 )
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
@@ -1943,7 +1944,9 @@ class TestProcessToolCall:
             )
         )
 
-        calls = collector.completed_calls(request, tool_names=codec)
+        calls = collector.completed_calls(
+            tool_schemas_by_name(request), tool_names=codec
+        )
 
         assert calls is not None
         assert calls[0]["function"]["name"] == original
