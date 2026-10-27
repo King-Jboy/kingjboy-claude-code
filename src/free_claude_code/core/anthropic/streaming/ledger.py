@@ -454,9 +454,11 @@ class AnthropicStreamLedger:
         return "".join(self._thinking_parts)
 
     def estimate_output_tokens(self) -> int:
+        accumulated_text = self.accumulated_text
+        accumulated_reasoning = self.accumulated_reasoning
         if ENCODER:
-            text_tokens = len(ENCODER.encode(self.accumulated_text))
-            reasoning_tokens = len(ENCODER.encode(self.accumulated_reasoning))
+            text_tokens = len(ENCODER.encode(accumulated_text))
+            reasoning_tokens = len(ENCODER.encode(accumulated_reasoning))
             tool_tokens = 0
             tool_count = 0
             for name, content in self._iter_tool_token_payloads():
@@ -466,14 +468,14 @@ class AnthropicStreamLedger:
                 tool_count += 1
 
             block_count = (
-                (1 if self.accumulated_reasoning else 0)
-                + (1 if self.accumulated_text else 0)
+                (1 if accumulated_reasoning else 0)
+                + (1 if accumulated_text else 0)
                 + tool_count
             )
             return text_tokens + reasoning_tokens + tool_tokens + (block_count * 4)
 
-        text_tokens = len(self.accumulated_text) // 4
-        reasoning_tokens = len(self.accumulated_reasoning) // 4
+        text_tokens = len(accumulated_text) // 4
+        reasoning_tokens = len(accumulated_reasoning) // 4
         tool_tokens = sum(1 for _ in self._iter_tool_token_payloads()) * 50
         return text_tokens + reasoning_tokens + tool_tokens
 

@@ -10,6 +10,24 @@ import pytest
 from free_claude_code.config.settings import Settings
 from tests.providers.support import immediate_admission
 
+# Clear ambient container variables that would otherwise override Settings defaults in tests
+for _ambient_var in (
+    "PORT",
+    "HOST",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
+    "CEREBRAS_API_KEY",
+    "MISTRAL_API_KEY",
+    "SAMBANOVA_API_KEY",
+    "TOGETHER_API_KEY",
+    "FIREWORKS_API_KEY",
+    "XAI_API_KEY",
+):
+    os.environ.pop(_ambient_var, None)
+
 # Set mock environment BEFORE any imports that use Settings
 os.environ.setdefault("NVIDIA_NIM_API_KEY", "test_key")
 os.environ.setdefault("MODEL", "nvidia_nim/test-model")

@@ -134,6 +134,7 @@ class OpenAICodexProvider(BaseProvider):
             "originator": OPENAI_CODEX_ORIGINATOR,
             "version": FCC_VERSION,
         }
+        use_http2 = not (config.proxy and config.proxy.lower().startswith("socks"))
         self._client = client or httpx.AsyncClient(
             base_url=f"{config.base_url.rstrip('/')}/",
             proxy=config.proxy or None,
@@ -143,6 +144,7 @@ class OpenAICodexProvider(BaseProvider):
                 write=config.http_write_timeout,
             ),
             headers=self._client_headers,
+            http2=use_http2,
         )
         self._owns_client = client is None
 
@@ -391,8 +393,14 @@ class OpenAICodexProvider(BaseProvider):
                 raise
             except Exception as raw_error:
                 error = _effective_error(raw_error)
-                if attempt is not None and not attempt.accepted:
-                    await attempt.retry(error)
+                post_acceptance_retry_allowed = True
+                if attempt is not None:
+                    if attempt.accepted:
+                        post_acceptance_retry_allowed = (
+                            await attempt.retry_after_acceptance(error)
+                        )
+                    else:
+                        await attempt.retry(error)
                 retryable = (
                     attempt.failure_retryable
                     if attempt is not None and attempt.failure_retryable is not None
@@ -413,7 +421,7 @@ class OpenAICodexProvider(BaseProvider):
                         recovery.discard()
                         continue
 
-                should_early_retry = (
+                should_early_retry = post_acceptance_retry_allowed and (
                     decision.action == RecoveryFailureAction.EARLY_RETRY
                     or (
                         (not decision.committed or not stream.generated_output)
@@ -421,8 +429,6 @@ class OpenAICodexProvider(BaseProvider):
                         and retry_session.can_attempt
                     )
                 )
-                if should_early_retry and attempt is not None and attempt.accepted:
-                    should_early_retry = await attempt.retry_after_acceptance(error)
                 if should_early_retry:
                     if decision.committed:
                         message_started_committed = True

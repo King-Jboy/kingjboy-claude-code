@@ -67,7 +67,32 @@ class ApiKeyPool:
         if self._on_capacity_change is not None:
             self._on_capacity_change(self.active_rate_limit(now))
 
-    def get_next_key(self) -> str | None:
+    def has_eligible_key(self, *, exclude: str | None = None) -> bool:
+        """Return whether a key (optionally distinct from ``exclude``) has immediate capacity."""
+        with self._lock:
+            now = time.monotonic()
+            return any(
+                state.key != exclude
+                and not state.failed
+                and now >= state.unavailable_until
+                and state.limiter.headroom() > 0
+                for state in self._keys
+            )
+
+    def next_available_in(self, *, exclude: str | None = None) -> float | None:
+        """Return the minimum seconds until an eligible key has RPM capacity."""
+        with self._lock:
+            now = time.monotonic()
+            waits = [
+                state.limiter.next_available_in()
+                for state in self._keys
+                if state.key != exclude
+                and not state.failed
+                and now >= state.unavailable_until
+            ]
+            return min(waits) if waits else None
+
+    def get_next_key(self, *, exclude: str | None = None) -> str | None:
         """Reserve the longest-idle key that currently has RPM capacity."""
         with self._lock:
             now = time.monotonic()
@@ -76,7 +101,9 @@ class ApiKeyPool:
                 (
                     state
                     for state in self._keys
-                    if not state.failed and now >= state.unavailable_until
+                    if state.key != exclude
+                    and not state.failed
+                    and now >= state.unavailable_until
                 ),
                 key=lambda state: state.last_used_at,
             )
@@ -90,8 +117,11 @@ class ApiKeyPool:
         """Clear a transient authentication-failure streak after stream open."""
         with self._lock:
             if state := self._by_key.get(key):
+                now = time.monotonic()
                 state.consecutive_failures = 0
-                self._notify_capacity()
+                if state.unavailable_until and now >= state.unavailable_until:
+                    state.unavailable_until = 0.0
+                self._notify_capacity(now)
 
     def mark_failed(self, key: str) -> None:
         """Temporarily hold failed keys, then retire only persistent failures."""

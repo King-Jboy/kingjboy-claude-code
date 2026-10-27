@@ -35,6 +35,7 @@ async def stream_automatic_web_search_response(
     request_id: str,
     fallback_input_tokens: int,
     verbose_client_errors: bool,
+    log_raw_payloads: bool = False,
 ) -> AsyncIterator[str]:
     """Buffer one model decision, then replay it or execute one local search."""
     translated = replace(routed, request=plan.request)
@@ -49,7 +50,7 @@ async def stream_automatic_web_search_response(
         translated,
         wire_api="messages",
         raw_log_label="FULL_PAYLOAD",
-        raw_log_payload=plan.request.model_dump(),
+        raw_log_payload=plan.request.model_dump() if log_raw_payloads else None,
         request_id=request_id,
     )
     chunks: list[str] = []

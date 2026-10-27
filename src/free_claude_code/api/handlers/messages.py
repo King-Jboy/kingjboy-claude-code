@@ -137,6 +137,7 @@ class MessagesHandler:
                         request_id=request_id,
                         fallback_input_tokens=input_tokens,
                         verbose_client_errors=self._settings.log_api_error_tracebacks,
+                        log_raw_payloads=self._settings.log_raw_api_payloads,
                     )
                 )
             if result is None:

@@ -1,9 +1,9 @@
-import json
 from typing import Any
 
 from loguru import logger
 
 from free_claude_code.core.failures import ExecutionFailure
+from free_claude_code.core.json_utils import fast_json_dumps
 
 from ..errors import anthropic_error_payload, anthropic_failure_payload
 
@@ -20,6 +20,8 @@ STOP_REASON_MAP = {
     "content_filter": "end_turn",
 }
 
+_PING_SSE_FRAME = 'event: ping\ndata: {"type":"ping"}\n\n'
+
 
 def map_stop_reason(openai_reason: str | None) -> str:
     """Map OpenAI ``finish_reason`` values to Anthropic ``stop_reason`` values."""
@@ -30,7 +32,7 @@ def map_stop_reason(openai_reason: str | None) -> str:
 
 def format_sse_event(event_type: str, data: dict[str, Any]) -> str:
     """Format one Anthropic-style SSE event."""
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    return f"event: {event_type}\ndata: {fast_json_dumps(data)}\n\n"
 
 
 def anthropic_ping_frame() -> str:
@@ -39,7 +41,7 @@ def anthropic_ping_frame() -> str:
     Consumers ignore unrecognized event types, so a ping is inert for readers
     that do not need it while keeping a committed stream from going silent.
     """
-    return format_sse_event("ping", {"type": "ping"})
+    return _PING_SSE_FRAME
 
 
 def anthropic_terminal_error_frame(

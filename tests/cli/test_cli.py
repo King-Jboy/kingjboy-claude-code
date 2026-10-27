@@ -151,6 +151,13 @@ class TestCLIParser:
 class TestManagedClaudeSession:
     """Test ManagedClaudeSession."""
 
+    @staticmethod
+    def _make_mock_process() -> AsyncMock:
+        mock_process = AsyncMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdin.drain = AsyncMock()
+        return mock_process
+
     def test_session_init(self):
         """Test ManagedClaudeSession initialization."""
         from free_claude_code.cli.managed.session import ManagedClaudeSession
@@ -300,7 +307,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [
             b"",
         ]  # Immediate EOF
@@ -327,7 +334,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]  # Immediate EOF
         mock_process.stderr.read.return_value = b""
         mock_process.wait.return_value = 0
@@ -354,7 +361,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]  # No stdout
         mock_process.stderr.read.side_effect = [b"Fatal error", b""]
         mock_process.wait.return_value = 1
@@ -382,7 +389,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [
             b'{"type": "message", "content": "Hi"}\n',
             b"",
@@ -411,7 +418,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [
             b'{"type": "message", "content": "Hi"}\n',
             b"",
@@ -439,7 +446,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]
         mock_process.stderr.read.side_effect = [
             (b"claude.ai connectors are disabled in this environment\nFatal error\n"),
@@ -467,7 +474,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]
         mock_process.stderr.read.side_effect = [
             b"claude.ai connectors are disabled in this environment\n",
@@ -574,7 +581,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         # Split json: {"type": "mess... age"}
         mock_process.stdout.read.side_effect = [
             b'{"type": "mess',
@@ -603,7 +610,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [
             b'{"type": "message", "content": "Remnant"}',  # No newline
             b"",
@@ -630,7 +637,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]
         mock_process.stderr.read.return_value = b""
         mock_process.wait.return_value = 0
@@ -656,7 +663,7 @@ class TestManagedClaudeSession:
             "/tmp", "http://localhost:8082", auth_token="proxy-token"
         )
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]
         mock_process.stderr.read.return_value = b""
         mock_process.wait.return_value = 0
@@ -688,7 +695,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082", auth_token="")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]
         mock_process.stderr.read.return_value = b""
         mock_process.wait.return_value = 0
@@ -715,7 +722,7 @@ class TestManagedClaudeSession:
             "/tmp", "http://localhost:8082", allowed_dirs=["/dir1", "/dir2"]
         )
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b""]
         mock_process.stderr.read.return_value = b""
         mock_process.wait.return_value = 0
@@ -739,7 +746,7 @@ class TestManagedClaudeSession:
 
         session = ManagedClaudeSession("/tmp", "http://localhost:8082")
 
-        mock_process = AsyncMock()
+        mock_process = self._make_mock_process()
         mock_process.stdout.read.side_effect = [b"Not valid json\n", b""]
         mock_process.stderr.read.return_value = b""
         mock_process.wait.return_value = 0

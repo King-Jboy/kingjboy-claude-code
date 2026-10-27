@@ -11,32 +11,129 @@ from free_claude_code.core.anthropic import (
 )
 
 
+class _RequestInspectionView:
+    """Lazy, single-pass text extraction view for one MessagesRequest."""
+
+    __slots__ = (
+        "_extractor",
+        "_request",
+        "_sole_user_resolved",
+        "_sole_user_text",
+        "_sole_user_turn",
+        "_system_text",
+        "_system_text_lower",
+        "_top_system_text",
+    )
+
+    def __init__(self, request_data: MessagesRequest, extractor: object) -> None:
+        self._request = request_data
+        self._extractor = extractor
+        self._sole_user_resolved = False
+        self._sole_user_turn: Message | None = None
+        self._sole_user_text: str | None = None
+        self._system_text: str | None = None
+        self._system_text_lower: str | None = None
+        self._top_system_text: str | None = None
+
+    @property
+    def sole_user_turn(self) -> Message | None:
+        if not self._sole_user_resolved:
+            user_turn: Message | None = None
+            for message in self._request.messages:
+                if message.role == "system":
+                    continue
+                if message.role != "user" or user_turn is not None:
+                    user_turn = None
+                    break
+                user_turn = message
+            self._sole_user_turn = user_turn
+            self._sole_user_resolved = True
+        return self._sole_user_turn
+
+    @property
+    def sole_user_text(self) -> str | None:
+        turn = self.sole_user_turn
+        if turn is None:
+            return None
+        if self._sole_user_text is None:
+            self._sole_user_text = extract_text_from_content(turn.content)
+        return self._sole_user_text
+
+    @property
+    def top_system_text(self) -> str:
+        if self._top_system_text is None:
+            self._top_system_text = (
+                extract_text_from_content(self._request.system)
+                if self._request.system
+                else ""
+            )
+        return self._top_system_text
+
+    @property
+    def system_text(self) -> str:
+        if self._system_text is None:
+            parts: list[str] = []
+            top = self.top_system_text
+            if top:
+                parts.append(top)
+            for message in self._request.messages:
+                if message.role != "system":
+                    continue
+                text = extract_text_from_content(message.content)
+                if text:
+                    parts.append(text)
+            self._system_text = "\n".join(parts)
+        return self._system_text
+
+    @property
+    def system_text_lower(self) -> str:
+        if self._system_text_lower is None:
+            self._system_text_lower = self.system_text.lower()
+        return self._system_text_lower
+
+
+_last_inspection: (
+    tuple[
+        MessagesRequest,
+        object,
+        int,
+        int,
+        bool,
+        _RequestInspectionView,
+    ]
+    | None
+) = None
+
+
+def _inspect_request(request_data: MessagesRequest) -> _RequestInspectionView:
+    """Return a cached inspection view when inspecting the same request in sequence."""
+    global _last_inspection
+    extractor = extract_text_from_content
+    msg_len = len(request_data.messages)
+    sys_id = id(request_data.system)
+    has_tools = bool(request_data.tools)
+    if (
+        _last_inspection is not None
+        and _last_inspection[0] is request_data
+        and _last_inspection[1] is extractor
+        and _last_inspection[2] == msg_len
+        and _last_inspection[3] == sys_id
+        and _last_inspection[4] == has_tools
+    ):
+        return _last_inspection[5]
+    view = _RequestInspectionView(request_data, extractor)
+    _last_inspection = (request_data, extractor, msg_len, sys_id, has_tools, view)
+    return view
+
+
 def _single_user_turn(request_data: MessagesRequest) -> Message | None:
     """Return the sole conversational user turn, ignoring system context."""
-    user_turn: Message | None = None
-    for message in request_data.messages:
-        if message.role == "system":
-            continue
-        if message.role != "user" or user_turn is not None:
-            return None
-        user_turn = message
-    return user_turn
+    return _inspect_request(request_data).sole_user_turn
 
 
 def _request_system_text(request_data: MessagesRequest) -> str:
     """Return top-level and inline system text for request-shape detection."""
-    parts: list[str] = []
-    if request_data.system:
-        text = extract_text_from_content(request_data.system)
-        if text:
-            parts.append(text)
-    for message in request_data.messages:
-        if message.role != "system":
-            continue
-        text = extract_text_from_content(message.content)
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
+    return _inspect_request(request_data).system_text
 
 
 def is_quota_check_request(request_data: MessagesRequest) -> bool:
@@ -45,10 +142,11 @@ def is_quota_check_request(request_data: MessagesRequest) -> bool:
     Quota checks are typically simple requests with max_tokens=1
     and a single message containing the word "quota".
     """
-    message = _single_user_turn(request_data)
-    if request_data.max_tokens != 1 or message is None:
+    if request_data.max_tokens != 1:
         return False
-    text = extract_text_from_content(message.content)
+    text = _inspect_request(request_data).sole_user_text
+    if text is None:
+        return False
     return "quota" in text.lower()
 
 
@@ -63,7 +161,7 @@ def is_title_generation_request(request_data: MessagesRequest) -> bool:
     """
     if request_data.tools:
         return False
-    system_text = _request_system_text(request_data).lower()
+    system_text = _inspect_request(request_data).system_text_lower
     if "title" not in system_text:
         return False
     return "sentence-case title" in system_text or (
@@ -82,11 +180,9 @@ def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, st
     Returns:
         Tuple of (is_prefix_request, command_string)
     """
-    message = _single_user_turn(request_data)
-    if message is None:
+    content = _inspect_request(request_data).sole_user_text
+    if content is None:
         return False, ""
-
-    content = extract_text_from_content(message.content)
 
     if "<policy_spec>" in content and "Command:" in content:
         try:
@@ -103,12 +199,15 @@ def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
     if request_data.tools:
         return False
 
-    system_text = (
-        extract_text_from_content(request_data.system) if request_data.system else ""
-    )
-    messages_text = "".join(
-        extract_text_from_content(message.content) for message in request_data.messages
-    )
+    view = _inspect_request(request_data)
+    system_text = view.top_system_text
+    if view.sole_user_turn is not None and len(request_data.messages) == 1:
+        messages_text = view.sole_user_text or ""
+    else:
+        messages_text = "".join(
+            extract_text_from_content(message.content)
+            for message in request_data.messages
+        )
     combined = f"{system_text}\n{messages_text}"
     has_verdict_instruction = "yes</block>" in combined or "no</block>" in combined
     return "<transcript>" in combined and has_verdict_instruction
@@ -120,6 +219,10 @@ def is_suggestion_mode_request(request_data: MessagesRequest) -> bool:
     Suggestion mode requests contain "[SUGGESTION MODE:" in the user's message,
     used for auto-suggesting what the user might type next.
     """
+    view = _inspect_request(request_data)
+    if view.sole_user_turn is not None:
+        sole_text = view.sole_user_text
+        return sole_text is not None and "[SUGGESTION MODE:" in sole_text
     for msg in request_data.messages:
         if msg.role == "user":
             text = extract_text_from_content(msg.content)
@@ -140,25 +243,23 @@ def is_filepath_extraction_request(
     Returns:
         Tuple of (is_filepath_request, command, output)
     """
-    message = _single_user_turn(request_data)
-    if message is None:
-        return False, "", ""
     if request_data.tools:
         return False, "", ""
-
-    content = extract_text_from_content(message.content)
+    view = _inspect_request(request_data)
+    content = view.sole_user_text
+    if content is None:
+        return False, "", ""
 
     if "Command:" not in content or "Output:" not in content:
         return False, "", ""
 
     # Match if user content OR system block indicates filepath extraction
-    user_has_filepaths = (
-        "filepaths" in content.lower() or "<filepaths>" in content.lower()
-    )
-    system_text = _request_system_text(request_data)
+    content_lower = content.lower()
+    user_has_filepaths = "filepaths" in content_lower or "<filepaths>" in content_lower
+    system_text_lower = view.system_text_lower
     system_has_extract = (
-        "extract any file paths" in system_text.lower()
-        or "file paths that this command" in system_text.lower()
+        "extract any file paths" in system_text_lower
+        or "file paths that this command" in system_text_lower
     )
     if not user_has_filepaths and not system_has_extract:
         return False, "", ""

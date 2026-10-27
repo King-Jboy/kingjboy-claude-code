@@ -17,7 +17,7 @@ from free_claude_code.core.failures import ExecutionFailure
 
 from .failure_policy import RetryableProviderProtocolError, retryable_transient_status
 
-EARLY_HOLDBACK_SECONDS = 0.75
+EARLY_HOLDBACK_SECONDS = 0.15
 RECOVERY_BUFFER_MAX_BYTES = 65_536
 
 
@@ -73,7 +73,11 @@ class RecoveryHoldbackBuffer:
         if self._started_at is None:
             self._started_at = self._now()
         self._events.append(event)
-        self._bytes += len(event.encode("utf-8", errors="replace"))
+        self._bytes += (
+            len(event)
+            if event.isascii()
+            else len(event.encode("utf-8", errors="replace"))
+        )
         if (
             self._bytes >= self._max_bytes
             or self._now() - self._started_at >= self._holdback_seconds
