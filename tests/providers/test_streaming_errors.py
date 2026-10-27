@@ -1663,7 +1663,10 @@ class TestStreamingExceptionHandling:
 
         event_text = "".join(events)
         parsed = parse_sse_text(event_text)
-        assert '"partial_json": "\\"ok\\"}"' in event_text
+        assert (
+            '"partial_json":"\\"ok\\"}"' in event_text
+            or '"partial_json": "\\"ok\\"}"' in event_text
+        )
         assert any(
             event.event == "message_delta"
             and event.data.get("delta", {}).get("stop_reason") == "tool_use"

@@ -62,11 +62,8 @@ class _RequestInspectionView:
     @property
     def top_system_text(self) -> str:
         if self._top_system_text is None:
-            self._top_system_text = (
-                extract_text_from_content(self._request.system)
-                if self._request.system
-                else ""
-            )
+            system = getattr(self._request, "system", None)
+            self._top_system_text = extract_text_from_content(system) if system else ""
         return self._top_system_text
 
     @property
@@ -109,9 +106,10 @@ def _inspect_request(request_data: MessagesRequest) -> _RequestInspectionView:
     """Return a cached inspection view when inspecting the same request in sequence."""
     global _last_inspection
     extractor = extract_text_from_content
-    msg_len = len(request_data.messages)
-    sys_id = id(request_data.system)
-    has_tools = bool(request_data.tools)
+    messages = getattr(request_data, "messages", ())
+    msg_len = len(messages) if messages is not None else 0
+    sys_id = id(getattr(request_data, "system", None))
+    has_tools = bool(getattr(request_data, "tools", None))
     if (
         _last_inspection is not None
         and _last_inspection[0] is request_data
@@ -142,7 +140,7 @@ def is_quota_check_request(request_data: MessagesRequest) -> bool:
     Quota checks are typically simple requests with max_tokens=1
     and a single message containing the word "quota".
     """
-    if request_data.max_tokens != 1:
+    if getattr(request_data, "max_tokens", None) != 1:
         return False
     text = _inspect_request(request_data).sole_user_text
     if text is None:
@@ -159,7 +157,7 @@ def is_title_generation_request(request_data: MessagesRequest) -> bool:
     Matches Claude Code session title prompts (sentence-case title, JSON
     \"title\" field, etc.).
     """
-    if request_data.tools:
+    if getattr(request_data, "tools", None):
         return False
     system_text = _inspect_request(request_data).system_text_lower
     if "title" not in system_text:
@@ -196,7 +194,7 @@ def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, st
 
 def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
     """Return whether this is Claude Code's auto-mode safety classifier prompt."""
-    if request_data.tools:
+    if getattr(request_data, "tools", None):
         return False
 
     view = _inspect_request(request_data)
@@ -243,7 +241,7 @@ def is_filepath_extraction_request(
     Returns:
         Tuple of (is_filepath_request, command, output)
     """
-    if request_data.tools:
+    if getattr(request_data, "tools", None):
         return False, "", ""
     view = _inspect_request(request_data)
     content = view.sole_user_text

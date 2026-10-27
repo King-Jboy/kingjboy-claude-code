@@ -813,8 +813,8 @@ async def test_native_minimax_tool_markup_becomes_anthropic_tool_use(nim_provide
     event_text = "".join(events)
     assert namespace not in event_text
     assert "I will read it." in event_text
-    assert '"type": "tool_use"' in event_text
-    assert '"name": "Read"' in event_text
+    assert '"type":"tool_use"' in event_text or '"type": "tool_use"' in event_text
+    assert '"name":"Read"' in event_text or '"name": "Read"' in event_text
     assert json.loads(_input_json_deltas(events)[0]) == {"file_path": "README.md"}
 
 
@@ -860,8 +860,8 @@ async def test_native_minimax_reasoning_markup_becomes_anthropic_tool_use(
 
     event_text = "".join(events)
     assert namespace not in event_text
-    assert '"type": "tool_use"' in event_text
-    assert '"name": "Write"' in event_text
+    assert '"type":"tool_use"' in event_text or '"type": "tool_use"' in event_text
+    assert '"name":"Write"' in event_text or '"name": "Write"' in event_text
     assert json.loads(_input_json_deltas(events)[0]) == {"file_path": "output.md"}
 
 
@@ -898,7 +898,9 @@ async def test_native_minimax_markup_without_tools_retries_without_leaking(
     assert mock_create.await_count == UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS
     assert namespace not in event_text
     assert event_text.count("Recovered safely.") == 1
-    assert '"type": "tool_use"' not in event_text
+    assert (
+        '"type":"tool_use"' not in event_text and '"type": "tool_use"' not in event_text
+    )
 
 
 @pytest.mark.asyncio
@@ -993,7 +995,7 @@ async def test_malformed_native_minimax_tool_call_retries_without_leaking(
     assert mock_create.await_count == 2
     event_text = "".join(events)
     assert namespace not in event_text
-    assert '"name": "Read"' in event_text
+    assert '"name":"Read"' in event_text or '"name": "Read"' in event_text
     assert json.loads(_input_json_deltas(events)[0]) == {"file_path": "README.md"}
 
 
@@ -1060,7 +1062,7 @@ async def test_midstream_native_tool_suffix_failure_recovers_without_duplication
     event_text = "".join(events)
     assert namespace not in event_text
     assert event_text.count("Starting the read.") == 1
-    assert '"name": "Read"' in event_text
+    assert '"name":"Read"' in event_text or '"name": "Read"' in event_text
     assert json.loads(_input_json_deltas(events)[0]) == {"file_path": "README.md"}
     assert "event: error" not in event_text
 
