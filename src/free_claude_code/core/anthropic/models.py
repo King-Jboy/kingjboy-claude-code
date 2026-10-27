@@ -2,7 +2,28 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+_KNOWN_CONTENT_BLOCK_TYPES = frozenset(
+    {
+        "text",
+        "image",
+        "document",
+        "tool_use",
+        "tool_result",
+        "thinking",
+        "redacted_thinking",
+        "server_tool_use",
+        "web_search_tool_result",
+        "web_fetch_tool_result",
+        "tool_reference",
+        "tool_addition",
+        "tool_definition",
+        "tool_search_tool_result",
+        "mcp_tool_use",
+        "mcp_tool_result",
+    }
+)
 
 
 class _AnthropicBlockBase(BaseModel):
@@ -32,13 +53,13 @@ class ContentBlockToolUse(_AnthropicBlockBase):
     type: Literal["tool_use"]
     id: str
     name: str
-    input: dict[str, Any]
+    input: dict[str, Any] = Field(default_factory=dict)
 
 
 class ContentBlockToolResult(_AnthropicBlockBase):
     type: Literal["tool_result"]
     tool_use_id: str
-    content: str | list[Any] | dict[str, Any]
+    content: str | list[Any] | dict[str, Any] | None = ""
 
 
 class ContentBlockThinking(_AnthropicBlockBase):
@@ -58,19 +79,87 @@ class ContentBlockServerToolUse(_AnthropicBlockBase):
     type: Literal["server_tool_use"]
     id: str
     name: str
-    input: dict[str, Any]
+    input: dict[str, Any] = Field(default_factory=dict)
 
 
 class ContentBlockWebSearchToolResult(_AnthropicBlockBase):
     type: Literal["web_search_tool_result"]
     tool_use_id: str
-    content: Any
+    content: Any = None
 
 
 class ContentBlockWebFetchToolResult(_AnthropicBlockBase):
     type: Literal["web_fetch_tool_result"]
     tool_use_id: str
-    content: Any
+    content: Any = None
+
+
+class ContentBlockToolReference(_AnthropicBlockBase):
+    """Anthropic deferred tool reference block (e.g. via ``ToolSearch``)."""
+
+    type: Literal["tool_reference"]
+    tool_name: str | None = None
+    name: str | None = None
+
+
+class ContentBlockToolAddition(_AnthropicBlockBase):
+    """Advisor-style beta block: adds a tool reference inline in a message."""
+
+    type: Literal["tool_addition"]
+    tool: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContentBlockToolDefinition(_AnthropicBlockBase):
+    """Inline deferred tool definition block."""
+
+    type: Literal["tool_definition"]
+    name: str | None = None
+    tool_name: str | None = None
+    description: str | None = None
+    input_schema: dict[str, Any] | None = None
+    tool: dict[str, Any] | None = None
+
+
+class ContentBlockToolSearchToolResult(_AnthropicBlockBase):
+    """Anthropic server-side tool search result block."""
+
+    type: Literal["tool_search_tool_result"]
+    tool_use_id: str
+    content: Any = None
+
+
+class ContentBlockMcpToolUse(_AnthropicBlockBase):
+    """Anthropic MCP connector tool invocation block."""
+
+    type: Literal["mcp_tool_use"]
+    id: str
+    name: str
+    server_name: str | None = None
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContentBlockMcpToolResult(_AnthropicBlockBase):
+    """Anthropic MCP connector tool result block."""
+
+    type: Literal["mcp_tool_result"]
+    tool_use_id: str
+    content: Any = None
+    is_error: bool | None = None
+
+
+class ContentBlockGeneric(_AnthropicBlockBase):
+    """Forward-compatible fallback for unrecognized Anthropic content blocks."""
+
+    type: str
+
+    @field_validator("type")
+    @classmethod
+    def _reject_known_block_types(cls, value: str) -> str:
+        if value in _KNOWN_CONTENT_BLOCK_TYPES:
+            raise ValueError(
+                f"Known block type {value!r} must match its specific schema."
+            )
+        return value
 
 
 class SystemContent(_AnthropicBlockBase):
@@ -93,6 +182,13 @@ class Message(BaseModel):
             | ContentBlockServerToolUse
             | ContentBlockWebSearchToolResult
             | ContentBlockWebFetchToolResult
+            | ContentBlockToolReference
+            | ContentBlockToolAddition
+            | ContentBlockToolDefinition
+            | ContentBlockToolSearchToolResult
+            | ContentBlockMcpToolUse
+            | ContentBlockMcpToolResult
+            | ContentBlockGeneric
         ]
     )
     reasoning_content: str | None = None

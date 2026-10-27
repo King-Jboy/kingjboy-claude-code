@@ -352,3 +352,49 @@ def test_openai_conversion_rejects_unknown_top_level_anthropic_extensions() -> N
 
     with pytest.raises(OpenAIConversionError, match="client_extension"):
         build_base_request_body(request)
+
+
+def test_messages_request_accepts_deferred_tool_and_mcp_content_blocks() -> None:
+    deferred_notice = (
+        "The following tools just became available and are ready to use:\n"
+        "mcp__firecrawl__firecrawl_scrape\n"
+        "mcp__firecrawl__firecrawl_search\n\n"
+        "The following deferred tools are now available via ToolSearch."
+    )
+    request = MessagesRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "turn 1"},
+                {"role": "assistant", "content": "reply 1"},
+                {"role": "user", "content": "turn 2"},
+                {"role": "assistant", "content": "reply 2"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": deferred_notice},
+                        {
+                            "type": "tool_reference",
+                            "tool_name": "mcp__firecrawl__firecrawl_scrape",
+                        },
+                        {
+                            "type": "tool_addition",
+                            "tool": {"type": "tool_reference", "name": "advisor"},
+                        },
+                        {
+                            "type": "tool_definition",
+                            "name": "mcp__firecrawl__firecrawl_search",
+                            "input_schema": {"type": "object", "properties": {}},
+                        },
+                        {"type": "text", "text": "How are you doing today"},
+                    ],
+                },
+            ],
+        }
+    )
+
+    body = build_base_request_body(request)
+    assert body["messages"][-1] == {
+        "role": "user",
+        "content": f"{deferred_notice}\nHow are you doing today",
+    }

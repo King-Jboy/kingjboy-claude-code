@@ -348,6 +348,12 @@ def _user_items(content: Any) -> list[dict[str, Any]]:
                     "output": output,
                 }
             )
+        elif block_type in {
+            "tool_reference",
+            "tool_addition",
+            "tool_definition",
+        }:
+            continue
         elif block_type == "document":
             raise ResponsesConversionError(
                 "OpenAI Responses provider does not support Anthropic document blocks."
@@ -375,7 +381,14 @@ def _message_text(content: Any, *, context: str) -> str:
         raise ResponsesConversionError(f"{context} must contain only text.")
     parts: list[str] = []
     for block in content:
-        if get_block_type(block) != "text":
+        block_type = get_block_type(block)
+        if block_type in {
+            "tool_reference",
+            "tool_addition",
+            "tool_definition",
+        }:
+            continue
+        if block_type != "text":
             raise ResponsesConversionError(f"{context} must contain only text.")
         parts.append(str(get_block_attr(block, "text", "")))
     return "\n\n".join(parts)

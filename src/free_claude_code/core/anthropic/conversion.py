@@ -189,6 +189,15 @@ def _assert_no_forbidden_assistant_block(block: Any) -> None:
         )
 
 
+_INLINE_TOOL_METADATA_BLOCK_TYPES = frozenset(
+    {
+        "tool_reference",
+        "tool_addition",
+        "tool_definition",
+    }
+)
+
+
 def _openai_system_text(
     content: Any,
     *,
@@ -207,6 +216,8 @@ def _openai_system_text(
     text_parts: list[str] = []
     for block in content:
         block_type = get_block_type(block)
+        if block_type in _INLINE_TOOL_METADATA_BLOCK_TYPES:
+            continue
         if block_type != "text":
             raise OpenAIConversionError(
                 f"OpenAI chat conversion cannot represent {context} content block "
