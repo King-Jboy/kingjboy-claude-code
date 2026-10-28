@@ -509,14 +509,14 @@ async def _messages_response_to_sse_stream(
                 "content_block_stop",
                 {"type": "content_block_stop", "index": idx},
             )
-        elif block_type == "tool_use":
+        elif block_type in {"tool_use", "mcp_tool_use"}:
             yield format_sse_event(
                 "content_block_start",
                 {
                     "type": "content_block_start",
                     "index": idx,
                     "content_block": {
-                        "type": "tool_use",
+                        "type": block_type,
                         "id": block_dict.get("id", ""),
                         "name": block_dict.get("name", ""),
                         "input": {},

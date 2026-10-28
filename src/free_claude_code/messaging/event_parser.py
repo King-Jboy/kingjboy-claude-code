@@ -63,7 +63,7 @@ def parse_cli_event(event: Any, *, log_raw_cli: bool = False) -> list[dict]:
                     results.append(
                         {"type": "thinking_chunk", "text": c.get("thinking", "")}
                     )
-                elif ctype == "tool_use":
+                elif ctype in {"tool_use", "mcp_tool_use"}:
                     results.append(
                         {
                             "type": "tool_use",
@@ -72,7 +72,11 @@ def parse_cli_event(event: Any, *, log_raw_cli: bool = False) -> list[dict]:
                             "input": c.get("input"),
                         }
                     )
-                elif ctype == "tool_result":
+                elif ctype in {
+                    "tool_result",
+                    "mcp_tool_result",
+                    "tool_search_tool_result",
+                }:
                     results.append(
                         {
                             "type": "tool_result",
@@ -123,7 +127,7 @@ def parse_cli_event(event: Any, *, log_raw_cli: bool = False) -> list[dict]:
                 return [{"type": "thinking_start", "index": event.get("index", -1)}]
             if btype == "text":
                 return [{"type": "text_start", "index": event.get("index", -1)}]
-            if btype == "tool_use":
+            if btype in {"tool_use", "mcp_tool_use"}:
                 return [
                     {
                         "type": "tool_use_start",

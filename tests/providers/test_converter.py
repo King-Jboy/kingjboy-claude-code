@@ -2175,3 +2175,23 @@ def test_build_base_request_body_parallel_tool_calls_omitted_without_tools() -> 
     )
     body_with_tools = build_base_request_body(request_with_tools)
     assert body_with_tools["parallel_tool_calls"] is False
+
+
+def test_build_base_request_body_omits_empty_tools_when_only_advisor_present() -> None:
+    request = MessagesRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "parallel_tool_calls": False,
+            "tools": [
+                {
+                    "name": "advisor_20260301",
+                    "type": "advisor_20260301",
+                }
+            ],
+        }
+    )
+    body = build_base_request_body(request)
+    assert "tools" not in body
+    assert "tool_choice" not in body
+    assert "parallel_tool_calls" not in body

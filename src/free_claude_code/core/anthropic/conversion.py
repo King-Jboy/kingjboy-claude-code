@@ -585,7 +585,7 @@ class AnthropicToOpenAIConverter:
         if role == "assistant" and isinstance(content, list):
             if (first_i := _index_first_tool_use(content)) is not None:
                 for block in content:
-                    if get_block_type(block) == "tool_use":
+                    if get_block_type(block) in {"tool_use", "mcp_tool_use"}:
                         continue
                     _assert_no_forbidden_assistant_block(block)
                 return [
@@ -800,6 +800,11 @@ class AnthropicToOpenAIConverter:
                 tool_results.append(_openai_chat_tool_result(block))
             elif block_type in _INLINE_TOOL_METADATA_BLOCK_TYPES:
                 continue
+            else:
+                text = get_block_attr(block, "text", None)
+                if text is not None:
+                    flush_tool_results()
+                    content_parts.append({"type": "text", "text": str(text)})
 
         flush_tool_results()
         flush_content()
@@ -893,14 +898,17 @@ def build_base_request_body(
         body["stop"] = stop_sequences
 
     tools = request_data.tools
-    if tools:
-        body["tools"] = AnthropicToOpenAIConverter.convert_tools(tools)
-    tool_choice = resolve_anthropic_tool_choice(tools, request_data.tool_choice)
+    converted_tools = AnthropicToOpenAIConverter.convert_tools(tools) if tools else []
+    if converted_tools:
+        body["tools"] = converted_tools
+    tool_choice = resolve_anthropic_tool_choice(
+        converted_tools, request_data.tool_choice
+    )
     if tool_choice:
-        body["tool_choice"] = AnthropicToOpenAIConverter.convert_tool_choice(
-            tool_choice
-        )
-    if tools:
+        converted_choice = AnthropicToOpenAIConverter.convert_tool_choice(tool_choice)
+        if converted_choice is not None:
+            body["tool_choice"] = converted_choice
+    if converted_tools:
         set_if_not_none(body, "parallel_tool_calls", request_data.parallel_tool_calls)
 
     return body

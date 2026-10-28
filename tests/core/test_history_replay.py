@@ -334,3 +334,37 @@ def test_unrelated_native_and_older_replay_blocks_are_unchanged():
         },
     ]
     assert resolve_messages_replay(blocks) == blocks
+
+
+def test_tool_continuation_preserves_reasoning_with_inline_tool_reference():
+    chat_origin = _origin(protocol="chat")
+    messages = [
+        {"role": "user", "content": "search for docs"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "plan tool call",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "ToolSearch", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "loaded"},
+                {"type": "tool_reference", "tool_name": "mcp__firecrawl__search"},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "loaded"},
+    ]
+    prepared = prepare_history(
+        {"messages": messages},
+        chat_origin,
+        scope=HistoryScope.TOOL_CONTINUATION,
+    )
+    prepared_messages = cast(list[dict[str, Any]], prepared["messages"])
+    assert prepared_messages[1]["reasoning_content"] == "plan tool call"

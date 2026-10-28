@@ -46,7 +46,7 @@ def get_token_count(
                 elif b_type == "thinking":
                     thinking = get_block_attr(block, "thinking", "")
                     total_tokens += _count_text_tokens(str(thinking))
-                elif b_type == "tool_use":
+                elif b_type in ("tool_use", "mcp_tool_use"):
                     name = get_block_attr(block, "name", "")
                     inp = get_block_attr(block, "input", {})
                     block_id = get_block_attr(block, "id", "")
@@ -64,7 +64,11 @@ def get_token_count(
                             total_tokens += 765
                     else:
                         total_tokens += 765
-                elif b_type == "tool_result":
+                elif b_type in (
+                    "tool_result",
+                    "mcp_tool_result",
+                    "tool_search_tool_result",
+                ):
                     content = get_block_attr(block, "content", "")
                     tool_use_id = get_block_attr(block, "tool_use_id", "")
                     if isinstance(content, str):
@@ -77,6 +81,9 @@ def get_token_count(
                     "server_tool_use",
                     "web_search_tool_result",
                     "web_fetch_tool_result",
+                    "tool_reference",
+                    "tool_addition",
+                    "tool_definition",
                 ):
                     if hasattr(block, "model_dump"):
                         blob: object = block.model_dump()
@@ -95,17 +102,22 @@ def get_token_count(
                         "Unexpected block type {!r}, falling back to json/str encoding",
                         b_type,
                     )
+                    fallback_blob: object = (
+                        block.model_dump() if hasattr(block, "model_dump") else block
+                    )
                     try:
-                        total_tokens += _count_text_tokens(fast_json_dumps(block))
+                        total_tokens += _count_text_tokens(
+                            fast_json_dumps(fallback_blob)
+                        )
                     except TypeError, ValueError:
-                        total_tokens += _count_text_tokens(str(block))
+                        total_tokens += _count_text_tokens(str(fallback_blob))
 
     if tools:
         for tool in tools:
             tool_str = (
                 tool.name
                 + (tool.description or "")
-                + fast_json_dumps(tool.input_schema)
+                + fast_json_dumps(tool.input_schema or {})
             )
             total_tokens += _count_text_tokens(tool_str)
 

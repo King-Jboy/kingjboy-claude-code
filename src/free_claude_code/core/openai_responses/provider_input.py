@@ -84,7 +84,10 @@ def build_responses_provider_request(
         body["top_p"] = request.top_p
     if request.metadata is not None:
         body["metadata"] = request.metadata
-    if request.tools:
+    active_tools = [
+        tool for tool in (request.tools or ()) if not _is_advisor_tool(tool)
+    ]
+    if active_tools:
         body["tools"] = [
             {
                 "type": "function",
@@ -95,14 +98,28 @@ def build_responses_provider_request(
                 ),
                 "strict": False,
             }
-            for tool in request.tools
+            for tool in active_tools
         ]
-    tool_choice = resolve_anthropic_tool_choice(request.tools, request.tool_choice)
+    tool_choice = resolve_anthropic_tool_choice(active_tools, request.tool_choice)
     if tool_choice is not None:
-        body["tool_choice"] = _tool_choice(tool_choice, tool_names=tool_names)
+        resolved_choice = _tool_choice(tool_choice, tool_names=tool_names)
+        if resolved_choice is not None:
+            body["tool_choice"] = resolved_choice
     if reasoning_config := responses_reasoning_config(reasoning):
         body["reasoning"] = reasoning_config
     return body
+
+
+_CLIENT_TOOL_TYPES = frozenset({"custom", "function"})
+
+
+def _is_advisor_tool(tool: Any) -> bool:
+    tool_type = getattr(tool, "type", None)
+    if isinstance(tool_type, str) and (
+        tool_type.startswith("advisor") or tool_type == "advisor_20260301"
+    ):
+        return True
+    return getattr(tool, "name", None) == "advisor_20260301"
 
 
 def _validate_supported_request(request: MessagesRequest) -> None:
@@ -112,7 +129,13 @@ def _validate_supported_request(request: MessagesRequest) -> None:
             f"{sorted(str(key) for key in request.model_extra)}."
         )
     provider_tool_types = sorted(
-        {tool.type for tool in request.tools or () if tool.type is not None}
+        {
+            tool.type
+            for tool in request.tools or ()
+            if tool.type is not None
+            and tool.type not in _CLIENT_TOOL_TYPES
+            and not _is_advisor_tool(tool)
+        }
     )
     if provider_tool_types:
         raise ResponsesConversionError(
@@ -432,7 +455,7 @@ def _tool_choice(
     choice: dict[str, Any],
     *,
     tool_names: OpenAIToolNameCodec,
-) -> str | dict[str, str]:
+) -> str | dict[str, str] | None:
     choice_type = choice.get("type")
     if choice_type in {"auto", "none"}:
         return str(choice_type)
@@ -442,5 +465,7 @@ def _tool_choice(
         name = choice.get("name")
         if not isinstance(name, str) or not name:
             raise ResponsesConversionError("Forced tool choice requires a tool name.")
+        if name == "advisor_20260301":
+            return None
         return {"type": "function", "name": tool_names.encode(name)}
     raise ResponsesConversionError(f"Unsupported tool_choice type {choice_type!r}.")

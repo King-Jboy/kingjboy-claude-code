@@ -526,15 +526,35 @@ def prepare_history(
     return result
 
 
+_TOOL_RESULT_BLOCK_TYPES = frozenset(
+    {
+        "tool_result",
+        "mcp_tool_result",
+        "tool_search_tool_result",
+    }
+)
+_TOOL_CONTINUATION_BLOCK_TYPES = _TOOL_RESULT_BLOCK_TYPES | frozenset(
+    {
+        "tool_reference",
+        "tool_addition",
+        "tool_definition",
+    }
+)
+
+
 def _tool_result_message(message: JsonObject) -> bool:
     if isinstance(message, ChatToolResultImages):
         return True
     content = message.get("content")
     return (
         isinstance(content, list)
-        and bool(content)
+        and any(
+            isinstance(block, dict) and block.get("type") in _TOOL_RESULT_BLOCK_TYPES
+            for block in content
+        )
         and all(
-            isinstance(block, dict) and block.get("type") == "tool_result"
+            isinstance(block, dict)
+            and block.get("type") in _TOOL_CONTINUATION_BLOCK_TYPES
             for block in content
         )
     )

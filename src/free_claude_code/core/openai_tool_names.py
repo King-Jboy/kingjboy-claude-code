@@ -152,14 +152,24 @@ def _request_tool_names(request: MessagesRequest) -> Iterable[str]:
                     yield name
 
     for message in request.messages:
-        if message.role != "assistant" or not isinstance(message.content, list):
+        if not isinstance(message.content, list):
             continue
-        for block in message.content:
-            if get_block_type(block) != "tool_use":
-                continue
-            name = get_block_attr(block, "name")
-            if isinstance(name, str):
-                yield name
+        if message.role == "assistant":
+            for block in message.content:
+                if get_block_type(block) not in {"tool_use", "mcp_tool_use"}:
+                    continue
+                name = get_block_attr(block, "name")
+                if isinstance(name, str):
+                    yield name
+        elif message.role == "user":
+            for block in message.content:
+                if get_block_type(block) != "tool_definition":
+                    continue
+                name = get_block_attr(block, "name") or get_block_attr(
+                    block, "tool_name"
+                )
+                if isinstance(name, str):
+                    yield name
 
 
 def _unique_alias(name: str, reserved: set[str]) -> str:

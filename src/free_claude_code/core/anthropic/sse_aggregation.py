@@ -117,7 +117,7 @@ async def aggregate_anthropic_sse_to_message(
         elif btype == "thinking":
             block["thinking"] = str(block.get("thinking", "")) + accumulated
             block.setdefault("signature", "")
-        elif btype == "tool_use":
+        elif btype in {"tool_use", "mcp_tool_use"}:
             if accumulated.strip():
                 block["input"] = safe_parse_tool_arguments(accumulated)
             elif not isinstance(block.get("input"), dict):

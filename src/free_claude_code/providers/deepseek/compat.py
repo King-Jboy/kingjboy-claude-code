@@ -321,6 +321,12 @@ def _validate_deepseek_request_dict(
         )
 
 
+_ASSISTANT_TOOL_USE_TYPES = frozenset({"tool_use", "mcp_tool_use"})
+_USER_TOOL_RESULT_TYPES = frozenset(
+    {"tool_result", "mcp_tool_result", "tool_search_tool_result"}
+)
+
+
 def _has_tool_history_blocks(message: Mapping[str, Any]) -> bool:
     role = message.get("role")
     content = message.get("content")
@@ -331,9 +337,9 @@ def _has_tool_history_blocks(message: Mapping[str, Any]) -> bool:
         if not isinstance(block, dict):
             continue
         btype = block.get("type")
-        if role == "assistant" and btype == "tool_use":
+        if role == "assistant" and btype in _ASSISTANT_TOOL_USE_TYPES:
             return True
-        if role == "user" and btype == "tool_result":
+        if role == "user" and btype in _USER_TOOL_RESULT_TYPES:
             return True
     return False
 
@@ -353,7 +359,7 @@ def _has_replayable_thinking_before_tool_use(message: Mapping[str, Any]) -> bool
         if btype == "thinking" and isinstance(block.get("thinking"), str):
             has_thinking = True
             continue
-        if btype == "tool_use":
+        if btype in _ASSISTANT_TOOL_USE_TYPES:
             return has_thinking
     return False
 
@@ -363,7 +369,8 @@ def _assistant_has_tool_use(message: Mapping[str, Any]) -> bool:
         return False
     content = message.get("content")
     return isinstance(content, list) and any(
-        isinstance(block, dict) and block.get("type") == "tool_use" for block in content
+        isinstance(block, dict) and block.get("type") in _ASSISTANT_TOOL_USE_TYPES
+        for block in content
     )
 
 
@@ -445,7 +452,7 @@ def _normalize_tool_result_content(messages: Any) -> Any:
                 new_content.append(block)
                 continue
 
-            if block.get("type") == "tool_result":
+            if block.get("type") in _USER_TOOL_RESULT_TYPES:
                 normalized_block = dict(block)
                 normalized_block["content"] = serialize_tool_result_content(
                     block.get("content")

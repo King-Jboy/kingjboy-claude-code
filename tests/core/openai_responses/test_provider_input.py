@@ -713,3 +713,51 @@ def test_build_responses_provider_request_accepts_mcp_and_deferred_tool_blocks()
         and item.get("call_id") == "search_call_1"
         for item in items
     )
+
+
+def test_build_responses_provider_request_strips_advisor_and_accepts_custom_tool() -> (
+    None
+):
+    request = MessagesRequest.model_validate(
+        {
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [
+                {
+                    "name": "advisor_20260301",
+                    "type": "advisor_20260301",
+                },
+                {
+                    "name": "client_tool",
+                    "type": "custom",
+                    "description": "Client tool with explicit custom type",
+                    "input_schema": {"type": "object"},
+                },
+            ],
+        }
+    )
+    body = build_responses_provider_request(
+        request,
+        reasoning=ReasoningPolicy.provider_default(),
+    )
+    assert [tool["name"] for tool in body["tools"]] == ["client_tool"]
+    assert body["tool_choice"] == "auto"
+
+    advisor_only_request = MessagesRequest.model_validate(
+        {
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [
+                {
+                    "name": "advisor_20260301",
+                    "type": "advisor_20260301",
+                }
+            ],
+        }
+    )
+    advisor_only_body = build_responses_provider_request(
+        advisor_only_request,
+        reasoning=ReasoningPolicy.provider_default(),
+    )
+    assert "tools" not in advisor_only_body
+    assert "tool_choice" not in advisor_only_body
