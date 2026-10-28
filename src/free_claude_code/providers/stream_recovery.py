@@ -3,7 +3,7 @@
 import asyncio
 import ssl
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
@@ -183,7 +183,7 @@ class RecoveryController:
     @asynccontextmanager
     async def read_stream[EventT](
         self, source: AsyncIterator[EventT]
-    ) -> AsyncIterator[_HoldbackReader[EventT]]:
+    ) -> AsyncGenerator[_HoldbackReader[EventT]]:
         reader = _HoldbackReader(source, lambda: self.remaining_delay)
         try:
             yield reader

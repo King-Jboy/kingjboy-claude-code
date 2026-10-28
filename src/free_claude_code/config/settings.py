@@ -76,6 +76,7 @@ class LiteralDotEnvSettingsSource(DotEnvSettingsSource):
             source.settings_cls,
             env_file=source.env_file,
             env_file_encoding=source.env_file_encoding,
+            env_file_depth=source.env_file_depth,
             dotenv_filtering=source.dotenv_filtering,
             case_sensitive=source.case_sensitive,
             env_prefix=source.env_prefix,

@@ -1,7 +1,7 @@
 """Local FCC transport must never escape through an outbound proxy."""
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -12,7 +12,7 @@ from free_claude_code.cli.local_http import with_local_proxy_bypass
 
 
 @contextmanager
-def _status_server(status_code: int) -> Iterator[tuple[str, list[str]]]:
+def _status_server(status_code: int) -> Generator[tuple[str, list[str]]]:
     hits: list[str] = []
 
     class Handler(BaseHTTPRequestHandler):

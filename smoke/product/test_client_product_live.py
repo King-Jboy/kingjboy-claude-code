@@ -5,7 +5,7 @@ import signal
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,7 +33,7 @@ pytestmark = [pytest.mark.live]
 @contextmanager
 def _successful_openai_provider(
     *, model_id: str, marker: str
-) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+) -> Generator[tuple[str, list[dict[str, Any]]]]:
     provider_requests: list[dict[str, Any]] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -538,7 +538,7 @@ def _stop_attached_process(process: subprocess.Popen[str]) -> tuple[str, str]:
 
 
 @contextmanager
-def _deliberately_failing_openai_provider() -> Iterator[tuple[str, list[str]]]:
+def _deliberately_failing_openai_provider() -> Generator[tuple[str, list[str]]]:
     provider_requests: list[str] = []
 
     class Handler(BaseHTTPRequestHandler):
