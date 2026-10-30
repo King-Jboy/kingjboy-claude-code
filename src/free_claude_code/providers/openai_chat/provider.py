@@ -169,7 +169,9 @@ async def _chunks_with_keepalive(
     while True:
         chunk_task = asyncio.ensure_future(anext(iterator))
         try:
-            while not await _settled_within(
+            if not chunk_task.done():
+                await asyncio.sleep(0)
+            while not chunk_task.done() and not await _settled_within(
                 chunk_task, _keepalive_wait_step(quiet, quiet_after, interval)
             ):
                 quiet += _keepalive_wait_step(quiet, quiet_after, interval)
@@ -343,7 +345,7 @@ class OpenAIChatProvider(BaseProvider):
     async def _prewarm_and_keepalive(self) -> None:
         """Keep the upstream TLS socket warm across idle gaps."""
         while True:
-            await asyncio.sleep(45.0)
+            await asyncio.sleep(25.0)
             await self.warmup()
 
     async def warmup(self) -> None:

@@ -1,6 +1,9 @@
 """NVIDIA NIM tool schema sanitization and private argument aliases."""
 
+from functools import lru_cache
 from typing import Any
+
+import orjson
 
 _SCHEMA_VALUE_KEYS = frozenset(
     {
@@ -26,6 +29,32 @@ _NIM_TOOL_PARAMETER_ALIAS_PREFIX = "_fcc_arg_"
 _NIM_UNSAFE_TOOL_PARAMETER_NAMES = frozenset({"type"})
 
 
+@lru_cache(maxsize=512)
+def _cached_sanitize_nim_parameters_bytes(
+    schema_bytes: bytes,
+) -> tuple[bytes, dict[str, str]]:
+    parameters = orjson.loads(schema_bytes)
+    _, sanitized_parameters = _sanitize_nim_schema_node(parameters)
+    sanitized_parameters, argument_aliases = _alias_nim_tool_parameters(
+        sanitized_parameters
+    )
+    return orjson.dumps(sanitized_parameters), argument_aliases
+
+
+def _sanitize_and_alias_nim_parameters(
+    parameters: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        schema_bytes = orjson.dumps(parameters, option=orjson.OPT_SORT_KEYS)
+    except TypeError, ValueError, orjson.JSONEncodeError:
+        _, sanitized_parameters = _sanitize_nim_schema_node(parameters)
+        return _alias_nim_tool_parameters(sanitized_parameters)
+    sanitized_bytes, argument_aliases = _cached_sanitize_nim_parameters_bytes(
+        schema_bytes
+    )
+    return orjson.loads(sanitized_bytes), dict(argument_aliases)
+
+
 def sanitize_nim_tool_schemas(body: dict[str, Any]) -> None:
     """Sanitize only tool parameter schemas, preserving tool calls/history."""
     tools = body.get("tools")
@@ -44,9 +73,8 @@ def sanitize_nim_tool_schemas(body: dict[str, Any]) -> None:
             sanitized_function = dict(function)
             parameters = function.get("parameters")
             if isinstance(parameters, dict):
-                _, sanitized_parameters = _sanitize_nim_schema_node(parameters)
-                sanitized_parameters, argument_aliases = _alias_nim_tool_parameters(
-                    sanitized_parameters
+                sanitized_parameters, argument_aliases = (
+                    _sanitize_and_alias_nim_parameters(parameters)
                 )
                 sanitized_function["parameters"] = sanitized_parameters
                 tool_name = function.get("name")

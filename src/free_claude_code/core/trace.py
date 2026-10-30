@@ -167,7 +167,11 @@ async def traced_async_stream(
     try:
         async for chunk in agen:
             count += 1
-            nbytes += len(chunk.encode("utf-8", errors="replace"))
+            nbytes += (
+                len(chunk)
+                if chunk.isascii()
+                else len(chunk.encode("utf-8", errors="replace"))
+            )
             if chunk_event and chunk_interval > 0 and count % chunk_interval == 0:
                 trace_event(
                     stage=stage,

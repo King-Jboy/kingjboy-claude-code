@@ -13,6 +13,7 @@ from free_claude_code.core.anthropic import (
     SystemContent,
     Tool,
     anthropic_request_snapshot,
+    get_token_count,
 )
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.trace import (
@@ -138,12 +139,19 @@ class ProviderExecutor:
             provider_stream: AsyncIterator[str] | None = None
             try:
                 if self._token_counter is not None:
-                    input_tokens = await asyncio.to_thread(
-                        self._token_counter,
-                        routed.request.messages,
-                        routed.request.system,
-                        routed.request.tools,
-                    )
+                    if self._token_counter is get_token_count:
+                        input_tokens = self._token_counter(
+                            routed.request.messages,
+                            routed.request.system,
+                            routed.request.tools,
+                        )
+                    else:
+                        input_tokens = await asyncio.to_thread(
+                            self._token_counter,
+                            routed.request.messages,
+                            routed.request.system,
+                            routed.request.tools,
+                        )
                 else:
                     input_tokens = 0
                 provider_stream = provider.stream_response(

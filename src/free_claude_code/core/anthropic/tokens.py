@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import tiktoken
 from loguru import logger
 
@@ -11,8 +13,16 @@ ENCODER = tiktoken.get_encoding("cl100k_base")
 _DISALLOWED_SPECIAL: tuple[str, ...] = ()
 
 
+@lru_cache(maxsize=8192)
 def _count_text_tokens(text: str) -> int:
+    if not text:
+        return 0
     return len(ENCODER.encode(text, disallowed_special=_DISALLOWED_SPECIAL))
+
+
+@lru_cache(maxsize=1024)
+def _count_tool_tokens(name: str, description: str, schema_json: str) -> int:
+    return _count_text_tokens(name + description + schema_json)
 
 
 def get_token_count(
@@ -114,12 +124,11 @@ def get_token_count(
 
     if tools:
         for tool in tools:
-            tool_str = (
-                tool.name
-                + (tool.description or "")
-                + fast_json_dumps(tool.input_schema or {})
+            total_tokens += _count_tool_tokens(
+                tool.name,
+                tool.description or "",
+                fast_json_dumps(tool.input_schema or {}),
             )
-            total_tokens += _count_text_tokens(tool_str)
 
     total_tokens += len(messages) * 4
     if tools:

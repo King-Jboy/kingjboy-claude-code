@@ -103,6 +103,8 @@ class _MiniMaxM3ToolFramer:
         if self._mode is _FramingMode.AFTER_TOOL_BLOCK:
             self._validate_trailing_text(text)
             return ""
+        if not self._text_tail and "]" not in text:
+            return text
 
         candidate = "".join((self._text_tail, text))
         marker_index = candidate.find(_TOOL_BLOCK_START)
@@ -159,6 +161,9 @@ class _MiniMaxM3ToolFramer:
         return ""
 
     def _feed_tool_block(self, text: str) -> None:
+        if not self._tool_tail and "]" not in text:
+            self._append_tool_fragment(text)
+            return
         candidate = "".join((self._tool_tail, text))
         marker_index = candidate.find(_TOOL_BLOCK_END)
         if marker_index < 0:
