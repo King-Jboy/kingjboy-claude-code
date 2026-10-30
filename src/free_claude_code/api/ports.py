@@ -18,7 +18,10 @@ class AdminRuntimePort(Protocol):
     """Runtime operations exposed by the local Admin API."""
 
     async def apply_admin_config(
-        self, updates: Mapping[str, Any]
+        self,
+        updates: Mapping[str, Any],
+        *,
+        context_windows: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
     async def admin_config(self) -> dict[str, Any]: ...
@@ -26,7 +29,10 @@ class AdminRuntimePort(Protocol):
     async def admin_values(self) -> ValueState: ...
 
     async def validate_admin_config(
-        self, updates: Mapping[str, Any]
+        self,
+        updates: Mapping[str, Any],
+        *,
+        context_windows: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
     async def admin_status(self) -> dict[str, Any]: ...

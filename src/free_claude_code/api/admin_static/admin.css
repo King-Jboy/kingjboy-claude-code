@@ -1011,6 +1011,166 @@ textarea {
 }
 
 /* ============================================================
+   Context Windows editor
+   ============================================================ */
+
+.context-window-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.context-window-summary code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-strong);
+}
+
+.context-window-list {
+  display: grid;
+  gap: 12px;
+}
+
+.context-window-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.5fr);
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  padding: 14px 16px;
+  transition: border-color var(--fast) var(--ease-out),
+    background-color var(--fast) var(--ease-out);
+}
+
+.context-window-row:hover {
+  border-color: var(--line-strong);
+  background: var(--card-raised);
+}
+
+.context-window-model {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.context-window-model-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-window-slug {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.context-window-provider {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.context-window-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.context-window-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 180px;
+}
+
+.context-window-input {
+  width: 156px;
+  min-height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--input);
+  color: var(--text-strong);
+  padding: 7px 11px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.context-window-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  outline: none;
+}
+
+.context-preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-preset-button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--neutral-soft);
+  color: var(--text);
+  padding: 4px 9px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--fast) var(--ease-out),
+    background-color var(--fast) var(--ease-out),
+    color var(--fast) var(--ease-out);
+}
+
+.context-preset-button:hover {
+  border-color: var(--accent-line);
+  color: var(--accent-text);
+}
+
+.context-preset-button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.context-window-empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 780px) {
+  .context-window-row {
+    grid-template-columns: 1fr;
+  }
+
+  .context-window-controls {
+    justify-content: flex-start;
+  }
+}
+
+/* ============================================================
    Save bar
    ============================================================ */
 

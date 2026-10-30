@@ -188,3 +188,70 @@ def test_a_provider_table_miss_still_falls_back_to_the_model_family() -> None:
     from free_claude_code.config.curated_contexts import curated_context_window
 
     assert curated_context_window("deepseek", "vendor/qwen-experimental") == 131_072
+
+
+def test_sync_pinned_context_windows_prunes_unpinned_and_leaves_new_blank(
+    tmp_path: Path,
+) -> None:
+    from free_claude_code.config.context_windows import (
+        load_context_window_entries,
+        load_context_windows,
+        load_unresolved_context_windows,
+        sync_pinned_context_windows,
+    )
+
+    table = _write_table(tmp_path)
+    pinned = (
+        "nvidia_nim/deepseek-ai/deepseek-v4-pro",
+        "nvidia_nim/mistralai/mistral-large-4-1t-a52b",
+    )
+
+    state = sync_pinned_context_windows(pinned, path=table)
+
+    assert state == {
+        "nvidia_nim/deepseek-ai/deepseek-v4-pro": 262_144,
+        "nvidia_nim/mistralai/mistral-large-4-1t-a52b": None,
+    }
+    entries = load_context_window_entries(table)
+    assert set(entries) == set(pinned)
+    assert "nvidia_nim/deepseek-ai/deepseek-v4-flash" not in entries
+    assert "open_router/z-ai/glm-5.2:free" not in entries
+    assert load_context_windows(table) == {
+        "nvidia_nim/deepseek-ai/deepseek-v4-pro": 262_144,
+    }
+    assert load_unresolved_context_windows(table) == frozenset(
+        {"nvidia_nim/mistralai/mistral-large-4-1t-a52b"}
+    )
+
+
+def test_sync_pinned_context_windows_applies_manual_updates_and_clears(
+    tmp_path: Path,
+) -> None:
+    from free_claude_code.config.context_windows import (
+        load_context_window_entries,
+        sync_pinned_context_windows,
+    )
+
+    table = _write_table(tmp_path)
+    pinned = (
+        "nvidia_nim/deepseek-ai/deepseek-v4-pro",
+        "nvidia_nim/mistralai/mistral-large-4-1t-a52b",
+    )
+
+    state = sync_pinned_context_windows(
+        pinned,
+        updates={
+            "nvidia_nim/deepseek-ai/deepseek-v4-pro": None,
+            "nvidia_nim/mistralai/mistral-large-4-1t-a52b": 131_072,
+        },
+        path=table,
+    )
+
+    assert state == {
+        "nvidia_nim/deepseek-ai/deepseek-v4-pro": None,
+        "nvidia_nim/mistralai/mistral-large-4-1t-a52b": 131_072,
+    }
+    entries = load_context_window_entries(table)
+    assert entries["nvidia_nim/mistralai/mistral-large-4-1t-a52b"].source == "manual"
+    assert entries["nvidia_nim/deepseek-ai/deepseek-v4-pro"].context is None
+

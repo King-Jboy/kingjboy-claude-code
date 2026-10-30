@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from free_claude_code.config.context_windows import (
+    context_windows_path,
+    sync_pinned_context_windows,
+)
 from free_claude_code.config.env_migrations import RETIRED_ENV_KEYS
+from free_claude_code.config.model_refs import pinned_model_refs
 from free_claude_code.config.paths import managed_env_path
 from free_claude_code.config.settings import Settings
 
@@ -17,6 +22,8 @@ from .manifest import FIELD_BY_KEY, FIELDS, SECTIONS, ConfigFieldSpec
 from .sources import dotenv_values_from_file, is_locked_source
 from .validation import settings_from_values
 from .values import MASKED_SECRET, load_value_state, normalize_for_env
+
+MIN_CONTEXT_WINDOW_TOKENS = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +36,14 @@ class PreparedAdminUpdate:
     pending_fields: tuple[str, ...]
     path: Path
     unmanaged_values: dict[str, str] = dataclass_field(default_factory=dict)
+    context_window_updates: dict[str, int | None] = dataclass_field(
+        default_factory=dict
+    )
+    sync_context_windows: bool = False
 
     @property
     def valid(self) -> bool:
-        return self.settings is not None
+        return self.settings is not None and not self.errors
 
     def validation_response(self) -> dict[str, Any]:
         return {
@@ -62,6 +73,47 @@ class PreparedAdminUpdate:
             mask_secrets=True,
             unmanaged=self.unmanaged_values,
         )
+
+
+def _validate_context_window_updates(
+    raw_updates: Mapping[str, Any] | None,
+) -> tuple[dict[str, int | None], list[str]]:
+    if not raw_updates:
+        return {}, []
+    cleaned: dict[str, int | None] = {}
+    errors: list[str] = []
+    for raw_ref, raw_val in raw_updates.items():
+        ref = str(raw_ref).strip()
+        if not ref or "/" not in ref:
+            errors.append(f"Context window entry {raw_ref!r}: invalid provider/model ref")
+            continue
+        if raw_val is None or (isinstance(raw_val, str) and not raw_val.strip()):
+            cleaned[ref] = None
+            continue
+        if isinstance(raw_val, bool):
+            errors.append(
+                f"Context window for {ref}: must be an integer >= {MIN_CONTEXT_WINDOW_TOKENS}"
+            )
+            continue
+        try:
+            text_val = (
+                raw_val.replace(",", "").strip()
+                if isinstance(raw_val, str)
+                else raw_val
+            )
+            parsed = int(text_val)
+        except (TypeError, ValueError):
+            errors.append(
+                f"Context window for {ref}: must be an integer >= {MIN_CONTEXT_WINDOW_TOKENS}"
+            )
+            continue
+        if parsed < MIN_CONTEXT_WINDOW_TOKENS:
+            errors.append(
+                f"Context window for {ref}: must be at least {MIN_CONTEXT_WINDOW_TOKENS} tokens"
+            )
+            continue
+        cleaned[ref] = parsed
+    return cleaned, errors
 
 
 def target_values_with_updates(updates: Mapping[str, Any]) -> dict[str, str]:
@@ -129,10 +181,16 @@ def effective_values_for_validation(
     return values
 
 
-def validate_updates(updates: Mapping[str, Any]) -> dict[str, Any]:
+def validate_updates(
+    updates: Mapping[str, Any],
+    *,
+    context_windows: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Validate partial admin updates and return a masked generated env preview."""
 
-    return prepare_admin_update(updates).validation_response()
+    return prepare_admin_update(
+        updates, context_windows=context_windows
+    ).validation_response()
 
 
 def changed_pending_fields(
@@ -169,7 +227,11 @@ def _active_voice_credential(settings: Settings) -> str | None:
     return "HUGGINGFACE_API_KEY"
 
 
-def prepare_admin_update(updates: Mapping[str, Any]) -> PreparedAdminUpdate:
+def prepare_admin_update(
+    updates: Mapping[str, Any],
+    *,
+    context_windows: Mapping[str, Any] | None = None,
+) -> PreparedAdminUpdate:
     """Validate an update and construct its prospective Settings snapshot."""
 
     target_values = target_values_with_updates(updates)
@@ -178,18 +240,24 @@ def prepare_admin_update(updates: Mapping[str, Any]) -> PreparedAdminUpdate:
     for key, value in unmanaged_values.items():
         effective_values.setdefault(key, value)
     settings, errors = settings_from_values(effective_values)
+    cw_updates, cw_errors = _validate_context_window_updates(context_windows)
+    all_errors = [*errors, *cw_errors]
     pending_fields = (
         tuple(changed_pending_fields(updates, settings=settings))
-        if settings is not None
+        if settings is not None and not all_errors
         else ()
     )
     return PreparedAdminUpdate(
         target_values=target_values,
-        settings=settings,
-        errors=tuple(errors),
+        settings=settings if not all_errors else None,
+        errors=tuple(all_errors),
         pending_fields=pending_fields,
         path=managed_env_path(),
         unmanaged_values=unmanaged_values,
+        context_window_updates=cw_updates,
+        sync_context_windows=bool(
+            context_windows is not None or "PINNED_MODELS" in updates
+        ),
     )
 
 
@@ -219,6 +287,15 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)
+
+    if prepared.settings is not None and (
+        prepared.sync_context_windows or context_windows_path().exists()
+    ):
+        sync_pinned_context_windows(
+            pinned_model_refs(prepared.settings),
+            updates=prepared.context_window_updates,
+        )
+
     return prepared.applied_response()
 
 

@@ -1,27 +1,50 @@
-"""Per-model context windows recorded by the ``fcc-context`` command.
+"""Per-model context windows recorded in ``~/.fcc/context.md``.
 
 Providers almost never publish a context length on the wire, so the window a
-client should compact against cannot be discovered at runtime. The probe script
-records it once into ``~/.fcc/context.md``; this module reads that table back so
-switching ``MODEL`` also switches the advertised window, with no second setting
-to keep in sync by hand.
+client should compact against cannot be discovered at runtime. The Admin UI and
+``fcc-context`` command record per-model windows into ``~/.fcc/context.md``;
+this module reads and synchronizes that table back so switching models or
+updating ``PINNED_MODELS`` keeps the advertised context windows in sync.
 """
 
+import os
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from .constants import DEFAULT_CLIENT_CONTEXT_WINDOW
 from .curated_contexts import curated_context_window
-from .model_refs import ChatModelConfig, configured_chat_model_refs
+from .model_refs import ChatModelConfig, configured_chat_model_refs, pinned_model_refs
 from .paths import config_dir_path
 
 CONTEXT_WINDOWS_FILENAME = "context.md"
+UNSET_CONTEXT_SOURCE = "not set — enter context window in Admin UI"
 
 _PROVIDER_HEADING = re.compile(r"^##\s+(?P<provider>\S+)")
 _TABLE_ROW = re.compile(
     r"^\|\s*`(?P<model>[^`]+)`\s*\|\s*(?P<context>[^|]+?)\s*\|\s*(?P<source>[^|]+?)\s*\|$"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextWindowEntry:
+    """One model's row in ``context.md``."""
+
+    provider: str
+    model: str
+    context: int | None
+    source: str
+
+    @property
+    def model_ref(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+    @property
+    def context_cell(self) -> str:
+        return f"{self.context:,}" if self.context else "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,20 +63,17 @@ def context_windows_path() -> Path:
     return config_dir_path() / CONTEXT_WINDOWS_FILENAME
 
 
-def load_context_windows(path: Path | None = None) -> dict[str, int]:
-    """Parse ``context.md`` into ``{provider/model: tokens}``.
-
-    A missing or malformed file yields an empty mapping rather than raising:
-    the table is an optimisation, and losing it should degrade to the
-    conservative default rather than stop a CLI from launching.
-    """
+def load_context_window_entries(
+    path: Path | None = None,
+) -> dict[str, ContextWindowEntry]:
+    """Parse ``context.md`` into ``{provider/model: ContextWindowEntry}``."""
     target = path or context_windows_path()
     try:
         text = target.read_text(encoding="utf-8")
     except OSError:
         return {}
 
-    windows: dict[str, int] = {}
+    entries: dict[str, ContextWindowEntry] = {}
     provider = ""
     for line in text.splitlines():
         if heading := _PROVIDER_HEADING.match(line):
@@ -63,9 +83,164 @@ def load_context_windows(path: Path | None = None) -> dict[str, int]:
         if not row or not provider:
             continue
         raw = row.group("context").replace(",", "").strip()
-        if raw.isdigit():
-            windows[f"{provider}/{row.group('model')}"] = int(raw)
-    return windows
+        context = int(raw) if raw.isdigit() and int(raw) > 0 else None
+        model = row.group("model")
+        source = row.group("source").strip()
+        entry = ContextWindowEntry(
+            provider=provider,
+            model=model,
+            context=context,
+            source=source,
+        )
+        entries[entry.model_ref] = entry
+    return entries
+
+
+def load_context_windows(path: Path | None = None) -> dict[str, int]:
+    """Parse ``context.md`` into ``{provider/model: tokens}``.
+
+    A missing or malformed file yields an empty mapping rather than raising:
+    the table is an optimisation, and losing it should degrade to the
+    conservative default rather than stop a CLI from launching.
+    """
+    return {
+        model_ref: entry.context
+        for model_ref, entry in load_context_window_entries(path).items()
+        if entry.context is not None
+    }
+
+
+def load_unresolved_context_windows(path: Path | None = None) -> frozenset[str]:
+    """Return ``provider/model`` refs explicitly recorded as ``unknown`` in ``context.md``."""
+    return frozenset(
+        model_ref
+        for model_ref, entry in load_context_window_entries(path).items()
+        if entry.context is None
+    )
+
+
+def pinned_context_windows_state(
+    pinned_refs: Sequence[str],
+    *,
+    path: Path | None = None,
+) -> dict[str, int | None]:
+    """Return ``{provider/model: context_or_none}`` for each current pinned model."""
+    recorded = load_context_windows(path)
+    return {ref: recorded.get(ref) for ref in pinned_refs}
+
+
+def render_context_windows_markdown(entries: Sequence[ContextWindowEntry]) -> str:
+    """Render ``context.md`` in the canonical provider-grouped markdown format."""
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d")
+    lines = [
+        "# Model context windows",
+        "",
+        f"Generated by `fcc-context` / Admin UI on {stamp}.",
+        "",
+        "FCC reads this table to decide what context window to advertise to",
+        "Claude Code and other clients. Leave `CLIENT_CONTEXT_WINDOW` blank and",
+        "the window follows your configured and pinned models; set it to override",
+        "this table.",
+        "",
+        "This table tracks only your `PINNED_MODELS`. Adding a pinned model adds",
+        "an entry here (blank until configured in the Admin UI); removing a model",
+        "from `PINNED_MODELS` automatically deletes its saved context window.",
+        "",
+    ]
+    by_provider: dict[str, list[ContextWindowEntry]] = {}
+    for entry in entries:
+        by_provider.setdefault(entry.provider, []).append(entry)
+
+    for provider in sorted(by_provider):
+        provider_entries = by_provider[provider]
+        known = [entry for entry in provider_entries if entry.context]
+        unknown = [entry for entry in provider_entries if not entry.context]
+        lines += [
+            f"## {provider} ({len(known)} of {len(provider_entries)} known)",
+            "",
+        ]
+        lines += ["| Model | Context | Source |", "| --- | ---: | --- |"]
+        for entry in sorted(known, key=lambda e: (-(e.context or 0), e.model)):
+            lines.append(
+                f"| `{entry.model}` | {entry.context_cell} | {entry.source} |"
+            )
+        for entry in sorted(unknown, key=lambda e: e.model):
+            lines.append(f"| `{entry.model}` | unknown | {entry.source} |")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def sync_pinned_context_windows(
+    pinned_refs: Sequence[str],
+    *,
+    updates: Mapping[str, int | None] | None = None,
+    path: Path | None = None,
+) -> dict[str, int | None]:
+    """Synchronize ``context.md`` so it holds ONLY ``pinned_refs``.
+
+    - Models removed from ``pinned_refs`` are pruned from ``context.md``.
+    - Newly added pinned models default to ``None`` (``unknown``) until set in
+      the Admin UI.
+    - Explicit ``updates`` set ``context`` and mark ``source="manual"`` (or
+      reset to ``unknown`` when ``None``).
+    """
+    target = path or context_windows_path()
+    existing = load_context_window_entries(target)
+    update_map = dict(updates or {})
+
+    synced_entries: list[ContextWindowEntry] = []
+    result: dict[str, int | None] = {}
+    seen: set[str] = set()
+
+    for ref in pinned_refs:
+        if "/" not in ref or ref in seen:
+            continue
+        seen.add(ref)
+        provider, _, model = ref.partition("/")
+        if not provider or not model:
+            continue
+
+        if ref in update_map:
+            new_context = update_map[ref]
+            if new_context is not None and new_context > 0:
+                entry = ContextWindowEntry(
+                    provider=provider,
+                    model=model,
+                    context=int(new_context),
+                    source="manual",
+                )
+            else:
+                entry = ContextWindowEntry(
+                    provider=provider,
+                    model=model,
+                    context=None,
+                    source=UNSET_CONTEXT_SOURCE,
+                )
+        elif ref in existing:
+            entry = existing[ref]
+        else:
+            entry = ContextWindowEntry(
+                provider=provider,
+                model=model,
+                context=None,
+                source=UNSET_CONTEXT_SOURCE,
+            )
+
+        synced_entries.append(entry)
+        result[ref] = entry.context
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target.with_suffix(f"{target.suffix}.tmp.{uuid4().hex}")
+    try:
+        temp_path.write_text(
+            render_context_windows_markdown(synced_entries),
+            encoding="utf-8",
+        )
+        os.replace(temp_path, target)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return result
 
 
 def recorded_route_windows(
@@ -73,18 +248,17 @@ def recorded_route_windows(
     *,
     windows: dict[str, int] | None = None,
 ) -> list[tuple[str, int]]:
-    """Return each configured route's recorded window, in configuration order.
-
-    This is the display half of the table: the resolver picks one number for
-    the CLI, but the operator deciding whether that number is right wants to
-    see every route it was chosen from.
-    """
+    """Return each configured route's and pinned model's recorded window."""
     recorded = load_context_windows() if windows is None else windows
-    return [
-        (ref.model_ref, recorded[ref.model_ref])
-        for ref in configured_chat_model_refs(settings)
-        if ref.model_ref in recorded
-    ]
+    ordered_refs = list(
+        dict.fromkeys(
+            [
+                *(ref.model_ref for ref in configured_chat_model_refs(settings)),
+                *pinned_model_refs(settings),
+            ]
+        )
+    )
+    return [(ref, recorded[ref]) for ref in ordered_refs if ref in recorded]
 
 
 def resolve_client_context_window(
@@ -96,25 +270,43 @@ def resolve_client_context_window(
     """Return the window to advertise to a launched client CLI.
 
     An explicit ``CLIENT_CONTEXT_WINDOW`` always wins. Otherwise the smallest
-    recorded or curated window across every configured route is used: Claude
-    Code compacts against one number for the whole session but can be pointed
-    at any routed tier, so the largest safe value is the smallest route's
-    ceiling.
+    recorded window across every configured route and pinned model (or curated
+    fallback when not recorded) is used: Claude Code compacts against one
+    number for the whole session but can be pointed at any routed or pinned
+    model, so the largest safe value is the smallest model's ceiling.
     """
     if configured is not None:
         return ResolvedContextWindow(configured, "CLIENT_CONTEXT_WINDOW")
 
     recorded = load_context_windows() if windows is None else windows
+    unresolved = (
+        load_unresolved_context_windows() if windows is None else frozenset()
+    )
     known: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
     for ref in configured_chat_model_refs(settings):
+        seen.add(ref.model_ref)
         if ref.model_ref in recorded:
             known.append(
                 (recorded[ref.model_ref], CONTEXT_WINDOWS_FILENAME, ref.model_ref)
             )
             continue
+        if ref.model_ref in unresolved:
+            continue
         if curated := curated_context_window(ref.provider_id, ref.model_id):
             known.append((curated, "curated", ref.model_ref))
+
+    for pinned_ref in pinned_model_refs(settings):
+        if pinned_ref in seen:
+            continue
+        seen.add(pinned_ref)
+        if pinned_ref in recorded:
+            known.append(
+                (recorded[pinned_ref], CONTEXT_WINDOWS_FILENAME, pinned_ref)
+            )
+
     if not known:
         return ResolvedContextWindow(DEFAULT_CLIENT_CONTEXT_WINDOW, "default")
     value, source, model_ref = min(known)
     return ResolvedContextWindow(value, source, model_ref)
+

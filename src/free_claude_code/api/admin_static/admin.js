@@ -1,6 +1,8 @@
 const state = {
   config: null,
   fields: new Map(),
+  contextWindows: new Map(),
+  draftContextWindows: new Map(),
   localStatus: new Map(),
   modelOptions: [],
   modelComboboxes: new Set(),
@@ -11,6 +13,13 @@ const state = {
 };
 
 const MASKED_SECRET = "********";
+const CONTEXT_PRESETS = [
+  { label: "32K", tokens: 32768 },
+  { label: "64K", tokens: 65536 },
+  { label: "128K", tokens: 131072 },
+  { label: "200K", tokens: 200000 },
+  { label: "256K", tokens: 262144 },
+];
 const VIEW_GROUPS = [
   {
     id: "providers",
@@ -25,6 +34,13 @@ const VIEW_GROUPS = [
     title: "Model Config",
     sections: ["models", "reasoning", "web_tools"],
     containerId: "modelConfigSections",
+  },
+  {
+    id: "context_windows",
+    label: "Context Windows",
+    title: "Context Windows",
+    sections: [],
+    containerId: "contextWindowsSections",
   },
   {
     id: "messaging",
@@ -92,9 +108,17 @@ async function load() {
   const config = await api("/admin/api/config");
   state.config = config;
   state.fields = new Map(config.fields.map((field) => [field.key, field]));
+  state.contextWindows = new Map();
+  state.draftContextWindows = new Map();
+  Object.entries(config.context_windows || {}).forEach(([ref, tokens]) => {
+    const normalized = Number.isInteger(tokens) && tokens > 0 ? String(tokens) : "";
+    state.contextWindows.set(ref, normalized);
+    state.draftContextWindows.set(ref, normalized);
+  });
   renderNav();
   renderProviders(config.provider_status);
   renderSections(config.sections, config.fields);
+  renderContextWindowsView();
   byId("configPath").textContent = config.paths.managed;
   await refreshConnectedAccounts();
   await hydrateModelOptions();
@@ -527,8 +551,14 @@ function renderField(field) {
   input.dataset.configured = field.configured ? "true" : "false";
   input.dataset.fieldType = field.type;
   input.disabled = field.locked;
-  input.addEventListener("input", updateDirtyState);
-  input.addEventListener("change", updateDirtyState);
+  input.addEventListener("input", () => {
+    if (field.key === "PINNED_MODELS") renderContextWindowsView();
+    updateDirtyState();
+  });
+  input.addEventListener("change", () => {
+    if (field.key === "PINNED_MODELS") renderContextWindowsView();
+    updateDirtyState();
+  });
   if (field.type === "optional_model") {
     input.addEventListener("blur", () => {
       if (!input.value.trim() || input.value.trim().toLowerCase() === "none") {
@@ -550,6 +580,174 @@ function renderField(field) {
     wrapper.appendChild(description);
   }
   return wrapper;
+}
+
+function parsePinnedModelsDraft() {
+  const input = byId("field-PINNED_MODELS");
+  const raw = input ? input.value : state.fields.get("PINNED_MODELS")?.value || "";
+  if (!raw || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const refs = [];
+    parsed.forEach((item) => {
+      if (typeof item !== "string") return;
+      const trimmed = item.trim();
+      if (!trimmed || !trimmed.includes("/") || seen.has(trimmed)) return;
+      seen.add(trimmed);
+      refs.push(trimmed);
+    });
+    return refs;
+  } catch {
+    return Array.from(state.contextWindows.keys());
+  }
+}
+
+function renderContextWindowsView() {
+  const container = byId("contextWindowsSections");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const sectionEl = document.createElement("section");
+  sectionEl.className = "settings-section";
+  sectionEl.id = "section-context_windows";
+
+  const heading = document.createElement("div");
+  heading.className = "section-heading";
+  heading.innerHTML = `<div><h3>Pinned Model Context Windows</h3><p>Write the exact context window (in tokens) for each model in your Pinned Models list. Models removed from Pinned Models are automatically deleted from <code>context.md</code> on Apply, and Claude Code receives each model's configured window via <code>/v1/models</code> and session compaction settings.</p></div>`;
+  sectionEl.appendChild(heading);
+
+  const pinnedRefs = parsePinnedModelsDraft();
+  const summary = document.createElement("div");
+  summary.className = "context-window-summary";
+  const contextPath = state.config?.paths?.context_windows || "~/.fcc/context.md";
+  const configuredCount = pinnedRefs.filter((ref) => {
+    const val = (state.draftContextWindows.get(ref) ?? state.contextWindows.get(ref) ?? "").trim();
+    return Boolean(val);
+  }).length;
+  summary.innerHTML = `<span><strong>${pinnedRefs.length}</strong> pinned model${pinnedRefs.length === 1 ? "" : "s"} (${configuredCount} configured, ${pinnedRefs.length - configuredCount} unset)</span><span>Managed file: <code>${contextPath}</code></span>`;
+  sectionEl.appendChild(summary);
+
+  if (pinnedRefs.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "context-window-empty";
+    empty.textContent =
+      "No models in PINNED_MODELS. Add models in the Model Config tab to configure their context windows here.";
+    sectionEl.appendChild(empty);
+    container.appendChild(sectionEl);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "context-window-list";
+
+  pinnedRefs.forEach((modelRef) => {
+    if (!state.draftContextWindows.has(modelRef)) {
+      state.draftContextWindows.set(modelRef, state.contextWindows.get(modelRef) || "");
+    }
+    const currentVal = state.draftContextWindows.get(modelRef) || "";
+    const [providerId, ...modelParts] = modelRef.split("/");
+    const modelName = modelParts.join("/");
+
+    const row = document.createElement("div");
+    row.className = "context-window-row";
+    row.dataset.contextModel = modelRef;
+
+    const modelCol = document.createElement("div");
+    modelCol.className = "context-window-model";
+
+    const header = document.createElement("div");
+    header.className = "context-window-model-header";
+
+    const slug = document.createElement("span");
+    slug.className = "context-window-slug";
+    slug.textContent = modelName || modelRef;
+
+    const badge = document.createElement("span");
+    const hasValue = Boolean(currentVal.trim());
+    badge.className = `status-pill ${hasValue ? "ok" : "warn"}`;
+    badge.textContent = hasValue
+      ? `${Number(currentVal).toLocaleString()} tokens`
+      : "Unset — enter window";
+
+    header.append(slug, badge);
+
+    const providerMeta = document.createElement("div");
+    providerMeta.className = "context-window-provider";
+    providerMeta.textContent = `${providerDisplayName(providerId)} (${modelRef})`;
+
+    modelCol.append(header, providerMeta);
+
+    const controlsCol = document.createElement("div");
+    controlsCol.className = "context-window-controls";
+
+    const inputWrap = document.createElement("div");
+    inputWrap.className = "context-window-input-wrap";
+
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "1024";
+    input.step = "1024";
+    input.className = "context-window-input";
+    input.placeholder = "Enter tokens (e.g. 131072)";
+    input.value = currentVal;
+    input.dataset.contextRef = modelRef;
+    input.setAttribute("aria-label", `Context window tokens for ${modelRef}`);
+
+    const presetsWrap = document.createElement("div");
+    presetsWrap.className = "context-preset-buttons";
+
+    const syncRowState = (nextValue) => {
+      const clean = String(nextValue || "").trim();
+      state.draftContextWindows.set(modelRef, clean);
+      const numeric = Number(clean);
+      const validNumber = clean !== "" && Number.isInteger(numeric) && numeric > 0;
+      badge.className = `status-pill ${validNumber ? "ok" : "warn"}`;
+      badge.textContent = validNumber
+        ? `${numeric.toLocaleString()} tokens`
+        : "Unset — enter window";
+      presetsWrap.querySelectorAll(".context-preset-button").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.presetTokens === clean);
+      });
+      updateDirtyState();
+    };
+
+    input.addEventListener("input", () => syncRowState(input.value));
+    input.addEventListener("change", () => syncRowState(input.value));
+
+    CONTEXT_PRESETS.forEach((preset) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `context-preset-button${currentVal === String(preset.tokens) ? " active" : ""}`;
+      btn.dataset.presetTokens = String(preset.tokens);
+      btn.textContent = preset.label;
+      btn.addEventListener("click", () => {
+        input.value = String(preset.tokens);
+        syncRowState(input.value);
+      });
+      presetsWrap.appendChild(btn);
+    });
+
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "context-preset-button";
+    clearBtn.dataset.presetTokens = "";
+    clearBtn.textContent = "Clear";
+    clearBtn.addEventListener("click", () => {
+      input.value = "";
+      syncRowState("");
+    });
+    presetsWrap.appendChild(clearBtn);
+
+    inputWrap.appendChild(input);
+    controlsCol.append(inputWrap, presetsWrap);
+    row.append(modelCol, controlsCol);
+    list.appendChild(row);
+  });
+
+  sectionEl.appendChild(list);
+  container.appendChild(sectionEl);
 }
 
 function inputForField(field) {
@@ -812,8 +1010,32 @@ function changedValues() {
   return values;
 }
 
+function changedContextWindows() {
+  const updates = {};
+  const pinnedRefs = parsePinnedModelsDraft();
+  pinnedRefs.forEach((ref) => {
+    const original = state.contextWindows.get(ref) ?? "";
+    const draft = (state.draftContextWindows.get(ref) ?? original).trim();
+    if (draft !== original) {
+      updates[ref] = draft === "" ? null : Number(draft);
+    }
+  });
+  return updates;
+}
+
+function buildConfigPayload() {
+  const payload = { values: changedValues() };
+  const contextUpdates = changedContextWindows();
+  if (Object.keys(contextUpdates).length > 0) {
+    payload.context_windows = contextUpdates;
+  }
+  return payload;
+}
+
 function updateDirtyState() {
-  const count = Object.keys(changedValues()).length;
+  const count =
+    Object.keys(changedValues()).length +
+    Object.keys(changedContextWindows()).length;
   const dirty = byId("dirtyState");
   dirty.textContent =
     count === 0 ? "No changes" : `${count} unsaved change${count === 1 ? "" : "s"}`;
@@ -825,7 +1047,7 @@ function updateDirtyState() {
 async function validate(showResult = true) {
   const result = await api("/admin/api/config/validate", {
     method: "POST",
-    body: JSON.stringify({ values: changedValues() }),
+    body: JSON.stringify(buildConfigPayload()),
   });
   if (showResult) {
     showValidationResult(result);
@@ -844,7 +1066,7 @@ function showValidationResult(result) {
 async function apply() {
   const result = await api("/admin/api/config/apply", {
     method: "POST",
-    body: JSON.stringify({ values: changedValues() }),
+    body: JSON.stringify(buildConfigPayload()),
   });
   if (!result.applied) {
     showValidationResult(result);

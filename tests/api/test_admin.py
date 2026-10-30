@@ -1325,3 +1325,62 @@ def test_admin_script_reports_action_failures_as_errors():
         "reportFailures(() => disconnectConnectedAccount(providerId))",
     ):
         assert handler in script
+
+
+def test_admin_context_windows_editor_persists_and_prunes_removed_models(
+    monkeypatch, tmp_path
+):
+    from free_claude_code.config.context_windows import (
+        load_context_window_entries,
+        load_context_windows,
+    )
+
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_test_app()
+    client = _local_client(app)
+
+    apply_first = client.post(
+        "/admin/api/config/apply",
+        json={
+            "values": {
+                "MODEL": "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+                "NVIDIA_NIM_API_KEY": "nim-secret",
+                "PINNED_MODELS": '["nvidia_nim/deepseek-ai/deepseek-v4.1-flash", "nvidia_nim/meta/muse-glimmer-30b"]',
+            },
+            "context_windows": {
+                "nvidia_nim/deepseek-ai/deepseek-v4.1-flash": 131072,
+                "nvidia_nim/meta/muse-glimmer-30b": 262000,
+            },
+        },
+    )
+    assert apply_first.status_code == 200
+    assert apply_first.json()["applied"] is True
+    assert load_context_windows() == {
+        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash": 131072,
+        "nvidia_nim/meta/muse-glimmer-30b": 262000,
+    }
+
+    # Unpin meta/muse-glimmer-30b and add mistral-large-4-1t-a52b without setting its window
+    apply_second = client.post(
+        "/admin/api/config/apply",
+        json={
+            "values": {
+                "PINNED_MODELS": '["nvidia_nim/deepseek-ai/deepseek-v4.1-flash", "nvidia_nim/mistralai/mistral-large-4-1t-a52b"]',
+            }
+        },
+    )
+    assert apply_second.status_code == 200
+    assert apply_second.json()["applied"] is True
+
+    entries = load_context_window_entries()
+    assert "nvidia_nim/meta/muse-glimmer-30b" not in entries
+    assert entries["nvidia_nim/deepseek-ai/deepseek-v4.1-flash"].context == 131072
+    assert entries["nvidia_nim/mistralai/mistral-large-4-1t-a52b"].context is None
+
+    config_snapshot = client.get("/admin/api/config").json()
+    assert config_snapshot["context_windows"] == {
+        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash": 131072,
+        "nvidia_nim/mistralai/mistral-large-4-1t-a52b": None,
+    }
+

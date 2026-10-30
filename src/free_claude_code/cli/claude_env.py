@@ -98,6 +98,7 @@ def build_claude_proxy_env(
     env["CLAUDE_CODE_AUTO_MODE_SERVER"] = "0"
     env["CLAUDE_CODE_DISABLE_ADVISOR_TOOL"] = "1"
     env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(context_window)
+    env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_window)
     # Keep Claude waiting while FCC handles provider recovery.
     env["CLAUDE_ENABLE_STREAM_WATCHDOG"] = "0"
     env["CLAUDE_ENABLE_BYTE_WATCHDOG"] = "0"

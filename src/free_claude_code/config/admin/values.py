@@ -3,7 +3,12 @@
 import os
 from typing import Any
 
+from free_claude_code.config.context_windows import (
+    context_windows_path,
+    pinned_context_windows_state,
+)
 from free_claude_code.config.env_files import ANTHROPIC_AUTH_TOKEN_ENV
+from free_claude_code.config.model_refs import parse_model_ref_list
 from free_claude_code.config.paths import managed_env_path
 
 from .manifest import (
@@ -78,6 +83,13 @@ def load_value_state() -> ValueState:
     }
 
 
+def _safe_pinned_refs(raw_pinned: str) -> tuple[str, ...]:
+    try:
+        return parse_model_ref_list(raw_pinned, env_name="PINNED_MODELS")
+    except ValueError:
+        return ()
+
+
 def load_config_response() -> dict[str, Any]:
     """Return manifest and current config values for the admin UI."""
 
@@ -113,6 +125,9 @@ def load_config_response() -> dict[str, Any]:
             }
         )
 
+    pinned_raw = str(state.get("PINNED_MODELS", {}).get("value", ""))
+    pinned_refs = _safe_pinned_refs(pinned_raw)
+
     return {
         "sections": [
             {
@@ -128,6 +143,9 @@ def load_config_response() -> dict[str, Any]:
             "managed": str(managed_env_path()),
             "repo": str(repo_env_path()),
             "explicit": str(explicit_env_path()) if explicit_env_path() else None,
+            "context_windows": str(context_windows_path()),
         },
         "provider_status": provider_config_status(state),
+        "context_windows": pinned_context_windows_state(pinned_refs),
     }
+

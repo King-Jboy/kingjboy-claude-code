@@ -52,6 +52,7 @@ class AdminConfigPayload(BaseModel):
     """Partial config update submitted by the admin UI."""
 
     values: dict[str, Any] = Field(default_factory=dict)
+    context_windows: dict[str, Any] | None = None
 
 
 class ConnectedAccountLoginPayload(BaseModel):
@@ -146,7 +147,12 @@ async def validate_admin_config(
     services: ApiServices = Depends(get_services),
 ):
     require_loopback_admin(request)
-    return await services.admin.validate_admin_config(_filtered_values(payload.values))
+    filtered = _filtered_values(payload.values)
+    if payload.context_windows is not None:
+        return await services.admin.validate_admin_config(
+            filtered, context_windows=payload.context_windows
+        )
+    return await services.admin.validate_admin_config(filtered)
 
 
 @router.post("/admin/api/config/apply")
@@ -157,7 +163,13 @@ async def apply_admin_config(
     services: ApiServices = Depends(get_services),
 ):
     require_loopback_admin(request)
-    result = await services.admin.apply_admin_config(_filtered_values(payload.values))
+    filtered = _filtered_values(payload.values)
+    if payload.context_windows is not None:
+        result = await services.admin.apply_admin_config(
+            filtered, context_windows=payload.context_windows
+        )
+    else:
+        result = await services.admin.apply_admin_config(filtered)
     restart = result.get("restart")
     if isinstance(restart, dict) and restart.get("automatic"):
         background_tasks.add_task(services.admin.request_restart)

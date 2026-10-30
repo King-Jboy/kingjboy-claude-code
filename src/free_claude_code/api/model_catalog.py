@@ -7,7 +7,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from free_claude_code.application.ports import RequestRuntimePort
-from free_claude_code.config.context_windows import load_context_windows
+from free_claude_code.config.context_windows import (
+    load_context_windows,
+    load_unresolved_context_windows,
+)
 from free_claude_code.config.curated_contexts import curated_context_window
 from free_claude_code.config.model_refs import (
     ModelCatalogScope,
@@ -138,6 +141,19 @@ def build_models_list_response(
     return _build_direct_models_response(settings, runtime, view=view)
 
 
+def _claude_alias_routed_ref(model_id: str, settings: Settings) -> str:
+    lowered = model_id.lower()
+    if "fable" in lowered and settings.model_fable:
+        return settings.model_fable
+    if "opus" in lowered and settings.model_opus:
+        return settings.model_opus
+    if "sonnet" in lowered and settings.model_sonnet:
+        return settings.model_sonnet
+    if "haiku" in lowered and settings.model_haiku:
+        return settings.model_haiku
+    return settings.model
+
+
 def _build_claude_models_response(
     settings: Settings, runtime: RequestRuntimePort
 ) -> ModelsListResponse:
@@ -145,6 +161,7 @@ def _build_claude_models_response(
     models: list[ModelResponse] = []
     seen: set[str] = set()
     recorded_windows = load_context_windows()
+    unresolved_windows = load_unresolved_context_windows()
 
     for ref in configured_chat_model_refs(settings):
         model_info = runtime.cached_model_info(ref.provider_id, ref.model_id)
@@ -155,6 +172,7 @@ def _build_claude_models_response(
                 model_info.context_window_tokens if model_info is not None else None
             ),
             recorded_windows=recorded_windows,
+            unresolved_windows=unresolved_windows,
             settings=settings,
         )
         _append_provider_model_variants(
@@ -177,6 +195,7 @@ def _build_claude_models_response(
                 model_info.context_window_tokens if model_info is not None else None
             ),
             recorded_windows=recorded_windows,
+            unresolved_windows=unresolved_windows,
             settings=settings,
         )
         _append_provider_model_variants(
@@ -197,6 +216,7 @@ def _build_claude_models_response(
                 model_id,
                 model_info_tokens=model_info.context_window_tokens,
                 recorded_windows=recorded_windows,
+                unresolved_windows=unresolved_windows,
                 settings=settings,
             )
             _append_provider_model_variants(
@@ -208,6 +228,10 @@ def _build_claude_models_response(
             )
 
     for model in SUPPORTED_CLAUDE_MODELS:
+        routed_ref = _claude_alias_routed_ref(model.id, settings)
+        routed_ctx = recorded_windows.get(routed_ref)
+        if routed_ctx is not None:
+            model = model.model_copy(update={"context_window_tokens": routed_ctx})
         _append_unique_model(models, seen, model)
 
     return ModelsListResponse(
@@ -285,13 +309,16 @@ def _resolve_inventory_context_window(
     *,
     model_info_tokens: int | None,
     recorded_windows: dict[str, int],
+    unresolved_windows: frozenset[str] = frozenset(),
     settings: Settings,
 ) -> int | None:
-    if model_info_tokens is not None and model_info_tokens > 0:
-        return model_info_tokens
     model_ref = f"{provider_id}/{model_id}"
     if model_ref in recorded_windows:
         return recorded_windows[model_ref]
+    if model_ref in unresolved_windows:
+        return None
+    if model_info_tokens is not None and model_info_tokens > 0:
+        return model_info_tokens
     curated = curated_context_window(provider_id, model_id)
     if curated is not None:
         return curated
@@ -306,6 +333,7 @@ def _collect_inventory(
     inventory: list[_InventoryModel] = []
     seen: set[str] = set()
     recorded_windows = load_context_windows()
+    unresolved_windows = load_unresolved_context_windows()
 
     for ref in configured_chat_model_refs(settings):
         if ref.model_ref in seen:
@@ -330,6 +358,7 @@ def _collect_inventory(
                         else None
                     ),
                     recorded_windows=recorded_windows,
+                    unresolved_windows=unresolved_windows,
                     settings=settings,
                 ),
                 max_output_tokens=(
@@ -362,6 +391,7 @@ def _collect_inventory(
                         else None
                     ),
                     recorded_windows=recorded_windows,
+                    unresolved_windows=unresolved_windows,
                     settings=settings,
                 ),
                 max_output_tokens=(
@@ -386,6 +416,7 @@ def _collect_inventory(
                         model_id,
                         model_info_tokens=model_info.context_window_tokens,
                         recorded_windows=recorded_windows,
+                        unresolved_windows=unresolved_windows,
                         settings=settings,
                     ),
                     max_output_tokens=model_info.max_output_tokens,

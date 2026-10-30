@@ -1,6 +1,7 @@
 """Single owner for application startup, shutdown, and runtime operations."""
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import os
@@ -36,7 +37,11 @@ from free_claude_code.config.admin.values import (
     load_config_response,
     load_value_state,
 )
-from free_claude_code.config.context_windows import resolve_client_context_window
+from free_claude_code.config.context_windows import (
+    context_windows_path,
+    resolve_client_context_window,
+    sync_pinned_context_windows,
+)
 from free_claude_code.config.env_files import (
     ANTHROPIC_AUTH_TOKEN_ENV,
     process_env_key_is_effective,
@@ -173,6 +178,9 @@ class ApplicationRuntime:
         logger.info("Starting Claude Code Proxy...")
         try:
             warn_if_process_auth_token(self.settings)
+            if context_windows_path().exists():
+                with contextlib.suppress(Exception):
+                    sync_pinned_context_windows(pinned_model_refs(self.settings))
             await self.provider_manager.warm_referenced_model_cache()
             self.provider_manager.start_model_list_refresh()
             await self._start_messaging_if_configured()
@@ -210,12 +218,15 @@ class ApplicationRuntime:
     async def apply_admin_config(
         self,
         updates: Mapping[str, Any],
+        *,
+        context_windows: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Apply one validated config update without splitting runtime ownership."""
         async with self._config_lock:
             prepared = await to_thread.run_sync(
-                prepare_admin_update,
-                updates,
+                lambda: prepare_admin_update(
+                    updates, context_windows=context_windows
+                ),
                 limiter=self._config_worker_limiter,
             )
             if not prepared.valid:
@@ -274,11 +285,12 @@ class ApplicationRuntime:
     async def validate_admin_config(
         self,
         updates: Mapping[str, Any],
+        *,
+        context_windows: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Validate partial admin updates off the event loop."""
         return await to_thread.run_sync(
-            validate_updates,
-            updates,
+            lambda: validate_updates(updates, context_windows=context_windows),
             limiter=self._config_worker_limiter,
         )
 

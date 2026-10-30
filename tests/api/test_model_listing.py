@@ -480,3 +480,49 @@ def test_an_explicit_view_still_wins_for_claude_code():
         "deepseek/deepseek-chat",
         "nvidia_nim/meta/llama-3.3-70b-instruct",
     ]
+
+
+def test_recorded_context_window_overrides_provider_discovery_and_curated_1m(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    from free_claude_code.config.context_windows import sync_pinned_context_windows
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    pinned = (
+        "nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+        "open_router/thinkingmachines/inkling:free",
+        "nvidia_nim/mistralai/mistral-large-4-1t-a52b",
+    )
+    sync_pinned_context_windows(
+        pinned,
+        updates={
+            "nvidia_nim/deepseek-ai/deepseek-v4.1-flash": 131072,
+            "open_router/thinkingmachines/inkling:free": 262144,
+        },
+    )
+
+    app = create_test_app(
+        _settings(
+            model="nvidia_nim/deepseek-ai/deepseek-v4.1-flash",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["nvidia_nim/deepseek-ai/deepseek-v4.1-flash", "open_router/thinkingmachines/inkling:free", "nvidia_nim/mistralai/mistral-large-4-1t-a52b"]',
+        )
+    )
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("thinkingmachines/inkling:free", context_window_tokens=1_048_576)},
+    )
+
+    claude_models = TestClient(app).get(
+        "/v1/models", headers={"User-Agent": "claude-code/2.1.252"}
+    ).json()["data"]
+    windows = {item["id"]: item.get("contextWindow") for item in claude_models}
+
+    assert windows["anthropic/nvidia_nim/deepseek-ai/deepseek-v4.1-flash"] == 131072
+    assert windows["anthropic/open_router/thinkingmachines/inkling:free"] == 262144
+    assert windows["anthropic/nvidia_nim/mistralai/mistral-large-4-1t-a52b"] is None
+    assert windows["claude-sonnet-4-20250514"] == 131072
+
