@@ -224,9 +224,7 @@ class ApplicationRuntime:
         """Apply one validated config update without splitting runtime ownership."""
         async with self._config_lock:
             prepared = await to_thread.run_sync(
-                lambda: prepare_admin_update(
-                    updates, context_windows=context_windows
-                ),
+                lambda: prepare_admin_update(updates, context_windows=context_windows),
                 limiter=self._config_worker_limiter,
             )
             if not prepared.valid:

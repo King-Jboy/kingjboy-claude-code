@@ -85,7 +85,9 @@ def _validate_context_window_updates(
     for raw_ref, raw_val in raw_updates.items():
         ref = str(raw_ref).strip()
         if not ref or "/" not in ref:
-            errors.append(f"Context window entry {raw_ref!r}: invalid provider/model ref")
+            errors.append(
+                f"Context window entry {raw_ref!r}: invalid provider/model ref"
+            )
             continue
         if raw_val is None or (isinstance(raw_val, str) and not raw_val.strip()):
             cleaned[ref] = None
@@ -102,7 +104,7 @@ def _validate_context_window_updates(
                 else raw_val
             )
             parsed = int(text_val)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             errors.append(
                 f"Context window for {ref}: must be an integer >= {MIN_CONTEXT_WINDOW_TOKENS}"
             )

@@ -161,9 +161,7 @@ def render_context_windows_markdown(entries: Sequence[ContextWindowEntry]) -> st
         ]
         lines += ["| Model | Context | Source |", "| --- | ---: | --- |"]
         for entry in sorted(known, key=lambda e: (-(e.context or 0), e.model)):
-            lines.append(
-                f"| `{entry.model}` | {entry.context_cell} | {entry.source} |"
-            )
+            lines.append(f"| `{entry.model}` | {entry.context_cell} | {entry.source} |")
         for entry in sorted(unknown, key=lambda e: e.model):
             lines.append(f"| `{entry.model}` | unknown | {entry.source} |")
         lines.append("")
@@ -279,9 +277,7 @@ def resolve_client_context_window(
         return ResolvedContextWindow(configured, "CLIENT_CONTEXT_WINDOW")
 
     recorded = load_context_windows() if windows is None else windows
-    unresolved = (
-        load_unresolved_context_windows() if windows is None else frozenset()
-    )
+    unresolved = load_unresolved_context_windows() if windows is None else frozenset()
     known: list[tuple[int, str, str]] = []
     seen: set[str] = set()
     for ref in configured_chat_model_refs(settings):
@@ -301,12 +297,9 @@ def resolve_client_context_window(
             continue
         seen.add(pinned_ref)
         if pinned_ref in recorded:
-            known.append(
-                (recorded[pinned_ref], CONTEXT_WINDOWS_FILENAME, pinned_ref)
-            )
+            known.append((recorded[pinned_ref], CONTEXT_WINDOWS_FILENAME, pinned_ref))
 
     if not known:
         return ResolvedContextWindow(DEFAULT_CLIENT_CONTEXT_WINDOW, "default")
     value, source, model_ref = min(known)
     return ResolvedContextWindow(value, source, model_ref)
-

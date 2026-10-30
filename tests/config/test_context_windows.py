@@ -254,4 +254,3 @@ def test_sync_pinned_context_windows_applies_manual_updates_and_clears(
     entries = load_context_window_entries(table)
     assert entries["nvidia_nim/mistralai/mistral-large-4-1t-a52b"].source == "manual"
     assert entries["nvidia_nim/deepseek-ai/deepseek-v4-pro"].context is None
-

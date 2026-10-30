@@ -148,4 +148,3 @@ def load_config_response() -> dict[str, Any]:
         "provider_status": provider_config_status(state),
         "context_windows": pinned_context_windows_state(pinned_refs),
     }
-

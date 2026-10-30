@@ -513,16 +513,21 @@ def test_recorded_context_window_overrides_provider_discovery_and_curated_1m(
     )
     provider_manager_for_app(app).cache_model_infos(
         "open_router",
-        {ProviderModelInfo("thinkingmachines/inkling:free", context_window_tokens=1_048_576)},
+        {
+            ProviderModelInfo(
+                "thinkingmachines/inkling:free", context_window_tokens=1_048_576
+            )
+        },
     )
 
-    claude_models = TestClient(app).get(
-        "/v1/models", headers={"User-Agent": "claude-code/2.1.252"}
-    ).json()["data"]
+    claude_models = (
+        TestClient(app)
+        .get("/v1/models", headers={"User-Agent": "claude-code/2.1.252"})
+        .json()["data"]
+    )
     windows = {item["id"]: item.get("contextWindow") for item in claude_models}
 
     assert windows["anthropic/nvidia_nim/deepseek-ai/deepseek-v4.1-flash"] == 131072
     assert windows["anthropic/open_router/thinkingmachines/inkling:free"] == 262144
     assert windows["anthropic/nvidia_nim/mistralai/mistral-large-4-1t-a52b"] is None
     assert windows["claude-sonnet-4-20250514"] == 131072
-
