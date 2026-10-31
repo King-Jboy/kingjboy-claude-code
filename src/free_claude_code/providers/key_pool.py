@@ -67,33 +67,54 @@ class ApiKeyPool:
         if self._on_capacity_change is not None:
             self._on_capacity_change(self.active_rate_limit(now))
 
-    def has_eligible_key(self, *, exclude: str | None = None) -> bool:
+    def has_eligible_key(
+        self, *, exclude: str | set[str] | frozenset[str] | None = None
+    ) -> bool:
         """Return whether a key (optionally distinct from ``exclude``) has immediate capacity."""
+        excluded = (
+            {exclude}
+            if isinstance(exclude, str)
+            else (set(exclude) if exclude is not None else set())
+        )
         with self._lock:
             now = time.monotonic()
             return any(
-                state.key != exclude
+                state.key not in excluded
                 and not state.failed
                 and now >= state.unavailable_until
                 and state.limiter.headroom() > 0
                 for state in self._keys
             )
 
-    def next_available_in(self, *, exclude: str | None = None) -> float | None:
+    def next_available_in(
+        self, *, exclude: str | set[str] | frozenset[str] | None = None
+    ) -> float | None:
         """Return the minimum seconds until an eligible key has RPM capacity."""
+        excluded = (
+            {exclude}
+            if isinstance(exclude, str)
+            else (set(exclude) if exclude is not None else set())
+        )
         with self._lock:
             now = time.monotonic()
             waits = [
                 state.limiter.next_available_in()
                 for state in self._keys
-                if state.key != exclude
+                if state.key not in excluded
                 and not state.failed
                 and now >= state.unavailable_until
             ]
             return min(waits) if waits else None
 
-    def get_next_key(self, *, exclude: str | None = None) -> str | None:
+    def get_next_key(
+        self, *, exclude: str | set[str] | frozenset[str] | None = None
+    ) -> str | None:
         """Reserve the longest-idle key that currently has RPM capacity."""
+        excluded = (
+            {exclude}
+            if isinstance(exclude, str)
+            else (set(exclude) if exclude is not None else set())
+        )
         with self._lock:
             now = time.monotonic()
             self._notify_capacity(now)
@@ -101,7 +122,7 @@ class ApiKeyPool:
                 (
                     state
                     for state in self._keys
-                    if state.key != exclude
+                    if state.key not in excluded
                     and not state.failed
                     and now >= state.unavailable_until
                 ),

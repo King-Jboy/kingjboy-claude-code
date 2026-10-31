@@ -772,3 +772,52 @@ class TestBuildRequestBody:
         assert cloned is not None
         assert "reasoning_content" not in cloned["messages"][0]
         assert cloned["messages"][0]["content"] == ""
+
+    def test_nim_hybrid_reasoning_model_disables_thinking_by_default(self):
+        req = make_messages_request(
+            model="minimaxai/minimax-m3.1-flash",
+            thinking=None,
+        )
+        body = build_request_body(
+            req,
+            NimSettings(),
+            reasoning=ReasoningPolicy.provider_default(),
+        )
+        assert body["extra_body"]["chat_template_kwargs"] == {
+            "thinking": False,
+            "enable_thinking": False,
+        }
+
+    def test_nim_off_budget_cap_model_includes_tight_budget_when_off(self):
+        req = make_messages_request(
+            model="stepfun-ai/step-5-preview",
+            thinking=None,
+            max_tokens=512,
+        )
+        body = build_request_body(
+            req,
+            NimSettings(),
+            reasoning=ReasoningPolicy.provider_default(),
+        )
+        assert body["extra_body"]["chat_template_kwargs"] == {
+            "thinking": False,
+            "enable_thinking": False,
+            "reasoning_budget": 16,
+        }
+
+    def test_nim_hybrid_reasoning_model_caps_unbounded_on_policy(self):
+        req = make_messages_request(
+            model="minimaxai/minimax-m3.1-flash",
+            thinking={"type": "enabled"},
+            max_tokens=2048,
+        )
+        body = build_request_body(
+            req,
+            NimSettings(),
+            reasoning=ReasoningPolicy.on(),
+        )
+        assert body["extra_body"]["chat_template_kwargs"] == {
+            "thinking": True,
+            "enable_thinking": True,
+            "reasoning_budget": ReasoningEffort.MEDIUM.budget_tokens,
+        }

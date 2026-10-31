@@ -268,3 +268,68 @@ async def test_hedged_open_does_not_exceed_admission_concurrency_bulkhead():
 
     assert stream is not None
     assert calls == ["key-1"]
+
+
+@pytest.mark.asyncio
+async def test_hedged_racing_switches_key_when_headers_arrive_fast_but_first_token_stalls():
+    """Key 1 returns HTTP 200 and an empty role chunk immediately, then stalls before first token."""
+    keys = ["key-stalled-after-headers", "key-fast-tokens"]
+    config = _pooled_config(keys, hedge_delay=0.03)
+    provider = OpenRouterProvider(config, admission=immediate_admission())
+
+    class PostHeaderStallStream:
+        def __init__(self, key: str):
+            self.key = key
+            self.closed = False
+
+        async def __aiter__(self):
+            # Empty role-only prologue chunk sent right after HTTP 200 headers
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(role="assistant", content=""),
+                        finish_reason=None,
+                    )
+                ]
+            )
+            if self.key == "key-stalled-after-headers":
+                await asyncio.sleep(0.5)
+            else:
+                await asyncio.sleep(0.005)
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="pong"),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+
+        async def aclose(self):
+            self.closed = True
+
+    streams: dict[str, PostHeaderStallStream] = {}
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            st = PostHeaderStallStream(api_key)
+            streams[api_key] = st
+            return st
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    stream_adapter = await provider._open_chat_stream({"model": "test-model"})
+    chunks = [c async for c in stream_adapter]
+    assert stream_adapter._stream.key == "key-fast-tokens"
+    assert len(chunks) == 2
+    assert chunks[1].choices[0].delta.content == "pong"
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert streams["key-stalled-after-headers"].closed is True

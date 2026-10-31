@@ -634,11 +634,18 @@ class OpenAIChatProvider(BaseProvider):
         assert key_pool is not None
         hedge_delay = self._config.key_hedge_delay_seconds
 
-        async def _open_on_key(key: str) -> Any:
-            return await self._client_for_key(key).chat.completions.create(
+        async def _open_on_key(key: str) -> OpenAIStreamAdapter[Any]:
+            raw_stream = await self._client_for_key(key).chat.completions.create(
                 **create_body,
                 stream=True,
             )
+            adapter = OpenAIStreamAdapter(raw_stream)
+            try:
+                await adapter.prime_first_chunk()
+            except BaseException:
+                await adapter.aclose()
+                raise
+            return adapter
 
         async def _cancel_task(task: asyncio.Task[Any]) -> None:
             task.cancel()
@@ -662,12 +669,39 @@ class OpenAIChatProvider(BaseProvider):
                 return True
             return False
 
+        def _acquire_hedged_key(excluded: set[str]) -> tuple[str | None, bool]:
+            exclude_arg: str | set[str] = (
+                next(iter(excluded)) if len(excluded) == 1 else excluded
+            )
+            has_distinct_key = (
+                key_pool.has_eligible_key(exclude=exclude_arg)
+                if hasattr(key_pool, "has_eligible_key")
+                else True
+            )
+            slot_acquired = has_distinct_key and (
+                self._admission.try_acquire_hedge_slot()
+                if hasattr(self._admission, "try_acquire_hedge_slot")
+                else True
+            )
+            if not slot_acquired:
+                return None, False
+            try:
+                next_key = key_pool.get_next_key(exclude=exclude_arg)
+            except TypeError:
+                next_key = key_pool.get_next_key()
+            if next_key is None or next_key in excluded:
+                if hasattr(self._admission, "release_hedge_slot"):
+                    self._admission.release_hedge_slot()
+                return None, False
+            return next_key, True
+
         key1 = key_pool.get_next_key()
         if key1 is None:
             return await self._open_chat_stream_sequential(create_body)
 
         tasks: dict[asyncio.Task[Any], str] = {}
-        hedge_slot_held = False
+        used_keys: set[str] = {key1}
+        hedge_slots_held = 0
         try:
             task1: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key1))
             tasks[task1] = key1
@@ -678,52 +712,32 @@ class OpenAIChatProvider(BaseProvider):
                 if exc is None:
                     key_pool.mark_succeeded(key1)
                     tasks.clear()
-                    return OpenAIStreamAdapter(task1.result())
+                    return task1.result()
                 tasks.clear()
                 if isinstance(exc, Exception) and _handle_key_error(key1, exc):
                     return await self._open_chat_stream_sequential(create_body)
                 if isinstance(exc, BaseException):
                     raise exc
 
-            # Key 1 did not return within hedge_delay. Speculatively launch Key 2
-            # only if another eligible key exists and admission has spare capacity.
-            has_distinct_key = (
-                key_pool.has_eligible_key(exclude=key1)
-                if hasattr(key_pool, "has_eligible_key")
-                else True
-            )
-            can_hedge = has_distinct_key and (
-                self._admission.try_acquire_hedge_slot()
-                if hasattr(self._admission, "try_acquire_hedge_slot")
-                else True
-            )
-            if can_hedge:
-                try:
-                    key2 = key_pool.get_next_key(exclude=key1)
-                except TypeError:
-                    key2 = key_pool.get_next_key()
-            else:
-                key2 = None
+            # Key 1 did not produce a first token within hedge_delay.
+            # Speculatively launch Key 2 if another eligible key exists.
+            key2, acquired2 = _acquire_hedged_key(used_keys)
+            if acquired2:
+                hedge_slots_held += 1
 
-            if can_hedge and (key2 is None or key2 == key1):
-                if hasattr(self._admission, "release_hedge_slot"):
-                    self._admission.release_hedge_slot()
-                key2 = None
-            elif can_hedge:
-                hedge_slot_held = True
-
-            if key2 is None or key2 == key1:
+            if key2 is None:
                 try:
-                    stream = await task1
+                    stream_adapter = await task1
                     key_pool.mark_succeeded(key1)
                     tasks.clear()
-                    return OpenAIStreamAdapter(stream)
+                    return stream_adapter
                 except Exception as exc:
                     tasks.clear()
                     if _handle_key_error(key1, exc):
                         return await self._open_chat_stream_sequential(create_body)
                     raise
 
+            used_keys.add(key2)
             logger.info(
                 "{} key hedging: key ...{} quiet after {}s, racing with key ...{}",
                 self._provider_name,
@@ -734,23 +748,45 @@ class OpenAIChatProvider(BaseProvider):
             task2: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key2))
             tasks[task2] = key2
 
+            third_key_attempted = len(self._config.api_keys) < 3
             last_exc: BaseException | None = None
             while tasks:
+                wait_timeout = hedge_delay if not third_key_attempted else None
                 done_tasks, _ = await asyncio.wait(
-                    tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+                    tasks.keys(),
+                    timeout=wait_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+                if not done_tasks and not third_key_attempted:
+                    third_key_attempted = True
+                    key3, acquired3 = _acquire_hedged_key(used_keys)
+                    if acquired3:
+                        hedge_slots_held += 1
+                    if key3 is not None:
+                        used_keys.add(key3)
+                        logger.info(
+                            "{} key hedging: 2 keys still quiet, cascading race to key ...{}",
+                            self._provider_name,
+                            key3[-6:] if len(key3) >= 6 else "...",
+                        )
+                        task3: asyncio.Task[Any] = asyncio.create_task(
+                            _open_on_key(key3)
+                        )
+                        tasks[task3] = key3
+                    continue
+
                 for finished in done_tasks:
                     k = tasks.pop(finished)
                     exc = finished.exception()
                     if exc is None:
                         winner_stream = finished.result()
                         key_pool.mark_succeeded(k)
-                        return OpenAIStreamAdapter(winner_stream)
+                        return winner_stream
 
-                    if hedge_slot_held and len(tasks) < 2:
+                    if hedge_slots_held > 0 and len(tasks) <= hedge_slots_held:
                         if hasattr(self._admission, "release_hedge_slot"):
                             self._admission.release_hedge_slot()
-                        hedge_slot_held = False
+                        hedge_slots_held -= 1
                     last_exc = exc
                     if isinstance(exc, Exception):
                         _handle_key_error(k, exc)
@@ -762,14 +798,16 @@ class OpenAIChatProvider(BaseProvider):
         finally:
             remaining_tasks = list(tasks.keys())
             if remaining_tasks:
-                release_after_cancel = hedge_slot_held and hasattr(
-                    self._admission, "release_hedge_slot"
+                slots_to_release = (
+                    hedge_slots_held
+                    if hasattr(self._admission, "release_hedge_slot")
+                    else 0
                 )
-                hedge_slot_held = False
+                hedge_slots_held = 0
 
                 async def _cancel_remaining(
                     to_cancel: list[asyncio.Task[Any]],
-                    release_slot: bool,
+                    release_count: int,
                 ) -> None:
                     try:
                         await asyncio.gather(
@@ -777,16 +815,20 @@ class OpenAIChatProvider(BaseProvider):
                             return_exceptions=True,
                         )
                     finally:
-                        if release_slot:
+                        for _ in range(release_count):
                             self._admission.release_hedge_slot()
 
                 cleanup = asyncio.create_task(
-                    _cancel_remaining(remaining_tasks, release_after_cancel)
+                    _cancel_remaining(remaining_tasks, slots_to_release)
                 )
                 _HEDGE_CLEANUP_TASKS.add(cleanup)
                 cleanup.add_done_callback(_HEDGE_CLEANUP_TASKS.discard)
-            elif hedge_slot_held and hasattr(self._admission, "release_hedge_slot"):
-                self._admission.release_hedge_slot()
+            elif hedge_slots_held > 0 and hasattr(
+                self._admission, "release_hedge_slot"
+            ):
+                for _ in range(hedge_slots_held):
+                    self._admission.release_hedge_slot()
+                hedge_slots_held = 0
 
     def _normalize_stream(self, stream: Any, _body: Mapping[str, Any]) -> Any:
         """Return the provider-specific stream view consumed by the base runner."""

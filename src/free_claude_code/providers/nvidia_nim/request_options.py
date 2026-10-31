@@ -101,23 +101,45 @@ def apply_nim_request_options(
         if not request_template_kwargs:
             extra_body.pop("chat_template_kwargs", None)
 
-    if reasoning.control is ReasoningControl.OFF or reasoning.requests_reasoning:
+    model_name = str(body.get("model") or request_data.model or "").strip().lower()
+    is_nim_hybrid_reasoning = _is_nim_hybrid_reasoning_model(model_name)
+
+    if (
+        reasoning.control is ReasoningControl.OFF
+        or reasoning.requests_reasoning
+        or is_nim_hybrid_reasoning
+    ):
         chat_template_kwargs = extra_body.setdefault("chat_template_kwargs", {})
         if isinstance(chat_template_kwargs, dict):
-            enabled = reasoning.control is not ReasoningControl.OFF
+            enabled = (
+                reasoning.control is not ReasoningControl.OFF
+                and reasoning.requests_reasoning
+            )
             chat_template_kwargs["thinking"] = enabled
             chat_template_kwargs["enable_thinking"] = enabled
             if enabled:
                 budget = reasoning.numeric_budget_tokens
-                if (
-                    budget is None
-                    and request_data.thinking is not None
-                    and request_data.thinking.type == "adaptive"
+                if budget is None and (
+                    (
+                        request_data.thinking is not None
+                        and request_data.thinking.type == "adaptive"
+                    )
+                    or is_nim_hybrid_reasoning
                 ):
                     # Unbounded NIM thinking delays the first answer token.
-                    budget = ReasoningEffort.HIGH.budget_tokens
+                    budget = (
+                        ReasoningEffort.HIGH.budget_tokens
+                        if request_data.thinking is not None
+                        and request_data.thinking.type == "adaptive"
+                        else ReasoningEffort.MEDIUM.budget_tokens
+                    )
                 if budget is not None:
                     chat_template_kwargs["reasoning_budget"] = budget
+            elif _nim_model_requires_off_budget_cap(model_name):
+                off_budget = 16
+                if isinstance(max_tokens, int) and max_tokens > 16:
+                    off_budget = min(off_budget, max(1, max_tokens // 2))
+                chat_template_kwargs["reasoning_budget"] = off_budget
 
     req_top_k = request_data.top_k
     top_k = req_top_k if req_top_k is not None else nim.top_k
@@ -133,6 +155,34 @@ def apply_nim_request_options(
 
     if extra_body:
         body["extra_body"] = extra_body
+
+
+_NIM_HYBRID_REASONING_PREFIXES: tuple[str, ...] = (
+    "stepfun-ai/",
+    "minimaxai/",
+    "mistralai/mistral-large-4",
+    "meta/muse-",
+    "deepseek-ai/",
+    "z-ai/",
+    "nvidia/nemotron-",
+    "moonshotai/",
+    "qwen/",
+)
+
+_NIM_OFF_BUDGET_CAP_PREFIXES: tuple[str, ...] = (
+    "stepfun-ai/",
+    "meta/muse-",
+)
+
+
+def _is_nim_hybrid_reasoning_model(model_name: str) -> bool:
+    """Return whether a NIM model defaults to unbounded thinking if omitted."""
+    return model_name.startswith(_NIM_HYBRID_REASONING_PREFIXES)
+
+
+def _nim_model_requires_off_budget_cap(model_name: str) -> bool:
+    """Return whether a NIM model still reasons when thinking=False unless capped."""
+    return model_name.startswith(_NIM_OFF_BUDGET_CAP_PREFIXES)
 
 
 def _set_extra(
