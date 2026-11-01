@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -916,3 +916,33 @@ async def test_failure_override_propagates_effective_error_into_recovery_episode
     with pytest.raises(ProviderRecoveryExhausted) as exc_info:
         await waiter_task
     assert exc_info.value.last_error is overridden
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_beyond_the_ceiling_fails_fast() -> None:
+    """A daily-quota Retry-After must not park every request for a day."""
+    controller = _controller(max_attempts=3)
+    attempts = 0
+
+    async def exhausted_quota() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise _status_error(429, retry_after="86400")
+
+    with (
+        patch(
+            "free_claude_code.providers.admission.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep,
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        await controller.run_with_retry(exhausted_quota)
+
+    assert attempts == 1
+    sleep.assert_not_awaited()
+
+    # No recovery episode was opened, so other requests are not parked.
+    other = controller.new_retry_session()
+    attempt = await asyncio.wait_for(controller.open_attempt(other), 0.5)
+    await attempt.succeeded()
+    await attempt.aclose()

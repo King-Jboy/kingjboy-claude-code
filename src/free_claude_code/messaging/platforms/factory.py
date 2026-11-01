@@ -18,6 +18,7 @@ class MessagingPlatformOptions:
     telegram_proxy_url: str = ""
     discord_bot_token: str | None = None
     allowed_discord_channels: str | None = None
+    allowed_discord_users: str | None = None
     transcriber: Transcriber | None = None
     messaging_rate_limit: int = 1
     messaging_rate_window: float = 1.0
@@ -90,6 +91,7 @@ def create_messaging_components(
         runtime = DiscordRuntime(
             bot_token=bot_token,
             allowed_channel_ids=opts.allowed_discord_channels,
+            allowed_user_ids=opts.allowed_discord_users,
             limiter=limiter,
             transcriber=opts.transcriber,
             log_raw_messaging_content=opts.log_raw_messaging_content,

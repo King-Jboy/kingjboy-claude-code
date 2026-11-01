@@ -94,6 +94,18 @@ class TestSessionStoreLoadEdgeCases:
         store = SessionStore(storage_path=path)
         assert store.load_conversation_snapshot().is_empty
 
+    def test_unreadable_file_is_kept_aside_before_it_can_be_overwritten(self, tmp_path):
+        """The next save would replace the file, losing every saved conversation."""
+        path = tmp_path / "sessions.json"
+        path.write_text("{invalid json", encoding="utf-8")
+
+        SessionStore(storage_path=str(path))
+
+        backups = list(tmp_path.glob("sessions.json.corrupt-*"))
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == "{invalid json"
+        assert not path.exists()
+
     def test_load_truncated_json(self, tmp_path):
         """Truncated JSON file is handled gracefully."""
         path = str(tmp_path / "sessions.json")

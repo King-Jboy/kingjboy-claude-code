@@ -698,7 +698,10 @@ Configure integrations from **Admin UI → Messaging**, then click **Validate** 
    message-history, and **Manage Messages** permissions so `/clear` can remove
    user prompts.
 3. Set **Messaging Platform** to **discord**.
-4. Enter **Discord Bot Token**, **Allowed Discord Channels**, and an absolute **Allowed Directory**.
+4. Enter **Discord Bot Token**, **Allowed Discord Channels**, **Allowed Discord Users**, and an absolute **Allowed Directory**.
+   Allowed Discord Users is required: the bot runs Claude Code with permission
+   checks off, so only the listed user IDs (Developer Mode → right-click your
+   name → Copy User ID) can use it, even in an allowed channel.
 5. Apply the settings and restart the server if requested.
 
 </details>

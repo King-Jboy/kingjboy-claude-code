@@ -24,6 +24,17 @@ class _KeyState:
     unavailable_until: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class KeyStateSnapshot:
+    """One credential's health and recent sends, carried into a new generation."""
+
+    sent_at: tuple[float, ...]
+    last_used_at: float
+    consecutive_failures: int
+    failed: bool
+    unavailable_until: float
+
+
 class ApiKeyPool:
     """Select eligible credentials in LRU order with an independent RPM gate."""
 
@@ -58,6 +69,43 @@ class ApiKeyPool:
                 for state in self._keys
                 if not state.failed and check_now >= state.unavailable_until
             )
+
+    def export_state(self) -> dict[str, KeyStateSnapshot]:
+        """Return each credential's state so a replacement pool can resume it."""
+        with self._lock:
+            return {
+                state.key: KeyStateSnapshot(
+                    sent_at=state.limiter.recorded_times(),
+                    last_used_at=state.last_used_at,
+                    consecutive_failures=state.consecutive_failures,
+                    failed=state.failed,
+                    unavailable_until=state.unavailable_until,
+                )
+                for state in self._keys
+            }
+
+    def import_state(self, snapshot: dict[str, KeyStateSnapshot]) -> None:
+        """Resume credentials that a previous generation already used.
+
+        A config reload builds a fresh pool. Without this, keys retired for
+        failing come straight back and every per-key window starts empty while
+        the old generation is still sending on the same keys.
+        """
+        with self._lock:
+            for state in self._keys:
+                previous = snapshot.get(state.key)
+                if previous is None:
+                    continue
+                state.limiter.record_times(previous.sent_at)
+                state.last_used_at = previous.last_used_at
+                state.consecutive_failures = previous.consecutive_failures
+                state.failed = previous.failed
+                state.unavailable_until = previous.unavailable_until
+
+    def all_keys_disabled(self) -> bool:
+        """Return whether every credential has been retired for repeated failures."""
+        with self._lock:
+            return bool(self._keys) and all(state.failed for state in self._keys)
 
     def active_rate_limit(self, now: float | None = None) -> int:
         """Return the aggregate RPM capacity of currently eligible keys."""

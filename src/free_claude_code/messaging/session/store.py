@@ -1,6 +1,8 @@
 """Persistent messaging conversation state store."""
 
+import os
 import threading
+import time
 from copy import deepcopy
 
 from loguru import logger
@@ -56,6 +58,9 @@ class SessionStore:
             data = self._persistence.load_json()
         except Exception as e:
             logger.error("Failed to load sessions: {}", e)
+            # The next save replaces this file, so keep the unreadable copy
+            # rather than silently losing every saved conversation.
+            self._preserve_unreadable_file()
             return
 
         conversation_data = data.get("conversation") if isinstance(data, dict) else None
@@ -80,6 +85,18 @@ class SessionStore:
                 message_count,
                 self.storage_path,
             )
+
+    def _preserve_unreadable_file(self) -> None:
+        if not os.path.exists(self.storage_path):
+            return
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = f"{self.storage_path}.corrupt-{stamp}"
+        try:
+            os.replace(self.storage_path, backup)
+        except OSError as e:
+            logger.error("Could not set aside unreadable sessions file: {}", e)
+            return
+        logger.warning("Unreadable sessions file kept as {}", backup)
 
     def _snapshot_for_persistence(self) -> dict:
         with self._lock:

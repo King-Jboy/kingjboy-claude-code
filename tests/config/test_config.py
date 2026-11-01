@@ -1453,3 +1453,19 @@ def test_messaging_rate_window_must_be_finite(window: str, monkeypatch) -> None:
 
     with pytest.raises(ValidationError, match="messaging_rate_window"):
         Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    "env_name", ["NVIDIA_NIM_API_KEYS", "OPENROUTER_API_KEYS", "CUSTOM_API_KEYS"]
+)
+def test_a_malformed_key_pool_fails_settings_validation_by_name(monkeypatch, env_name):
+    """A broken JSON list used to surface later as a generic 500."""
+    from pydantic import ValidationError
+
+    from free_claude_code.config.settings import Settings
+
+    monkeypatch.setitem(Settings.model_config, "env_file", ())
+    monkeypatch.setenv(env_name, '["unterminated')
+
+    with pytest.raises(ValidationError, match=env_name):
+        Settings()

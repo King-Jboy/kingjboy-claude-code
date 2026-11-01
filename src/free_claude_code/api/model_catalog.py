@@ -7,10 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from free_claude_code.application.ports import RequestRuntimePort
-from free_claude_code.config.context_windows import (
-    load_context_windows,
-    load_unresolved_context_windows,
-)
+from free_claude_code.config.context_windows import load_context_window_maps
 from free_claude_code.config.curated_contexts import curated_context_window
 from free_claude_code.config.model_refs import (
     ModelCatalogScope,
@@ -160,8 +157,10 @@ def _build_claude_models_response(
     """Preserve the established Claude-compatible catalog exactly."""
     models: list[ModelResponse] = []
     seen: set[str] = set()
-    recorded_windows = load_context_windows()
-    unresolved_windows = load_unresolved_context_windows()
+    context_maps = load_context_window_maps()
+    recorded_windows = context_maps.recorded
+    unresolved_windows = context_maps.unresolved - context_maps.placeholders
+    placeholder_windows = context_maps.placeholders
 
     for ref in configured_chat_model_refs(settings):
         model_info = runtime.cached_model_info(ref.provider_id, ref.model_id)
@@ -173,6 +172,7 @@ def _build_claude_models_response(
             ),
             recorded_windows=recorded_windows,
             unresolved_windows=unresolved_windows,
+            placeholder_windows=placeholder_windows,
             settings=settings,
         )
         _append_provider_model_variants(
@@ -196,6 +196,7 @@ def _build_claude_models_response(
             ),
             recorded_windows=recorded_windows,
             unresolved_windows=unresolved_windows,
+            placeholder_windows=placeholder_windows,
             settings=settings,
         )
         _append_provider_model_variants(
@@ -217,6 +218,7 @@ def _build_claude_models_response(
                 model_info_tokens=model_info.context_window_tokens,
                 recorded_windows=recorded_windows,
                 unresolved_windows=unresolved_windows,
+                placeholder_windows=placeholder_windows,
                 settings=settings,
             )
             _append_provider_model_variants(
@@ -310,6 +312,7 @@ def _resolve_inventory_context_window(
     model_info_tokens: int | None,
     recorded_windows: dict[str, int],
     unresolved_windows: frozenset[str] = frozenset(),
+    placeholder_windows: frozenset[str] = frozenset(),
     settings: Settings,
 ) -> int | None:
     model_ref = f"{provider_id}/{model_id}"
@@ -319,6 +322,10 @@ def _resolve_inventory_context_window(
         return None
     if model_info_tokens is not None and model_info_tokens > 0:
         return model_info_tokens
+    # A placeholder row (pinned, window not entered yet) still beats a curated
+    # family guess, but not the window the provider itself reported above.
+    if model_ref in placeholder_windows:
+        return None
     curated = curated_context_window(provider_id, model_id)
     if curated is not None:
         return curated
@@ -332,8 +339,10 @@ def _collect_inventory(
 ) -> tuple[_InventoryModel, ...]:
     inventory: list[_InventoryModel] = []
     seen: set[str] = set()
-    recorded_windows = load_context_windows()
-    unresolved_windows = load_unresolved_context_windows()
+    context_maps = load_context_window_maps()
+    recorded_windows = context_maps.recorded
+    unresolved_windows = context_maps.unresolved - context_maps.placeholders
+    placeholder_windows = context_maps.placeholders
 
     for ref in configured_chat_model_refs(settings):
         if ref.model_ref in seen:
@@ -359,6 +368,7 @@ def _collect_inventory(
                     ),
                     recorded_windows=recorded_windows,
                     unresolved_windows=unresolved_windows,
+                    placeholder_windows=placeholder_windows,
                     settings=settings,
                 ),
                 max_output_tokens=(
@@ -392,6 +402,7 @@ def _collect_inventory(
                     ),
                     recorded_windows=recorded_windows,
                     unresolved_windows=unresolved_windows,
+                    placeholder_windows=placeholder_windows,
                     settings=settings,
                 ),
                 max_output_tokens=(
@@ -417,6 +428,7 @@ def _collect_inventory(
                         model_info_tokens=model_info.context_window_tokens,
                         recorded_windows=recorded_windows,
                         unresolved_windows=unresolved_windows,
+                        placeholder_windows=placeholder_windows,
                         settings=settings,
                     ),
                     max_output_tokens=model_info.max_output_tokens,

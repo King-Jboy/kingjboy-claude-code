@@ -209,6 +209,14 @@ async function inject(tab, { world = "ISOLATED", func, args = [] }) {
     args,
   });
   if (!result) throw new Error("The page did not respond to injection.");
+  // An exception inside the injected function surfaces as a missing result,
+  // not a throw; report that instead of failing on `undefined.missing` later.
+  if (result.result === undefined) {
+    throw new Error("The script injected into the page failed to run.");
+  }
+  if (result.result?.invalidSelector) {
+    throw new Error(`Invalid CSS selector ${result.result.invalidSelector}.`);
+  }
   return result.result;
 }
 
@@ -260,8 +268,15 @@ const EXECUTORS = {
     const wantsHtml = format === "html";
     const payload = await inject(tab, {
       args: [selector ?? null, wantsHtml],
+      // Injected functions are serialized into the page, so each one carries
+      // its own guard against a selector querySelector rejects.
       func: (target, asHtml) => {
-        const node = target ? document.querySelector(target) : document.documentElement;
+        let node;
+        try {
+          node = target ? document.querySelector(target) : document.documentElement;
+        } catch {
+          return { invalidSelector: target };
+        }
         if (!node) return { missing: true };
         return { content: asHtml ? node.outerHTML : (node.innerText ?? node.textContent ?? "") };
       },
@@ -342,7 +357,12 @@ const EXECUTORS = {
     const outcome = await inject(tab, {
       args: [selector],
       func: (target) => {
-        const el = document.querySelector(target);
+        let el;
+        try {
+          el = document.querySelector(target);
+        } catch {
+          return { invalidSelector: target };
+        }
         if (!el) return { missing: true };
         // Centering first means a follow-up screenshot shows what was clicked,
         // and lets pages that lazy-load on scroll react before the click.
@@ -360,7 +380,12 @@ const EXECUTORS = {
     const outcome = await inject(tab, {
       args: [selector, String(text ?? ""), Boolean(submit)],
       func: (target, value, withSubmit) => {
-        const el = document.querySelector(target);
+        let el;
+        try {
+          el = document.querySelector(target);
+        } catch {
+          return { invalidSelector: target };
+        }
         if (!el) return { missing: true };
         el.focus();
         if (el.isContentEditable) {

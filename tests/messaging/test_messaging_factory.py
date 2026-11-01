@@ -104,6 +104,7 @@ class TestCreateMessagingComponents:
                 MessagingPlatformOptions(
                     discord_bot_token="test_token",
                     allowed_discord_channels="123,456",
+                    allowed_discord_users="789",
                     transcriber=transcriber,
                     messaging_rate_limit=3,
                     messaging_rate_window=4.5,
@@ -123,6 +124,7 @@ class TestCreateMessagingComponents:
         runtime_cls.assert_called_once_with(
             bot_token="test_token",
             allowed_channel_ids="123,456",
+            allowed_user_ids="789",
             limiter=limiter,
             transcriber=transcriber,
             log_raw_messaging_content=False,

@@ -56,6 +56,16 @@ class StrictSlidingWindowLimiter:
             raise ValueError("rate_limit must be > 0")
         self._rate_limit = int(rate_limit)
 
+    def recorded_times(self) -> tuple[float, ...]:
+        """Return the acquisitions still inside the window, oldest first."""
+        self._evict_expired(time.monotonic())
+        return tuple(self._times)
+
+    def record_times(self, times: tuple[float, ...]) -> None:
+        """Replace recorded acquisitions, e.g. those of a predecessor limiter."""
+        self._times = deque(sorted(times))
+        self._evict_expired(time.monotonic())
+
     def headroom(self) -> int:
         """Return how many acquisitions the current window still admits."""
         self._evict_expired(time.monotonic())

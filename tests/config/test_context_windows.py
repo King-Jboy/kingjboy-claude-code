@@ -224,6 +224,50 @@ def test_sync_pinned_context_windows_prunes_unpinned_and_leaves_new_blank(
     )
 
 
+def test_sync_keeps_measured_rows_for_configured_routes(tmp_path: Path) -> None:
+    # fcc-context measures MODEL routes as well as pinned models, and the
+    # client window is resolved from those rows; a sync must not erase them.
+    from free_claude_code.config.context_windows import (
+        load_context_window_entries,
+        sync_pinned_context_windows,
+    )
+
+    table = _write_table(tmp_path)
+    route = "nvidia_nim/deepseek-ai/deepseek-v4-flash"
+
+    state = sync_pinned_context_windows(
+        ("nvidia_nim/deepseek-ai/deepseek-v4-pro",),
+        retain_refs=(route, "nvidia_nim/never/measured"),
+        path=table,
+    )
+
+    assert state == {"nvidia_nim/deepseek-ai/deepseek-v4-pro": 262_144}
+    entries = load_context_window_entries(table)
+    assert entries[route].context == 1_048_576
+    # A retained route is kept, never seeded as a new placeholder row.
+    assert "nvidia_nim/never/measured" not in entries
+    assert "open_router/z-ai/glm-5.2:free" not in entries
+
+
+def test_measured_unknown_rows_stay_unresolved(tmp_path: Path) -> None:
+    from free_claude_code.config.context_windows import (
+        load_unresolved_context_windows,
+    )
+
+    assert load_unresolved_context_windows(_write_table(tmp_path)) == frozenset(
+        {"nvidia_nim/thinkingmachines/inkling"}
+    )
+
+
+def test_a_non_ascii_digit_cell_is_ignored_not_fatal(tmp_path: Path) -> None:
+    body = TABLE.replace("131,072", "131²")
+
+    windows = load_context_windows(_write_table(tmp_path, body))
+
+    assert "open_router/z-ai/glm-5.2:free" not in windows
+    assert windows["nvidia_nim/deepseek-ai/deepseek-v4-pro"] == 262_144
+
+
 def test_sync_pinned_context_windows_applies_manual_updates_and_clears(
     tmp_path: Path,
 ) -> None:

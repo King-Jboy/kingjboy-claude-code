@@ -149,6 +149,9 @@ def test_markdown_rendering_is_safe_and_covers_the_reply_subset(
         "assert(heading.includes('<h2>Title</h2>'), 'headings');\n"
         "const span = markdownToHtml('use `map` here');\n"
         "assert(span.includes('<code>map</code>'), 'code spans');\n"
+        "const starred = markdownToHtml('see [**docs**](https://example.com/a*b*c) now');\n"
+        "assert(starred.includes('href=\"https://example.com/a*b*c\"'), 'emphasis stays out of hrefs');\n"
+        "assert(starred.includes('<strong>docs</strong></a>'), 'link text keeps emphasis');\n"
         "console.log('markdown ok');\n",
         encoding="utf-8",
     )

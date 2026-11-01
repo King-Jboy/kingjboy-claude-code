@@ -270,8 +270,40 @@ class TestDiscordRuntime:
         handler.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_on_discord_message_valid_calls_handler(self):
+    async def test_on_discord_message_from_unlisted_user_ignored(self):
+        """An allowed channel is not enough: every message runs Claude Code with
+        permission checks off, so anyone who could post there got a shell."""
+        platform = _discord_runtime(
+            bot_token="token", allowed_channel_ids="123", allowed_user_ids="456"
+        )
+        handler = AsyncMock()
+        platform.on_message(handler)
+        msg = MagicMock()
+        msg.author.bot = False
+        msg.author.id = 999
+        msg.content = "run something"
+        msg.channel.id = 123
+        await platform._on_discord_message(msg)
+        handler.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_discord_message_with_no_user_allow_list_ignored(self):
         platform = _discord_runtime(bot_token="token", allowed_channel_ids="123")
+        handler = AsyncMock()
+        platform.on_message(handler)
+        msg = MagicMock()
+        msg.author.bot = False
+        msg.author.id = 456
+        msg.content = "hello"
+        msg.channel.id = 123
+        await platform._on_discord_message(msg)
+        handler.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_discord_message_valid_calls_handler(self):
+        platform = _discord_runtime(
+            bot_token="token", allowed_channel_ids="123", allowed_user_ids="456"
+        )
         handler = AsyncMock()
         platform.on_message(handler)
         msg = MagicMock()

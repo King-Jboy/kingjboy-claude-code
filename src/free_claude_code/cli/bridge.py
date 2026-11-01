@@ -20,6 +20,7 @@ it" is not on its own a reason to run arbitrary commands:
 Every accepted command is appended to ~/.fcc/logs/bridge.log.
 """
 
+import codecs
 import json
 import os
 import shutil
@@ -55,7 +56,15 @@ _LENGTH_PREFIX = struct.Struct("<I")
 
 
 class BridgeError(Exception):
-    """A request that must be refused with a reason rather than executed."""
+    """A request that must be refused with a reason rather than executed.
+
+    ``outcome`` is what the audit log records. Most errors refuse a command
+    before it starts; a timeout is raised after the command already ran.
+    """
+
+    def __init__(self, message: str, *, outcome: str = "refused") -> None:
+        super().__init__(message)
+        self.outcome = outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +93,9 @@ def shell_root(settings: Settings) -> Path:
     """Return the directory tree commands are confined to."""
 
     configured = settings.browser_shell_root.strip()
-    return Path(configured).expanduser().resolve() if configured else Path.home()
+    # Resolved either way: resolve_cwd compares against resolved paths, so an
+    # unresolved home behind a symlink or junction would refuse every cwd.
+    return (Path(configured).expanduser() if configured else Path.home()).resolve()
 
 
 def resolve_cwd(requested: str | None, root: Path) -> Path:
@@ -120,6 +131,29 @@ def _truncate(text: str) -> tuple[str, bool]:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text, False
     return f"{text[:MAX_OUTPUT_CHARS]}\n[truncated]", True
+
+
+def _decode_output(data: bytes) -> str:
+    """Decode shell output, falling back to the Windows OEM code page.
+
+    Windows PowerShell 5.1 and cmd.exe write piped output in the console's OEM
+    code page, not UTF-8, so non-ASCII text decoded as UTF-8 comes out garbled.
+    """
+
+    try:
+        # Incremental with final=False: the capture limit can cut the last
+        # character in half, which is not a reason to abandon UTF-8.
+        return codecs.getincrementaldecoder("utf-8")().decode(data, final=False)
+    except UnicodeDecodeError:
+        pass
+    if sys.platform == "win32":
+        import ctypes
+
+        try:
+            return data.decode(f"cp{ctypes.windll.kernel32.GetOEMCP()}")
+        except LookupError, UnicodeDecodeError:
+            pass
+    return data.decode("utf-8", errors="replace")
 
 
 def _read_bounded(stream: IO[Any], *, limit: int) -> tuple[bytes, bool]:
@@ -170,7 +204,9 @@ def run_shell_command(command: str, *, cwd: Path, timeout: int) -> ShellResult:
             start_new_session=os.name != "nt",
         )
     except OSError as error:
-        raise BridgeError(f"Could not start a shell: {error}") from None
+        raise BridgeError(
+            f"Could not start a shell: {error}", outcome="spawn_failed"
+        ) from None
 
     stdout_stream = process.stdout
     stderr_stream = process.stderr
@@ -199,15 +235,17 @@ def run_shell_command(command: str, *, cwd: Path, timeout: int) -> ShellResult:
             process.wait(timeout=5)
         except OSError, subprocess.TimeoutExpired:
             pass
-        raise BridgeError(f"Command timed out after {timeout}s.") from None
+        raise BridgeError(
+            f"Command timed out after {timeout}s.", outcome="timeout"
+        ) from None
     finally:
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
 
     stdout_bytes, stdout_captured_cut = output.get("stdout", (b"", False))
     stderr_bytes, stderr_captured_cut = output.get("stderr", (b"", False))
-    stdout, stdout_cut = _truncate(stdout_bytes.decode("utf-8", errors="replace"))
-    stderr, stderr_cut = _truncate(stderr_bytes.decode("utf-8", errors="replace"))
+    stdout, stdout_cut = _truncate(_decode_output(stdout_bytes))
+    stderr, stderr_cut = _truncate(_decode_output(stderr_bytes))
     return ShellResult(
         exit_code=exit_code,
         stdout=stdout,
@@ -270,11 +308,17 @@ def handle(request: dict[str, object], settings: Settings) -> dict[str, object]:
         cwd = resolve_cwd(
             requested_cwd if isinstance(requested_cwd, str) else None, root
         )
+    except BridgeError as error:
+        audit(command, root, error.outcome)
+        return {"ok": False, "error": str(error)}
+    try:
         result = run_shell_command(
             command, cwd=cwd, timeout=_clamp_timeout(request.get("timeout"))
         )
     except BridgeError as error:
-        audit(command, root, "refused")
+        # Logged against the directory it ran in: a timeout means the command
+        # did run, which the audit log must not record as a refusal.
+        audit(command, cwd, error.outcome)
         return {"ok": False, "error": str(error)}
 
     audit(command, cwd, f"exit={result.exit_code}")

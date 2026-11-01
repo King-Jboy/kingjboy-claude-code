@@ -488,6 +488,17 @@ _NON_PROVIDER_FIELDS: tuple[ConfigFieldSpec, ...] = (
         session_sensitive=True,
     ),
     ConfigFieldSpec(
+        "ALLOWED_DISCORD_USERS",
+        "Allowed Discord Users",
+        "messaging",
+        settings_attr="allowed_discord_users",
+        session_sensitive=True,
+        description=(
+            "Comma-separated Discord user IDs allowed to use the bot. Required: "
+            "messages from anyone else are ignored, even in an allowed channel."
+        ),
+    ),
+    ConfigFieldSpec(
         "ALLOWED_DIR",
         "Allowed Directory",
         "messaging",
