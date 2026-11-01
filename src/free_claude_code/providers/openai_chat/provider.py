@@ -85,6 +85,7 @@ from .output_cap import clamp_output_tokens, parse_output_token_cap
 from .profiles import OpenAIChatProfile
 from .reasoning_details import StructuredReasoningStream
 from .request_policy import build_openai_chat_request_body
+from .stream_create import create_chat_stream
 from .tool_call_identity import AmbiguousToolCallIdentityError
 from .tool_calls import (
     OpenAIToolCallAssembler,
@@ -588,12 +589,7 @@ class OpenAIChatProvider(BaseProvider):
             ):
                 return await self._open_chat_stream_hedged(create_body)
             return await self._open_chat_stream_sequential(create_body)
-        return OpenAIStreamAdapter(
-            await self._client.chat.completions.create(
-                **create_body,
-                stream=True,
-            )
-        )
+        return OpenAIStreamAdapter(await create_chat_stream(self._client, create_body))
 
     async def _open_chat_stream_sequential(
         self,
@@ -617,9 +613,8 @@ class OpenAIChatProvider(BaseProvider):
             if key is None:
                 break
             try:
-                stream = await self._client_for_key(key).chat.completions.create(
-                    **create_body,
-                    stream=True,
+                stream = await create_chat_stream(
+                    self._client_for_key(key), create_body
                 )
             except AuthenticationError as error:
                 self._key_pool.mark_failed(key)
@@ -664,9 +659,8 @@ class OpenAIChatProvider(BaseProvider):
         hedge_delay = self._config.key_hedge_delay_seconds
 
         async def _open_on_key(key: str) -> OpenAIStreamAdapter[Any]:
-            raw_stream = await self._client_for_key(key).chat.completions.create(
-                **create_body,
-                stream=True,
+            raw_stream = await create_chat_stream(
+                self._client_for_key(key), create_body
             )
             adapter = OpenAIStreamAdapter(raw_stream)
             try:

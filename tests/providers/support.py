@@ -17,6 +17,7 @@ from free_claude_code.providers.openai_chat import (
     OpenAIChatProvider,
     create_openai_chat_provider,
 )
+from free_claude_code.providers.openai_chat.stream_create import create_chat_stream
 
 REASONING_DEFAULT = ReasoningPolicy.provider_default()
 REASONING_ON = ReasoningPolicy.on()
@@ -74,7 +75,7 @@ async def capture_openai_chat_wire_body(body: dict) -> dict:
         max_retries=0,
     )
     try:
-        stream = await client.chat.completions.create(**body, stream=True)
+        stream = await create_chat_stream(client, body)
         await stream.close()
     finally:
         await client.close()
