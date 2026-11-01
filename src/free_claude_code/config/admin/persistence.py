@@ -14,7 +14,10 @@ from free_claude_code.config.context_windows import (
     sync_pinned_context_windows,
 )
 from free_claude_code.config.env_migrations import RETIRED_ENV_KEYS
-from free_claude_code.config.model_refs import pinned_model_refs
+from free_claude_code.config.model_refs import (
+    configured_chat_model_refs,
+    pinned_model_refs,
+)
 from free_claude_code.config.paths import managed_env_path
 from free_claude_code.config.settings import Settings
 
@@ -269,6 +272,19 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
     if not prepared.valid:
         raise ValueError("Cannot commit an invalid Admin update")
 
+    # context.md is written first: if it fails, the request fails with the
+    # .env untouched, rather than reporting failure after the settings changed.
+    if prepared.settings is not None and (
+        prepared.sync_context_windows or context_windows_path().exists()
+    ):
+        sync_pinned_context_windows(
+            pinned_model_refs(prepared.settings),
+            updates=prepared.context_window_updates,
+            retain_refs=[
+                ref.model_ref for ref in configured_chat_model_refs(prepared.settings)
+            ],
+        )
+
     path = prepared.path
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(f"{path.suffix}.tmp.{uuid4().hex}")
@@ -289,14 +305,6 @@ def commit_prepared_admin_update(prepared: PreparedAdminUpdate) -> dict[str, Any
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)
-
-    if prepared.settings is not None and (
-        prepared.sync_context_windows or context_windows_path().exists()
-    ):
-        sync_pinned_context_windows(
-            pinned_model_refs(prepared.settings),
-            updates=prepared.context_window_updates,
-        )
 
     return prepared.applied_response()
 

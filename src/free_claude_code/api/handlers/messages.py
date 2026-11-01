@@ -361,13 +361,6 @@ class MessagesHandler:
         if not is_web_server_tool_request(routed.request):
             return None
 
-        input_tokens = (
-            self._token_counter(
-                routed.request.messages, routed.request.system, routed.request.tools
-            )
-            if self._token_counter is not None
-            else 0
-        )
         trace_event(
             stage="routing",
             event="free_claude_code.api.optimization.web_server_tool",
@@ -380,15 +373,36 @@ class MessagesHandler:
                 self._settings.web_fetch_allowed_schemes
             ),
         )
-        return _MessagesStreamResult(
-            stream_web_server_tool_response(
+        token_counter = self._token_counter
+        settings = self._settings
+
+        async def body() -> AsyncIterator[str]:
+            # Counted inside the stream, in a worker thread, like the provider
+            # path: this intercept is synchronous and runs on the event loop.
+            input_tokens = (
+                await asyncio.to_thread(
+                    token_counter,
+                    routed.request.messages,
+                    routed.request.system,
+                    routed.request.tools,
+                )
+                if token_counter is not None
+                else 0
+            )
+            events = stream_web_server_tool_response(
                 routed.request,
                 input_tokens=input_tokens,
                 web_fetch_egress=egress,
                 response_model=routed.resolved.original_model,
-                verbose_client_errors=self._settings.log_api_error_tracebacks,
-            ),
-        )
+                verbose_client_errors=settings.log_api_error_tracebacks,
+            )
+            try:
+                async for event in events:
+                    yield event
+            finally:
+                await try_close_async_iterator(events)
+
+        return _MessagesStreamResult(body())
 
     def _intercept_local_optimization(
         self, routed: RoutedMessagesRequest

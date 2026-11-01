@@ -25,6 +25,9 @@ from free_claude_code.providers.runtime.discovery import (
 from free_claude_code.providers.runtime.model_cache import ProviderModelCache
 
 ProviderRuntimeFactory = Callable[[Settings], ProviderRuntime]
+
+# How long shutdown waits for in-flight leases before closing generations anyway.
+SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 60.0
 ConnectedProviderIds = Callable[[], tuple[str, ...]]
 CommitConfig = Callable[[], None] | Callable[[], Awaitable[None]]
 
@@ -195,12 +198,22 @@ class ProviderRuntimeManager:
         )
 
     async def refresh_model_list_cache(self) -> ProviderModelRefreshResult:
-        """Run an explicit full refresh without racing replacement."""
+        """Run an explicit full refresh without racing replacement.
+
+        The generation is leased under the lock, then refreshed outside it:
+        ``acquire`` takes the same lock for every inference request, so holding
+        it across provider network calls would stall all traffic for as long as
+        the slowest provider takes to answer or time out.
+        """
         async with self._replace_lock:
             if self._closing or self._closed:
                 raise ApplicationUnavailableError("Provider runtime is shutting down.")
             await self._cancel_refresh()
-            return await self._refresh_generation(self._current, only_missing=False)
+            generation = self._lease_current_generation()
+        try:
+            return await self._refresh_generation(generation, only_missing=False)
+        finally:
+            await self._release(generation)
 
     async def connected_provider_changed(
         self, provider_id: str, *, connected: bool
@@ -215,15 +228,28 @@ class ProviderRuntimeManager:
                 self._publish_model_catalog()
                 return ProviderModelRefreshResult()
             self._model_cache.add_provider(provider_id)
+            # Discovery is a network call; run it outside the lock (see
+            # refresh_model_list_cache) on a leased generation.
+            generation = self._lease_current_generation()
+        try:
             discovery = ProviderModelDiscovery(
-                self._current.settings,
-                self._current.runtime.resolve_provider,
+                generation.settings,
+                generation.runtime.resolve_provider,
                 self._model_cache,
                 self._connected_provider_ids(),
             )
             result = await discovery.refresh_provider(provider_id)
             self._publish_model_catalog()
             return result
+        finally:
+            await self._release(generation)
+
+    def _lease_current_generation(self) -> _ProviderGeneration:
+        """Retain the current generation; the caller must ``_release`` it."""
+        generation = self._current
+        generation.active_leases += 1
+        generation.drained.clear()
+        return generation
 
     def _synchronize_model_cache_scope(self) -> None:
         """Drop metadata whose settings or connected account is no longer usable."""
@@ -251,6 +277,10 @@ class ProviderRuntimeManager:
             candidate_runtime: ProviderRuntime | None = None
             try:
                 candidate_runtime = self._runtime_factory(settings)
+                if isinstance(candidate_runtime, ProviderRuntime) and isinstance(
+                    self._current.runtime, ProviderRuntime
+                ):
+                    candidate_runtime.inherit_credential_state(self._current.runtime)
                 committed = commit()
                 if inspect.isawaitable(committed):
                     await committed
@@ -310,12 +340,23 @@ class ProviderRuntimeManager:
                     self._trace_retired(current, reason="shutdown")
                 generations = tuple(self._retired.values())
 
-            await asyncio.gather(
-                *(generation.drained.wait() for generation in generations)
-            )
+            forced = False
+            try:
+                async with asyncio.timeout(SHUTDOWN_DRAIN_TIMEOUT_SECONDS):
+                    await asyncio.gather(
+                        *(generation.drained.wait() for generation in generations)
+                    )
+            except TimeoutError:
+                # One long stream, or a lease never released, must not hold a
+                # restart or stop open indefinitely.
+                forced = True
+                logger.warning(
+                    "Provider shutdown: leases still open after {}s; closing anyway",
+                    SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+                )
             generation_results = await asyncio.gather(
                 *(
-                    self._close_generation(generation, forced=False)
+                    self._close_generation(generation, forced=forced)
                     for generation in generations
                 )
             )
@@ -436,7 +477,7 @@ class ProviderRuntimeManager:
     ) -> bool:
         if generation.closed:
             return True
-        if generation.active_leases != 0:
+        if generation.active_leases != 0 and not forced:
             return False
         task = generation.cleanup_task
         if task is None:

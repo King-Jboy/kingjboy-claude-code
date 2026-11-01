@@ -1,3 +1,6 @@
+import hashlib
+import threading
+from collections import OrderedDict
 from functools import lru_cache
 
 import tiktoken
@@ -12,12 +15,32 @@ ENCODER = tiktoken.get_encoding("cl100k_base")
 
 _DISALLOWED_SPECIAL: tuple[str, ...] = ()
 
+# Counts are cached by a digest of the text, not the text itself: history is
+# replayed every turn, so the same blocks recur, but keying on the strings
+# would pin every file read and tool result of a long session in memory.
+_TOKEN_CACHE_MAX_ENTRIES = 8192
+_token_cache: OrderedDict[bytes, int] = OrderedDict()
+_token_cache_lock = threading.Lock()
 
-@lru_cache(maxsize=8192)
+
 def _count_text_tokens(text: str) -> int:
     if not text:
         return 0
-    return len(ENCODER.encode(text, disallowed_special=_DISALLOWED_SPECIAL))
+    key = hashlib.blake2b(
+        text.encode("utf-8", "surrogatepass"), digest_size=16
+    ).digest()
+    with _token_cache_lock:
+        cached = _token_cache.get(key)
+        if cached is not None:
+            _token_cache.move_to_end(key)
+            return cached
+    count = len(ENCODER.encode(text, disallowed_special=_DISALLOWED_SPECIAL))
+    with _token_cache_lock:
+        _token_cache[key] = count
+        _token_cache.move_to_end(key)
+        while len(_token_cache) > _TOKEN_CACHE_MAX_ENTRIES:
+            _token_cache.popitem(last=False)
+    return count
 
 
 @lru_cache(maxsize=1024)

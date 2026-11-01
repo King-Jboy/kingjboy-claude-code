@@ -531,3 +531,39 @@ def test_recorded_context_window_overrides_provider_discovery_and_curated_1m(
     assert windows["anthropic/open_router/thinkingmachines/inkling:free"] == 262144
     assert windows["anthropic/nvidia_nim/mistralai/mistral-large-4-1t-a52b"] is None
     assert windows["claude-sonnet-4-20250514"] == 131072
+
+
+def test_a_pinned_placeholder_does_not_hide_the_provider_published_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    # Pinning seeds an "unset" row. That row blocks a curated guess, but the
+    # window the provider itself reports is real data and must still show.
+    from free_claude_code.config.context_windows import sync_pinned_context_windows
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    pinned = ("open_router/vendor/published-window",)
+    sync_pinned_context_windows(pinned)
+
+    app = create_test_app(
+        _settings(
+            model="open_router/vendor/published-window",
+            model_opus=None,
+            model_haiku=None,
+            model_catalog_scope=ModelCatalogScope.CONFIGURED,
+            pinned_models='["open_router/vendor/published-window"]',
+        )
+    )
+    provider_manager_for_app(app).cache_model_infos(
+        "open_router",
+        {ProviderModelInfo("vendor/published-window", context_window_tokens=262_144)},
+    )
+
+    claude_models = (
+        TestClient(app)
+        .get("/v1/models", headers={"User-Agent": "claude-code/2.1.252"})
+        .json()["data"]
+    )
+    windows = {item["id"]: item.get("contextWindow") for item in claude_models}
+
+    assert windows["anthropic/open_router/vendor/published-window"] == 262_144

@@ -83,7 +83,10 @@ def load_context_window_entries(
         if not row or not provider:
             continue
         raw = row.group("context").replace(",", "").strip()
-        context = int(raw) if raw.isdigit() and int(raw) > 0 else None
+        # isdecimal, not isdigit: "²" is a digit that int() rejects.
+        context = int(raw) if raw.isascii() and raw.isdecimal() else None
+        if context is not None and context <= 0:
+            context = None
         model = row.group("model")
         source = row.group("source").strip()
         entry = ContextWindowEntry(
@@ -103,20 +106,40 @@ def load_context_windows(path: Path | None = None) -> dict[str, int]:
     the table is an optimisation, and losing it should degrade to the
     conservative default rather than stop a CLI from launching.
     """
-    return {
-        model_ref: entry.context
-        for model_ref, entry in load_context_window_entries(path).items()
-        if entry.context is not None
-    }
+    return load_context_window_maps(path).recorded
 
 
 def load_unresolved_context_windows(path: Path | None = None) -> frozenset[str]:
     """Return ``provider/model`` refs explicitly recorded as ``unknown`` in ``context.md``."""
-    return frozenset(
-        model_ref
-        for model_ref, entry in load_context_window_entries(path).items()
-        if entry.context is None
-    )
+    return load_context_window_maps(path).unresolved
+
+
+@dataclass(frozen=True, slots=True)
+class ContextWindowMaps:
+    """``context.md`` split by what each row claims, from one file read."""
+
+    recorded: dict[str, int]
+    # Every row without a number.
+    unresolved: frozenset[str]
+    # The subset the Admin UI seeded for a newly pinned model. It claims nothing
+    # about the window: it blocks a curated guess, but not a window the
+    # provider itself publishes.
+    placeholders: frozenset[str]
+
+
+def load_context_window_maps(path: Path | None = None) -> ContextWindowMaps:
+    """Return recorded windows, unresolved refs, and placeholders in one read."""
+    recorded: dict[str, int] = {}
+    unresolved: set[str] = set()
+    placeholders: set[str] = set()
+    for model_ref, entry in load_context_window_entries(path).items():
+        if entry.context is not None:
+            recorded[model_ref] = entry.context
+            continue
+        unresolved.add(model_ref)
+        if entry.source == UNSET_CONTEXT_SOURCE:
+            placeholders.add(model_ref)
+    return ContextWindowMaps(recorded, frozenset(unresolved), frozenset(placeholders))
 
 
 def pinned_context_windows_state(
@@ -142,9 +165,10 @@ def render_context_windows_markdown(entries: Sequence[ContextWindowEntry]) -> st
         "the window follows your configured and pinned models; set it to override",
         "this table.",
         "",
-        "This table tracks only your `PINNED_MODELS`. Adding a pinned model adds",
-        "an entry here (blank until configured in the Admin UI); removing a model",
-        "from `PINNED_MODELS` automatically deletes its saved context window.",
+        "This table tracks your `PINNED_MODELS` and keeps any measured rows for",
+        "your configured `MODEL` routes. Adding a pinned model adds an entry here",
+        "(blank until configured in the Admin UI); removing a model from",
+        "`PINNED_MODELS` deletes its saved window unless it is still a route.",
         "",
     ]
     by_provider: dict[str, list[ContextWindowEntry]] = {}
@@ -172,15 +196,20 @@ def sync_pinned_context_windows(
     pinned_refs: Sequence[str],
     *,
     updates: Mapping[str, int | None] | None = None,
+    retain_refs: Sequence[str] = (),
     path: Path | None = None,
 ) -> dict[str, int | None]:
-    """Synchronize ``context.md`` so it holds ONLY ``pinned_refs``.
+    """Synchronize ``context.md`` so it holds ``pinned_refs`` and ``retain_refs``.
 
     - Models removed from ``pinned_refs`` are pruned from ``context.md``.
     - Newly added pinned models default to ``None`` (``unknown``) until set in
       the Admin UI.
     - Explicit ``updates`` set ``context`` and mark ``source="manual"`` (or
       reset to ``unknown`` when ``None``).
+    - Existing rows for ``retain_refs`` (the configured ``MODEL``/tier routes,
+      which ``fcc-context`` also measures and the client window is resolved
+      from) are kept as they are, but never seeded. The returned mapping still
+      covers only ``pinned_refs``.
     """
     target = path or context_windows_path()
     existing = load_context_window_entries(target)
@@ -226,6 +255,12 @@ def sync_pinned_context_windows(
 
         synced_entries.append(entry)
         result[ref] = entry.context
+
+    for ref in retain_refs:
+        if ref in seen or ref not in existing:
+            continue
+        seen.add(ref)
+        synced_entries.append(existing[ref])
 
     target.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target.with_suffix(f"{target.suffix}.tmp.{uuid4().hex}")
@@ -276,8 +311,11 @@ def resolve_client_context_window(
     if configured is not None:
         return ResolvedContextWindow(configured, "CLIENT_CONTEXT_WINDOW")
 
-    recorded = load_context_windows() if windows is None else windows
-    unresolved = load_unresolved_context_windows() if windows is None else frozenset()
+    if windows is None:
+        maps = load_context_window_maps()
+        recorded, unresolved = maps.recorded, maps.unresolved
+    else:
+        recorded, unresolved = windows, frozenset()
     known: list[tuple[int, str, str]] = []
     seen: set[str] = set()
     for ref in configured_chat_model_refs(settings):

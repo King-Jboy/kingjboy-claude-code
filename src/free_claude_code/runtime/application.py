@@ -180,7 +180,13 @@ class ApplicationRuntime:
             warn_if_process_auth_token(self.settings)
             if context_windows_path().exists():
                 with contextlib.suppress(Exception):
-                    sync_pinned_context_windows(pinned_model_refs(self.settings))
+                    sync_pinned_context_windows(
+                        pinned_model_refs(self.settings),
+                        retain_refs=[
+                            ref.model_ref
+                            for ref in configured_chat_model_refs(self.settings)
+                        ],
+                    )
             await self.provider_manager.warm_referenced_model_cache()
             self.provider_manager.start_model_list_refresh()
             await self._start_messaging_if_configured()
@@ -470,6 +476,7 @@ class ApplicationRuntime:
             telegram_proxy_url=settings.telegram_proxy_url,
             discord_bot_token=settings.discord_bot_token,
             allowed_discord_channels=settings.allowed_discord_channels,
+            allowed_discord_users=settings.allowed_discord_users,
             transcriber=self._transcriber,
             messaging_rate_limit=settings.messaging_rate_limit,
             messaging_rate_window=settings.messaging_rate_window,

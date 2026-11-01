@@ -355,7 +355,11 @@ async function streamAssistantTurn(response, onDelta, signal) {
           continue;
         }
 
-        if (event.type === "content_block_start") {
+        if (event.type === "message_start") {
+          // Input usage arrives here; a message_delta may repeat it, or not.
+          const input = event.message?.usage?.input_tokens;
+          if (Number.isFinite(input)) usage.input = input;
+        } else if (event.type === "content_block_start") {
           const block = event.content_block;
           if (block.type === "tool_use") {
             blocks[event.index] = { type: "tool_use", id: block.id, name: block.name, json: "" };
@@ -610,7 +614,12 @@ async function saveConversation() {
   let stored = history;
   while (JSON.stringify(stored).length > MAX_STORED_BYTES && stored.length > 2) {
     stored = trimLeading(stored);
-    if (!stored.length) return;
+    if (!stored.length) {
+      // Nothing small enough to keep. Leaving the previous save in place would
+      // restore an older conversation on the next reopen.
+      await chrome.storage.local.remove(CONVERSATION_KEY);
+      return;
+    }
   }
   await chrome.storage.local.set({
     [CONVERSATION_KEY]: {
@@ -700,8 +709,14 @@ function describeToolCall(name, input) {
  * happen, and defaults to nothing happening if the user simply closes the
  * panel.
  */
-function requestApproval({ detail, label = "", allow = "Run" }) {
+function requestApproval({ detail, label = "", allow = "Run", signal }) {
   return new Promise((resolve) => {
+    // Stop must settle a pending card as denied. Otherwise the turn stays busy
+    // until a button is pressed, and a later Allow still runs the action.
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
     const card = document.createElement("div");
     card.className = "turn approval";
 
@@ -728,13 +743,19 @@ function requestApproval({ detail, label = "", allow = "Run" }) {
 
     // The card's heading reports the outcome, so nothing else has to change:
     // rewriting the body left the card saying "Denied" twice.
+    let settled = false;
+    const onAbort = () => settle(false);
     const settle = (approved) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
       actions.remove();
       card.dataset.outcome = approved ? "approved" : "denied";
       resolve(approved);
     };
     deny.addEventListener("click", () => settle(false));
     allowButton.addEventListener("click", () => settle(true));
+    signal?.addEventListener("abort", onAbort);
 
     actions.append(deny, allowButton);
     card.append(line, actions);
@@ -744,13 +765,14 @@ function requestApproval({ detail, label = "", allow = "Run" }) {
   });
 }
 
-async function runTool(call) {
+async function runTool(call, signal) {
   const node = addTurn("tool", describeToolCall(call.name, call.input));
 
   let outcome;
   if (call.name === SHELL_TOOL.name) {
     outcome = await runShellCommand(call.input, {
-      requestApproval: ({ command, cwd }) => requestApproval({ detail: command, label: cwd }),
+      requestApproval: ({ command, cwd }) =>
+        requestApproval({ detail: command, label: cwd, signal }),
     });
   } else {
     const approval = PAGE_APPROVALS[call.name]?.(call.input ?? {});
@@ -764,6 +786,7 @@ async function runTool(call) {
         ...approval,
         label: pinnedTab ? `on ${pinnedTab.title}` : "",
         allow: "Allow",
+        signal,
       });
       if (!allowed) {
         outcome = { content: "The user declined this action.", is_error: true };
@@ -811,20 +834,37 @@ async function runConversation(settings, signal) {
       addTurn("error", "The model returned an empty response.");
       return;
     }
-    history.push({ role: "assistant", content });
 
     const toolCalls = content.filter((block) => block.type === "tool_use");
-    if (stopReason !== "tool_use" || !toolCalls.length) return;
+    if (stopReason !== "tool_use" && toolCalls.length) {
+      // A reply cut off (max_tokens, say) can still carry half-streamed tool
+      // calls. They will never get results, and an unanswered tool_use makes
+      // the provider reject every later request, so they are not kept.
+      const kept = content.filter((block) => block.type !== "tool_use");
+      if (kept.length) history.push({ role: "assistant", content: kept });
+      addTurn("note", "The reply ended before its tool calls completed; they were not run.");
+      return;
+    }
+    history.push({ role: "assistant", content });
+    if (!toolCalls.length) return;
 
     const results = [];
     const images = [];
     for (const call of toolCalls) {
-      if (signal?.aborted) break;
-      const { content: text, is_error, image } = await runTool(call);
+      if (signal?.aborted) {
+        // Every tool_use needs a tool_result, or replaying history fails.
+        results.push({
+          type: "tool_result",
+          tool_use_id: call.id,
+          content: "Not run: the user stopped this turn.",
+          is_error: true,
+        });
+        continue;
+      }
+      const { content: text, is_error, image } = await runTool(call, signal);
       results.push({ type: "tool_result", tool_use_id: call.id, content: text, is_error });
       if (image) images.push(image);
     }
-    if (!results.length) return;
     // Every tool_result must satisfy its tool_use before any other block
     // appears: the proxy emits one provider tool message per result and only
     // then a user turn for the images, which is the one ordering both APIs

@@ -229,6 +229,7 @@ async def test_discord_voice_disabled_sends_reply():
     platform = DiscordRuntime(
         bot_token="token",
         allowed_channel_ids="123",
+        allowed_user_ids="12345",
         limiter=MagicMock(),
         transcriber=None,
     )
@@ -236,6 +237,7 @@ async def test_discord_voice_disabled_sends_reply():
 
     mock_message = MagicMock()
     mock_message.author.bot = False
+    mock_message.author.id = 12345
     mock_message.content = None
     mock_message.channel.id = 123
     mock_message.reply = AsyncMock()

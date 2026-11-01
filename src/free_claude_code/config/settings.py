@@ -449,6 +449,10 @@ class Settings(BaseSettings):
     allowed_discord_channels: str | None = Field(
         default=None, validation_alias="ALLOWED_DISCORD_CHANNELS"
     )
+    # Discord user IDs allowed to drive the bot. Empty admits nobody.
+    allowed_discord_users: str | None = Field(
+        default=None, validation_alias="ALLOWED_DISCORD_USERS"
+    )
     allowed_dir: str = ""
     max_message_log_entries_per_chat: int | None = Field(
         default=None, validation_alias="MAX_MESSAGE_LOG_ENTRIES_PER_CHAT"
@@ -481,6 +485,7 @@ class Settings(BaseSettings):
         "allowed_telegram_user_id",
         "discord_bot_token",
         "allowed_discord_channels",
+        "allowed_discord_users",
         "model_fable",
         "model_opus",
         "model_sonnet",
@@ -508,6 +513,19 @@ class Settings(BaseSettings):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    @field_validator("open_router_api_keys", "nvidia_nim_api_keys", "custom_api_keys")
+    @classmethod
+    def validate_api_key_pool(cls, value: str) -> str:
+        """Reject a malformed key list at startup, naming the setting."""
+        try:
+            parse_api_key_pool(value)
+        except ValueError as exc:
+            raise ValueError(
+                "must be a JSON array of strings or a comma/space-separated "
+                f"list of keys ({type(exc).__name__})"
+            ) from None
+        return value
 
     @field_validator("pinned_models")
     @classmethod

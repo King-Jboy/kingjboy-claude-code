@@ -21,15 +21,27 @@ function escapeHtml(text) {
     .replace(/'/g, "&#39;");
 }
 
-/** Bold, italics, and http(s) links over already-escaped text. */
-function styleInline(escaped) {
+function styleEmphasis(escaped) {
   return escaped
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
-    .replace(
-      /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-      '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>',
-    );
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+}
+
+/**
+ * Bold, italics, and http(s) links over already-escaped text.
+ *
+ * Links are split out first: emphasis applied across the whole line used to
+ * reach into a URL containing `*` and write markup into its href.
+ */
+function styleInline(escaped) {
+  return escaped
+    .split(/(\[[^\]]+\]\(https?:\/\/[^)\s]+\))/)
+    .map((part, index) => {
+      if (index % 2 === 0) return styleEmphasis(part);
+      const [, text, href] = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(part);
+      return `<a href="${href}" target="_blank" rel="noreferrer noopener">${styleEmphasis(text)}</a>`;
+    })
+    .join("");
 }
 
 /**

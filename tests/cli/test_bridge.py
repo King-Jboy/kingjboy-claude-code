@@ -106,7 +106,26 @@ def test_a_blank_root_setting_falls_back_to_home(
 ) -> None:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    assert bridge.shell_root(_settings(BROWSER_SHELL_ROOT="")) == tmp_path
+    assert bridge.shell_root(_settings(BROWSER_SHELL_ROOT="")) == tmp_path.resolve()
+
+
+def test_a_symlinked_home_root_still_admits_directories_inside_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # resolve_cwd compares resolved paths, so an unresolved home behind a
+    # symlink (e.g. /home -> /var/home) refused every cwd.
+    real_home = tmp_path / "real-home"
+    (real_home / "project").mkdir(parents=True)
+    linked_home = tmp_path / "linked-home"
+    try:
+        linked_home.symlink_to(real_home, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available on this machine")
+    monkeypatch.setattr(Path, "home", lambda: linked_home)
+
+    root = bridge.shell_root(_settings(BROWSER_SHELL_ROOT=""))
+
+    assert bridge.resolve_cwd("project", root) == (real_home / "project").resolve()
 
 
 # ---------- execution ----------
@@ -203,6 +222,40 @@ def test_a_refused_command_is_also_audited(
 
     log = (tmp_path / ".fcc" / "logs" / "bridge.log").read_text(encoding="utf-8")
     assert "refused" in log
+
+
+def test_a_timed_out_command_is_audited_as_a_timeout_in_its_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The command ran before it was killed; logging it as "refused" in the
+    # root misreported what executed and where.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / "root"
+    (root / "work").mkdir(parents=True)
+
+    def time_out(command: str, *, cwd: Path, timeout: int) -> bridge.ShellResult:
+        raise bridge.BridgeError("Command timed out after 1s.", outcome="timeout")
+
+    monkeypatch.setattr(bridge, "run_shell_command", time_out)
+
+    response = bridge.handle(
+        {"type": "run", "command": "sleep 5", "cwd": "work"},
+        _settings(BROWSER_SHELL_ENABLED=True, BROWSER_SHELL_ROOT=str(root)),
+    )
+
+    assert response["ok"] is False
+    log = (tmp_path / ".fcc" / "logs" / "bridge.log").read_text(encoding="utf-8")
+    assert "\ttimeout\t" in log
+    assert str((root / "work").resolve()) in log
+    assert "refused" not in log
+
+
+def test_output_cut_mid_character_still_decodes_as_utf8() -> None:
+    text = "héllo wörld é"
+    # Drops the second byte of the final two-byte "é".
+    data = text.encode("utf-8")[:-1]
+
+    assert bridge._decode_output(data) == text[:-1]
 
 
 def test_the_windows_shell_is_powershell_rather_than_cmd(

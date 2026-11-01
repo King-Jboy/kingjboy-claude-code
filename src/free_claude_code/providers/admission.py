@@ -25,6 +25,15 @@ UPSTREAM_TRANSIENT_TOTAL_ATTEMPTS = 10
 DEFAULT_UPSTREAM_BASE_DELAY = 2.0
 DEFAULT_UPSTREAM_MAX_DELAY = 60.0
 DEFAULT_UPSTREAM_JITTER = 1.0
+# The longest upstream Retry-After this proxy waits out. A longer one (a daily
+# quota reset, say) would park every request for that model behind a recovery
+# episode for hours, so it is reported to the client as a final 429 instead.
+MAX_HONORED_RETRY_AFTER_SECONDS = 120.0
+
+
+def _retry_after_exceeds_ceiling(error: Exception) -> bool:
+    retry_after = retry_after_seconds(error)
+    return retry_after is not None and retry_after > MAX_HONORED_RETRY_AFTER_SECONDS
 
 
 class ProviderRetrySession:
@@ -163,7 +172,9 @@ class ProviderAttempt:
         if effective_error is None:
             effective_error = error
         status = retryable_upstream_status(effective_error)
-        retryable = is_retryable_provider_error(effective_error)
+        retryable = is_retryable_provider_error(
+            effective_error
+        ) and not _retry_after_exceeds_ceiling(effective_error)
         self._failure_retryable = retryable
         if not retryable:
             await self._controller._attempt_rejected(self._session, self._permit)
@@ -194,7 +205,9 @@ class ProviderAttempt:
             if provider_failure_override is not None
             else None
         ) or error
-        retryable = is_retryable_provider_error(effective_error)
+        retryable = is_retryable_provider_error(
+            effective_error
+        ) and not _retry_after_exceeds_ceiling(effective_error)
         self._failure_retryable = retryable
         if not retryable:
             return False
@@ -872,8 +885,10 @@ class ProviderAdmissionController:
         exponent = max(0, attempt - 1)
         backoff = min(self._base_delay * (2**exponent), self._max_delay)
         backoff += random.uniform(0, self._jitter)
-        retry_after = retry_after_seconds(error)
-        return max(backoff, retry_after or 0.0)
+        retry_after = min(
+            retry_after_seconds(error) or 0.0, MAX_HONORED_RETRY_AFTER_SECONDS
+        )
+        return max(backoff, retry_after)
 
     @staticmethod
     def _failure_label(status: int | None, error: Exception) -> str:

@@ -333,3 +333,89 @@ async def test_hedged_racing_switches_key_when_headers_arrive_fast_but_first_tok
     for _ in range(10):
         await asyncio.sleep(0)
     assert streams["key-stalled-after-headers"].closed is True
+
+
+def _rate_limited(api_key: str) -> Exception:
+    import openai
+
+    req = Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    resp = Response(429, request=req)
+    return openai.RateLimitError(f"{api_key} rate limited", response=resp, body=None)
+
+
+@pytest.mark.asyncio
+async def test_hedged_race_falls_back_to_the_pool_when_both_racers_hit_key_errors():
+    """Two rate-limited racers say nothing about the rest of the pool."""
+    keys = ["key-a", "key-b", "key-c"]
+    config = _pooled_config(keys, hedge_delay=0.01)
+    provider = OpenRouterProvider(config, admission=immediate_admission())
+    calls: list[str] = []
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            calls.append(api_key)
+            if api_key != "key-c":
+                await asyncio.sleep(0.03)
+                raise _rate_limited(api_key)
+            return DummyStream(api_key)
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    stream_adapter = await provider._open_chat_stream({"model": "test-model"})
+
+    assert stream_adapter._stream.key == "key-c"
+    assert calls[:2] == ["key-a", "key-b"]
+
+
+@pytest.mark.asyncio
+async def test_hedging_never_races_more_than_two_keys():
+    """Each racer is a billed generation; a silent-thinking model would pay 3x."""
+    keys = ["key-a", "key-b", "key-c"]
+    config = _pooled_config(keys, hedge_delay=0.01)
+    provider = OpenRouterProvider(config, admission=immediate_admission())
+    calls: list[str] = []
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            calls.append(api_key)
+            await asyncio.sleep(0.08)
+            return DummyStream(api_key)
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    await provider._open_chat_stream({"model": "test-model"})
+
+    assert calls == ["key-a", "key-b"]
+
+
+@pytest.mark.asyncio
+async def test_a_pool_with_every_key_disabled_reports_authentication_not_rate_limit():
+    from free_claude_code.core.failures import ExecutionFailure, FailureKind
+
+    keys = ["key-a", "key-b"]
+    provider = OpenRouterProvider(_pooled_config(keys), admission=immediate_admission())
+    assert provider.api_key_pool is not None
+    for key in keys:
+        for _ in range(3):
+            provider.api_key_pool.mark_failed(key)
+
+    with pytest.raises(ExecutionFailure) as exc_info:
+        await provider._open_chat_stream_sequential({"model": "test-model"})
+
+    assert exc_info.value.kind is FailureKind.AUTHENTICATION
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.retryable is False

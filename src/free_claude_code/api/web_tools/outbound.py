@@ -113,7 +113,7 @@ def getaddrinfo_rows_to_resolve_results(
     out: list[ResolveResult] = []
     for family, _type, proto, _canon, sockaddr in addrinfos:
         if family == socket.AF_INET6:
-            if len(sockaddr) < 3:
+            if len(sockaddr) < 4:
                 continue
             if sockaddr[3]:
                 resolved_host, port = socket.getnameinfo(sockaddr, _NAME_RESOLVE_FLAGS)

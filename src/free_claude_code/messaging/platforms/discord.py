@@ -75,6 +75,7 @@ class DiscordRuntime:
         bot_token: str | None = None,
         allowed_channel_ids: str | None = None,
         *,
+        allowed_user_ids: str | None = None,
         limiter: MessagingRateLimiter,
         transcriber: Transcriber | None,
         log_raw_messaging_content: bool = False,
@@ -87,8 +88,16 @@ class DiscordRuntime:
 
         self.bot_token = bot_token
         self.allowed_channel_ids = parse_allowed_channels(allowed_channel_ids)
+        # Every accepted message runs Claude Code with permission checks off,
+        # so a channel alone is not enough: anyone who can post in it would get
+        # a shell. Like Telegram's single user ID, an empty list admits nobody.
+        self.allowed_user_ids = parse_allowed_channels(allowed_user_ids)
         if not self.bot_token:
             logger.warning("DISCORD_BOT_TOKEN not set")
+        if not self.allowed_user_ids:
+            logger.warning(
+                "ALLOWED_DISCORD_USERS is not set; Discord messages will be ignored"
+            )
 
         discord = _get_discord()
         intents = discord.Intents.default()
@@ -175,6 +184,11 @@ class DiscordRuntime:
 
         channel_id = str(message.channel.id)
         if not self.allowed_channel_ids or channel_id not in self.allowed_channel_ids:
+            return
+
+        user_id = str(message.author.id)
+        if user_id not in self.allowed_user_ids:
+            logger.warning("Unauthorized Discord access attempt from {}", user_id)
             return
 
         if not message.content:

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import (
@@ -113,6 +114,11 @@ KEEPALIVE_INTERVAL_SECONDS = 1.5
 # API response" and starts aborting, so this leaves a wide margin while staying
 # long enough that an ordinary response never commits the reply early.
 UPSTREAM_QUIET_KEEPALIVE_SECONDS = 5.0
+
+# Upstream TLS keep-warm pings run this often, and only while the provider has
+# served a request within the idle limit.
+KEEPALIVE_PING_INTERVAL_SECONDS = 25.0
+KEEPALIVE_IDLE_LIMIT_SECONDS = 300.0
 
 # Strong references so losing hedged opens are closed rather than collected.
 _HEDGE_CLEANUP_TASKS: set[asyncio.Task[None]] = set()
@@ -274,7 +280,7 @@ class OpenAIChatProvider(BaseProvider):
         self._admission = admission
         self._default_headers = default_headers
         self._client = self._build_client(api_key_provider or self._api_key)
-        self._key_clients: dict[tuple[int, int, str], Any] = {}
+        self._key_clients: dict[tuple[int, str], Any] = {}
         self._key_pool = (
             ApiKeyPool(
                 config.api_keys,
@@ -285,6 +291,8 @@ class OpenAIChatProvider(BaseProvider):
             if config.api_keys and config.key_rate_limit is not None
             else None
         )
+        # Counts as activity so a freshly started provider still pre-warms.
+        self._last_activity_at = time.monotonic()
         self._keepalive_task: asyncio.Task[None] | None = None
         try:
             loop = asyncio.get_running_loop()
@@ -326,11 +334,8 @@ class OpenAIChatProvider(BaseProvider):
 
     def _client_for_key(self, key: str) -> Any:
         """Return a cached per-key AsyncOpenAI view sharing the underlying HTTP pool."""
-        cache_key = (
-            id(self._client),
-            id(getattr(self._client, "with_options", None)),
-            key,
-        )
+        # id(self._client) only invalidates the cache if the client is replaced.
+        cache_key = (id(self._client), key)
         cached = self._key_clients.get(cache_key)
         if cached is None:
             cached = self._client.with_options(api_key=key)
@@ -345,8 +350,12 @@ class OpenAIChatProvider(BaseProvider):
     async def _prewarm_and_keepalive(self) -> None:
         """Keep the upstream TLS socket warm across idle gaps."""
         while True:
-            await asyncio.sleep(25.0)
-            await self.warmup()
+            await asyncio.sleep(KEEPALIVE_PING_INTERVAL_SECONDS)
+            # An idle proxy has no socket worth keeping warm; pinging anyway is
+            # constant traffic to every configured provider for nothing.
+            idle_for = time.monotonic() - self._last_activity_at
+            if idle_for < KEEPALIVE_IDLE_LIMIT_SECONDS:
+                await self.warmup()
 
     async def warmup(self) -> None:
         """Pre-warm the HTTP/2 TLS socket to the upstream provider."""
@@ -523,6 +532,7 @@ class OpenAIChatProvider(BaseProvider):
         retry_session: ProviderRetrySession,
     ) -> tuple[Any, dict, ProviderAttempt]:
         """Create a streaming chat completion with bounded request fallbacks."""
+        self._last_activity_at = time.monotonic()
         body = self._apply_learned_output_cap(body)
         used_retry_kinds: set[str] = set()
 
@@ -585,7 +595,12 @@ class OpenAIChatProvider(BaseProvider):
             )
         )
 
-    async def _open_chat_stream_sequential(self, create_body: dict[str, Any]) -> Any:
+    async def _open_chat_stream_sequential(
+        self,
+        create_body: dict[str, Any],
+        *,
+        prior_error: Exception | None = None,
+    ) -> Any:
         assert self._key_pool is not None
         last_error: Exception | None = None
         for _ in self._config.api_keys:
@@ -622,6 +637,20 @@ class OpenAIChatProvider(BaseProvider):
                 return OpenAIStreamAdapter(stream)
         if last_error is not None:
             raise last_error
+        if prior_error is not None:
+            raise prior_error
+        if self._key_pool.all_keys_disabled():
+            # Retrying cannot help, and calling it a rate limit hides the cause.
+            raise ExecutionFailure(
+                kind=FailureKind.AUTHENTICATION,
+                status_code=401,
+                message=(
+                    "Every API key in the configured pool was disabled after "
+                    "repeated authentication failures. Replace the keys and "
+                    "restart or re-apply the configuration."
+                ),
+                retryable=False,
+            )
         raise ExecutionFailure(
             kind=FailureKind.RATE_LIMIT,
             status_code=429,
@@ -748,33 +777,15 @@ class OpenAIChatProvider(BaseProvider):
             task2: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key2))
             tasks[task2] = key2
 
-            third_key_attempted = len(self._config.api_keys) < 3
+            # At most two racers. Each racer is a full upstream generation, and
+            # a model that thinks silently before its first token would turn a
+            # third racer into a third billed completion on most requests.
             last_exc: BaseException | None = None
+            last_exc_rotatable = False
             while tasks:
-                wait_timeout = hedge_delay if not third_key_attempted else None
                 done_tasks, _ = await asyncio.wait(
-                    tasks.keys(),
-                    timeout=wait_timeout,
-                    return_when=asyncio.FIRST_COMPLETED,
+                    tasks.keys(), return_when=asyncio.FIRST_COMPLETED
                 )
-                if not done_tasks and not third_key_attempted:
-                    third_key_attempted = True
-                    key3, acquired3 = _acquire_hedged_key(used_keys)
-                    if acquired3:
-                        hedge_slots_held += 1
-                    if key3 is not None:
-                        used_keys.add(key3)
-                        logger.info(
-                            "{} key hedging: 2 keys still quiet, cascading race to key ...{}",
-                            self._provider_name,
-                            key3[-6:] if len(key3) >= 6 else "...",
-                        )
-                        task3: asyncio.Task[Any] = asyncio.create_task(
-                            _open_on_key(key3)
-                        )
-                        tasks[task3] = key3
-                    continue
-
                 for finished in done_tasks:
                     k = tasks.pop(finished)
                     exc = finished.exception()
@@ -788,13 +799,19 @@ class OpenAIChatProvider(BaseProvider):
                             self._admission.release_hedge_slot()
                         hedge_slots_held -= 1
                     last_exc = exc
-                    if isinstance(exc, Exception):
+                    last_exc_rotatable = isinstance(exc, Exception) and (
                         _handle_key_error(k, exc)
+                    )
                     # Allow any other racing task to complete before aborting
 
-            if last_exc is not None:
+            # Every racer failed on its own credential: the rest of the pool may
+            # still be healthy, exactly as in the single-racer failure paths.
+            if last_exc is not None and not last_exc_rotatable:
                 raise last_exc
-            return await self._open_chat_stream_sequential(create_body)
+            return await self._open_chat_stream_sequential(
+                create_body,
+                prior_error=last_exc if isinstance(last_exc, Exception) else None,
+            )
         finally:
             remaining_tasks = list(tasks.keys())
             if remaining_tasks:
@@ -1147,15 +1164,17 @@ class _OpenAIChatStreamRunner:
                             continue
 
                         choice = chunk.choices[0]
-                        delta = choice.delta
-                        if delta is None:
-                            continue
-
+                        # Some backends send the terminal chunk with no delta,
+                        # so the finish reason is read before that guard.
                         if choice.finish_reason:
                             finish_reason = choice.finish_reason
                             if is_context_window_finish_reason(finish_reason):
                                 raise context_window_exceeded_provider_failure()
                             logger.debug("{} finish_reason: {}", tag, finish_reason)
+
+                        delta = getattr(choice, "delta", None)
+                        if delta is None:
+                            continue
 
                         reasoning = self._provider._profile.reasoning_delta(delta)
                         if output_reasoning:
