@@ -155,11 +155,19 @@ def _index_first_tool_use(blocks: list[Any]) -> int | None:
 
 
 def _iter_tool_uses_in_order(blocks: list[Any]) -> list[dict[str, Any]]:
-    return [
-        _tool_call_from_tool_use(block)
-        for block in blocks
-        if get_block_type(block) in {"tool_use", "mcp_tool_use"}
-    ]
+    calls: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for block in blocks:
+        if get_block_type(block) not in {"tool_use", "mcp_tool_use"}:
+            continue
+        call = _tool_call_from_tool_use(block)
+        tool_id = call.get("id")
+        if isinstance(tool_id, str) and tool_id:
+            if tool_id in seen:
+                continue
+            seen.add(tool_id)
+        calls.append(call)
+    return calls
 
 
 def _deferred_post_tool_blocks(

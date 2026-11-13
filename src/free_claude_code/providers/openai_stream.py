@@ -9,10 +9,8 @@ from free_claude_code.providers.http import maybe_await_aclose
 def _chunk_has_meaningful_delta(chunk: object) -> bool:
     """Return whether an upstream SSE chunk carries actual token or finish progress."""
     choices = getattr(chunk, "choices", None)
-    if choices is None:
-        return True
     if not choices:
-        return getattr(chunk, "usage", None) is not None
+        return False
     choice = choices[0]
     if getattr(choice, "finish_reason", None):
         return True
@@ -40,17 +38,21 @@ class OpenAIStreamAdapter[EventT](AsyncIterator[EventT]):
     def __aiter__(self) -> OpenAIStreamAdapter[EventT]:
         return self
 
-    async def prime_first_chunk(self, max_prologue_chunks: int = 8) -> None:
-        """Buffer initial chunks until the first meaningful token/delta arrives."""
-        for _ in range(max_prologue_chunks):
+    async def prime_first_chunk(self) -> bool:
+        """Buffer chunks until the first token or finish reason.
+
+        Returns False when the stream ends first. An empty prologue, including
+        a usage-only chunk, is not a token and must not win a hedge.
+        """
+        while True:
             try:
                 chunk = await anext(self._iterator)
             except StopAsyncIteration:
                 self._exhausted = True
-                return
+                return False
             self._primed.append(chunk)
             if _chunk_has_meaningful_delta(chunk):
-                return
+                return True
 
     async def __anext__(self) -> EventT:
         if self._primed:

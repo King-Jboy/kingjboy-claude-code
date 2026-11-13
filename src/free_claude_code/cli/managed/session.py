@@ -201,20 +201,34 @@ class ManagedClaudeSession:
 
                         buffer.extend(chunk)
 
-                        if len(buffer) > _MAX_STDOUT_LINE_BYTES:
-                            await asyncio.shield(self.stop())
-                            yield {
-                                "type": "error",
-                                "error": {
-                                    "message": "Claude CLI emitted an oversized output line."
-                                },
-                            }
-                            return
-
                         while True:
                             newline_pos = buffer.find(b"\n")
                             if newline_pos == -1:
+                                if len(buffer) > _MAX_STDOUT_LINE_BYTES:
+                                    await asyncio.shield(self.stop())
+                                    yield {
+                                        "type": "error",
+                                        "error": {
+                                            "message": (
+                                                "Claude CLI emitted an oversized "
+                                                "output line."
+                                            )
+                                        },
+                                    }
+                                    return
                                 break
+                            if newline_pos > _MAX_STDOUT_LINE_BYTES:
+                                await asyncio.shield(self.stop())
+                                yield {
+                                    "type": "error",
+                                    "error": {
+                                        "message": (
+                                            "Claude CLI emitted an oversized "
+                                            "output line."
+                                        )
+                                    },
+                                }
+                                return
 
                             line = buffer[:newline_pos]
                             buffer = buffer[newline_pos + 1 :]
@@ -262,23 +276,29 @@ class ManagedClaudeSession:
                                 len(diagnostics.benign_lines),
                             )
                         stderr_text = diagnostics.fatal_text
-                    if stderr_text:
-                        if self._log_raw_cli_diagnostics:
-                            logger.error("Claude CLI stderr: {}", stderr_text)
-                        else:
-                            logger.error(
-                                "Claude CLI stderr: bytes={} text_chars={}",
-                                len(stderr_bytes),
-                                len(stderr_text),
-                            )
-                        logger.info("CLI_SESSION: Yielding error event from stderr")
-                        yield {"type": "error", "error": {"message": stderr_text}}
 
                 return_code = await process.wait()
                 termination_confirmed = True
                 logger.info(
                     f"Claude CLI exited with code {return_code}, stderr_present={bool(stderr_text)}"
                 )
+                if stderr_text and return_code != 0:
+                    if self._log_raw_cli_diagnostics:
+                        logger.error("Claude CLI stderr: {}", stderr_text)
+                    else:
+                        logger.error(
+                            "Claude CLI stderr: bytes={} text_chars={}",
+                            len(stderr_bytes),
+                            len(stderr_text),
+                        )
+                    logger.info("CLI_SESSION: Yielding error event from stderr")
+                    yield {"type": "error", "error": {"message": stderr_text}}
+                elif stderr_text:
+                    logger.info(
+                        "Claude CLI stderr on success: bytes={} text_chars={}",
+                        len(stderr_bytes),
+                        len(stderr_text),
+                    )
                 if return_code != 0 and not stderr_text:
                     logger.warning(
                         f"CLI_SESSION: Process exited with code {return_code} but no stderr captured"

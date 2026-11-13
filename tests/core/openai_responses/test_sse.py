@@ -729,6 +729,130 @@ async def test_message_start_usage_and_caching_are_recorded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_later_cache_count_of_zero_replaces_the_earlier_one() -> None:
+    response = await _completed_response_from_sse(
+        _aiter(
+            [
+                format_sse_event(
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "usage": {
+                                "input_tokens": 100,
+                                "cache_read_input_tokens": 40,
+                            }
+                        },
+                    },
+                ),
+                format_sse_event(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Hello"},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": 0},
+                ),
+                format_sse_event(
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 5,
+                            "cache_read_input_tokens": 0,
+                        },
+                    },
+                ),
+                format_sse_event("message_stop", {"type": "message_stop"}),
+            ]
+        ),
+        {"model": "nvidia_nim/test-model", "stream": True},
+    )
+
+    assert response["usage"]["input_tokens"] == 100
+    assert response["usage"]["output_tokens"] == 5
+    assert "input_tokens_details" not in response["usage"]
+
+
+@pytest.mark.asyncio
+async def test_signature_delta_is_kept_as_encrypted_content() -> None:
+    response = await _completed_response_from_sse(
+        _aiter(
+            [
+                format_sse_event(
+                    "message_start", {"type": "message_start", "message": {}}
+                ),
+                format_sse_event(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "thinking", "thinking": ""},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "thinking_delta", "thinking": "look"},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "signature_delta", "signature": "cipher-"},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "signature_delta", "signature": "text"},
+                    },
+                ),
+                format_sse_event(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": 0},
+                ),
+                format_sse_event(
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 2},
+                    },
+                ),
+                format_sse_event("message_stop", {"type": "message_stop"}),
+            ]
+        ),
+        {"model": "nvidia_nim/test-model", "stream": True},
+    )
+
+    reasoning = response["output"][0]
+    assert reasoning["type"] == "reasoning"
+    assert reasoning["encrypted_content"] == "cipher-text"
+    assert reasoning["content"][0]["text"] == "look"
+
+
+@pytest.mark.asyncio
 async def test_reasoning_stream_reports_reasoning_usage_detail() -> None:
     response = await _completed_response_from_sse(
         _aiter(_anthropic_reasoning_stream("inspect the code before answering")),

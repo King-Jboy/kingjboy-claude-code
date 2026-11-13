@@ -232,6 +232,59 @@ def test_quoted_legacy_id_recovery_remains_unambiguous(ids, message):
     )
 
 
+def test_single_object_responses_input_repairs_an_invalid_id():
+    body = {
+        "input": {
+            "type": "reasoning",
+            "id": "rs_a:rs_b",
+            "summary": [{"type": "summary_text", "text": "note"}],
+        }
+    }
+    result = history_retry_body(
+        _error(
+            "Invalid 'input[0].id': 'rs_a:rs_b'. Expected an ID that contains letters, numbers, underscores, or dashes",
+            code="invalid_value",
+            param="input[0].id",
+        ),
+        body,
+        "responses",
+    )
+    assert result is not None
+    assert ":" not in result["input"]["id"]
+    assert result["input"]["summary"][0]["text"] == "note"
+
+
+def test_short_message_location_still_repairs_the_only_thinking_block():
+    body = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "read the file",
+                        "signature": "old-signature",
+                    },
+                    {"type": "text", "text": "answer"},
+                ],
+            }
+        ]
+    }
+    result = history_retry_body(
+        _error(
+            "messages[0]: Invalid signature in thinking block.",
+            param="messages[0]",
+        ),
+        body,
+        "messages",
+    )
+    assert result is not None
+    assert result["messages"][0]["content"][0] == {
+        "type": "text",
+        "text": "read the file",
+    }
+
+
 def test_messages_signature_path_retains_readable_text_and_other_blocks():
     body = {
         "messages": [

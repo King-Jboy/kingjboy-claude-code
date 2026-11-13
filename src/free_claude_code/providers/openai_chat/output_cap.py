@@ -55,7 +55,11 @@ def parse_output_token_cap(error: Exception) -> int | None:
         return None
 
     text = _error_text(error)
-    if not any(keyword in text for keyword in _OUTPUT_TOKEN_KEYWORDS):
+    # `reasoning.max_tokens` is the thinking budget, not the chat output cap.
+    names_output_field = "max_completion_tokens" in text or (
+        re.search(r"(?<![\w.])max_tokens\b", text) is not None
+    )
+    if not names_output_field:
         return None
 
     for pattern in _CAP_PATTERNS:

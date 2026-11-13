@@ -162,6 +162,14 @@ def history_retry_body(
             continue
         path, original = matched
         result = deepcopy(dict(body))
+        # A one-object Responses `input` is not a list, so `input[0]` is that object.
+        if (
+            path[:2] == ("input", 0)
+            and len(path) == 2
+            and isinstance(result.get("input"), Mapping)
+            and not isinstance(result.get("input"), list)
+        ):
+            path = ("input",)
         parent: Any = result
         for key in path[:-1]:
             parent = parent[key]
@@ -262,7 +270,15 @@ def _rejected_record(
             int(part) if part.isdigit() else part
             for part in re.findall(r"[a-z_]+|\d+", match[0])
         )
-        return next((entry for entry in candidates if entry[0] == path), None)
+        found = next((entry for entry in candidates if entry[0] == path), None)
+        if found is not None:
+            return found
+        # `messages[0]` names the message, not the thinking block inside it.
+        if not any(
+            len(entry[0]) > len(path) and entry[0][: len(path)] == path
+            for entry in candidates
+        ):
+            return None
     message = str(error.get("message", ""))
     named_ids = {
         value

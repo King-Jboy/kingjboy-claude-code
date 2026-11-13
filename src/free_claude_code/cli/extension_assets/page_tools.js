@@ -406,15 +406,22 @@ const EXECUTORS = {
         }
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
-        if (withSubmit) el.form?.requestSubmit();
-        return { typed: true };
+        if (withSubmit && el.form) {
+          el.form.requestSubmit();
+          return { typed: true, submitted: true };
+        }
+        return { typed: true, submitted: false };
       },
     });
     if (outcome.missing) return `No element matches the selector ${selector}.`;
     if (outcome.unsupported) {
       return `<${outcome.unsupported}> is not a field that accepts typing.`;
     }
-    return submit ? `Typed into ${selector} and submitted the form.` : `Typed into ${selector}.`;
+    if (outcome.submitted) return `Typed into ${selector} and submitted the form.`;
+    if (submit) {
+      return `Typed into ${selector}. It is not inside a form, so nothing was submitted.`;
+    }
+    return `Typed into ${selector}.`;
   },
 };
 

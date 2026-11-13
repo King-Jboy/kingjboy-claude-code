@@ -80,6 +80,15 @@ class StrictSlidingWindowLimiter:
         self._times.append(now)
         return True
 
+    def refund_latest(self) -> None:
+        """Drop the newest acquisition.
+
+        Only call this before the next ``await``, so the newest timestamp is
+        still the one just recorded.
+        """
+        if self._times:
+            self._times.pop()
+
     def next_available_in(self) -> float:
         """Return seconds until one acquisition frees up (0.0 when admissible now)."""
         now = time.monotonic()

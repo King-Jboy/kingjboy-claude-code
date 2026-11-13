@@ -124,6 +124,8 @@ _KNOWN_MODEL_FAMILIES: tuple[tuple[str, int], ...] = (
     ("llama-3", 131_072),
     ("qwen", 131_072),
     ("gpt-4o", 128_000),
+    ("o1-mini", 128_000),
+    ("o1-preview", 128_000),
     ("o1", 200_000),
     ("o3-mini", 200_000),
 )
@@ -138,31 +140,32 @@ def curated_providers() -> tuple[str, ...]:
 def curated_context_window(provider: str, model: str) -> int | None:
     """Return the curated window for a model id, or ``None``.
 
-    An exact id wins; otherwise the longest family prefix (a key ending in
-    ``-``) that the id starts with applies. If the provider has no entry or no
-    match, known model families are checked for gateway routers.
+    An exact id wins. Otherwise the longest match wins, whether that is a
+    provider prefix (a key ending in ``-``) or a known model-family substring.
+    A dated id such as ``kimi-k3-0711`` therefore keeps the ``kimi-k3`` window
+    instead of the shorter ``kimi-`` prefix.
     """
 
     entries = CURATED_CONTEXT_WINDOWS.get(provider)
+    if entries and model in entries:
+        return entries[model]
+
+    best_len = -1
+    best_value: int | None = None
     if entries:
-        if model in entries:
-            return entries[model]
-        best_prefix = ""
-        best_value: int | None = None
         for prefix, value in entries.items():
             if (
                 prefix.endswith("-")
                 and model.startswith(prefix)
-                and len(prefix) > len(best_prefix)
+                and len(prefix) > best_len
             ):
-                best_prefix = prefix
+                best_len = len(prefix)
                 best_value = value
-        if best_value is not None:
-            return best_value
 
     normalized = model.lower()
     for family, window in _KNOWN_MODEL_FAMILIES:
-        if family in normalized:
-            return window
+        if family in normalized and len(family) > best_len:
+            best_len = len(family)
+            best_value = window
 
-    return None
+    return best_value

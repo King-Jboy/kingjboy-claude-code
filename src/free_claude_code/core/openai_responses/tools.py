@@ -384,8 +384,12 @@ def _custom_tool_description(source: Mapping[str, Any]) -> str | None:
 
 
 def _tool_name_part(value: str) -> str:
-    normalized = _INVALID_TOOL_NAME_CHARS.sub("_", value).strip("_")
-    return normalized or "tool"
+    normalized = _INVALID_TOOL_NAME_CHARS.sub("_", value).strip("_") or "tool"
+    if normalized == value:
+        return normalized
+    # `read.file` and `read_file` would otherwise share one Anthropic name.
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:6]
+    return f"{normalized}_{digest}"
 
 
 def _json_dumps(value: Any) -> str:

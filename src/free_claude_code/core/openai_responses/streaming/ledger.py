@@ -58,10 +58,10 @@ class ResponsesOutputLedger:
         if isinstance(usage.get("output_tokens"), int):
             self._output_tokens = usage["output_tokens"]
         cache_read = usage.get("cache_read_input_tokens")
-        if isinstance(cache_read, int) and cache_read > 0:
+        if isinstance(cache_read, int) and cache_read >= 0:
             self._cached_tokens = cache_read
         cache_creation = usage.get("cache_creation_input_tokens")
-        if isinstance(cache_creation, int) and cache_creation > 0:
+        if isinstance(cache_creation, int) and cache_creation >= 0:
             self._cache_creation_tokens = cache_creation
 
     def add_reasoning_text(self, text: str) -> None:

@@ -196,6 +196,31 @@ def test_responses_tool_choice_none_disables_forwarded_tools() -> None:
     assert "tool_choice" not in payload
 
 
+def test_normalized_namespaced_tools_stay_distinct() -> None:
+    from free_claude_code.core.openai_responses.tools import (
+        responses_tool_identity_from_anthropic_name,
+        responses_tool_name_to_anthropic_name,
+    )
+
+    tools = [
+        {
+            "type": "namespace",
+            "name": "pkg",
+            "tools": [
+                {"type": "function", "name": "read.file", "parameters": {}},
+                {"type": "function", "name": "read_file", "parameters": {}},
+            ],
+        }
+    ]
+    dotted = responses_tool_name_to_anthropic_name("read.file", namespace="pkg")
+    plain = responses_tool_name_to_anthropic_name("read_file", namespace="pkg")
+    assert dotted != plain
+    assert (
+        responses_tool_identity_from_anthropic_name(tools, dotted).name == "read.file"
+    )
+    assert responses_tool_identity_from_anthropic_name(tools, plain).name == "read_file"
+
+
 def test_responses_namespace_tools_flatten_for_anthropic() -> None:
     payload = _to_anthropic_payload(
         {

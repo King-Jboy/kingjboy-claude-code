@@ -946,3 +946,12 @@ async def test_a_retry_after_beyond_the_ceiling_fails_fast() -> None:
     attempt = await asyncio.wait_for(controller.open_attempt(other), 0.5)
     await attempt.succeeded()
     await attempt.aclose()
+
+
+def test_an_unsent_hedge_slot_returns_its_rate_token() -> None:
+    controller = _controller(rate_limit=2, max_concurrency=2)
+    assert controller._proactive_limiter.headroom() == 2
+    assert controller.try_acquire_hedge_slot()
+    assert controller._proactive_limiter.headroom() == 1
+    controller.release_unsent_hedge_slot()
+    assert controller._proactive_limiter.headroom() == 2

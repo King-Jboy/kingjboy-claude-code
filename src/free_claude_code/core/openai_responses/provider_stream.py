@@ -223,9 +223,15 @@ class ResponsesProviderStream:
         delta = data.get("delta")
         if not isinstance(delta, str) or not delta:
             return []
-        events = (
-            [] if self.ledger.blocks.text_started else [self.ledger.start_text_block()]
-        )
+        events: list[str] = []
+        if not self.ledger.blocks.text_started:
+            if self.ledger.blocks.thinking_started:
+                thinking_index = self.ledger.blocks.thinking_index
+                events.append(self.ledger.stop_thinking_block())
+                for state in self._reasoning.values():
+                    if state.block_index == thinking_index:
+                        state.stopped = True
+            events.append(self.ledger.start_text_block())
         events.append(self.ledger.emit_text_delta(delta))
         self.generated_output = True
         return events

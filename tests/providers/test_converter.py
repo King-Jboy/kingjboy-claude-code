@@ -435,6 +435,26 @@ def test_openai_build_omits_explicit_tool_choice_when_tools_are_absent(
 # --- Message Conversion Tests: User ---
 
 
+def test_duplicate_tool_use_ids_do_not_crash_conversion():
+    messages = [
+        MockMessage(
+            "assistant",
+            [
+                MockBlock(type="tool_use", id="call_1", name="read", input={}),
+                MockBlock(type="tool_use", id="call_1", name="write", input={}),
+            ],
+        ),
+        MockMessage(
+            "user",
+            [MockBlock(type="tool_result", tool_use_id="call_1", content="ok")],
+        ),
+    ]
+    result = AnthropicToOpenAIConverter.convert_messages(messages)
+    tool_calls = result[0]["tool_calls"]
+    assert [call["id"] for call in tool_calls] == ["call_1"]
+    assert result[1]["tool_call_id"] == "call_1"
+
+
 def test_convert_user_message_str():
     messages = [MockMessage("user", "Hello world")]
     result = AnthropicToOpenAIConverter.convert_messages(messages)

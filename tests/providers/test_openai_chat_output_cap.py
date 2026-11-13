@@ -86,6 +86,15 @@ def test_parse_cap_ignores_unrelated_400():
     assert parse_output_token_cap(_BadRequest("temperature must be <= 2")) is None
 
 
+def test_parse_cap_ignores_reasoning_budget():
+    assert (
+        parse_output_token_cap(
+            _BadRequest("reasoning.max_tokens must be less than or equal to 8192")
+        )
+        is None
+    )
+
+
 def test_parse_cap_returns_none_without_number():
     assert (
         parse_output_token_cap(_BadRequest("max_tokens is larger than allowed")) is None

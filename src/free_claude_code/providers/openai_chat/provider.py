@@ -664,10 +664,15 @@ class OpenAIChatProvider(BaseProvider):
             )
             adapter = OpenAIStreamAdapter(raw_stream)
             try:
-                await adapter.prime_first_chunk()
+                found_token = await adapter.prime_first_chunk()
             except BaseException:
                 await adapter.aclose()
                 raise
+            if not found_token:
+                await adapter.aclose()
+                raise TruncatedProviderStreamError(
+                    "Provider stream ended before the first token."
+                )
             return adapter
 
         async def _cancel_task(task: asyncio.Task[Any]) -> None:
@@ -713,7 +718,9 @@ class OpenAIChatProvider(BaseProvider):
             except TypeError:
                 next_key = key_pool.get_next_key()
             if next_key is None or next_key in excluded:
-                if hasattr(self._admission, "release_hedge_slot"):
+                if hasattr(self._admission, "release_unsent_hedge_slot"):
+                    self._admission.release_unsent_hedge_slot()
+                elif hasattr(self._admission, "release_hedge_slot"):
                     self._admission.release_hedge_slot()
                 return None, False
             return next_key, True
@@ -774,8 +781,8 @@ class OpenAIChatProvider(BaseProvider):
             # At most two racers. Each racer is a full upstream generation, and
             # a model that thinks silently before its first token would turn a
             # third racer into a third billed completion on most requests.
-            last_exc: BaseException | None = None
-            last_exc_rotatable = False
+            hard_exc: BaseException | None = None
+            last_rotatable: Exception | None = None
             while tasks:
                 done_tasks, _ = await asyncio.wait(
                     tasks.keys(), return_when=asyncio.FIRST_COMPLETED
@@ -792,19 +799,20 @@ class OpenAIChatProvider(BaseProvider):
                         if hasattr(self._admission, "release_hedge_slot"):
                             self._admission.release_hedge_slot()
                         hedge_slots_held -= 1
-                    last_exc = exc
-                    last_exc_rotatable = isinstance(exc, Exception) and (
-                        _handle_key_error(k, exc)
-                    )
+                    if isinstance(exc, Exception) and _handle_key_error(k, exc):
+                        last_rotatable = exc
+                    elif hard_exc is None:
+                        # A later 429 must not hide an earlier 400.
+                        hard_exc = exc
                     # Allow any other racing task to complete before aborting
 
-            # Every racer failed on its own credential: the rest of the pool may
-            # still be healthy, exactly as in the single-racer failure paths.
-            if last_exc is not None and not last_exc_rotatable:
-                raise last_exc
+            # A request error is the client's problem. Credential errors still
+            # fall through to the rest of the pool.
+            if hard_exc is not None:
+                raise hard_exc
             return await self._open_chat_stream_sequential(
                 create_body,
-                prior_error=last_exc if isinstance(last_exc, Exception) else None,
+                prior_error=last_rotatable,
             )
         finally:
             remaining_tasks = list(tasks.keys())

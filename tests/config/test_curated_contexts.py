@@ -54,3 +54,13 @@ def test_supported_providers_and_gateways_curated_windows() -> None:
     assert curated_context_window("nvidia_nim", "moonshotai/kimi-k3") == 1_048_576
     assert curated_context_window("nararoute", "deepseek-v4-flash") == 1_048_576
     assert curated_context_window("nararoute", "glm-5.3-flash-free") == 128_000
+
+
+def test_a_dated_id_keeps_the_longer_family_window() -> None:
+    assert curated_context_window("kimi", "kimi-k3-0711") == 1_048_576
+    assert curated_context_window("zai", "glm-4-long-latest") == 1_048_576
+
+
+def test_a_gateway_id_prefers_the_longer_family_name() -> None:
+    assert curated_context_window("open_router", "openai/o1-mini") == 128_000
+    assert curated_context_window("open_router", "openai/o1") == 200_000

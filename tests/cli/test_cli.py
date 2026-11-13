@@ -405,11 +405,10 @@ class TestManagedClaudeSession:
             events = [e async for e in session.start_task("Hello")]
 
         assert mock_process.stderr.read.await_count >= 2
-        err_events = [e for e in events if e.get("type") == "error"]
-        assert len(err_events) == 1
-        assert "warning on stderr" in err_events[0]["error"]["message"]
+        assert [e for e in events if e.get("type") == "error"] == []
         assert events[-1]["type"] == "exit"
         assert events[-1]["code"] == 0
+        assert events[-1]["stderr"] == "warning on stderr"
 
     @pytest.mark.asyncio
     async def test_start_task_ignores_benign_claude_connectors_stderr(self):
@@ -490,6 +489,61 @@ class TestManagedClaudeSession:
             events = [e async for e in session.start_task("Hello")]
 
         assert events == [{"type": "exit", "code": 1, "stderr": None}]
+
+    @pytest.mark.asyncio
+    async def test_start_task_allows_a_legal_line_split_across_a_large_read(self):
+        """The cap applies to one line, not to the unread buffer."""
+        from free_claude_code.cli.managed.session import ManagedClaudeSession
+
+        session = ManagedClaudeSession("/tmp", "http://localhost:8082")
+        mock_process = self._make_mock_process()
+        mock_process.returncode = 0
+        mock_process.pid = None
+        pending = b"x" * (200 * 1024)
+        mock_process.stdout.read.side_effect = [pending, b'\n{"ok":1}\n', b""]
+        mock_process.stderr.read.side_effect = [b"", b""]
+        mock_process.wait.return_value = 0
+
+        with patch(
+            "asyncio.create_subprocess_exec", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            events = [e async for e in session.start_task("Hello")]
+
+        assert not any(
+            e.get("type") == "error"
+            and "oversized" in e.get("error", {}).get("message", "")
+            for e in events
+        )
+        assert events[-1] == {"type": "exit", "code": 0, "stderr": None}
+
+    @pytest.mark.asyncio
+    async def test_start_task_rejects_a_single_oversized_line(self):
+        from free_claude_code.cli.managed.session import (
+            _MAX_STDOUT_LINE_BYTES,
+            ManagedClaudeSession,
+        )
+
+        session = ManagedClaudeSession("/tmp", "http://localhost:8082")
+        mock_process = self._make_mock_process()
+        mock_process.returncode = 0
+        mock_process.pid = None
+        mock_process.stdout.read.side_effect = [
+            b"x" * (_MAX_STDOUT_LINE_BYTES + 1),
+            b"",
+        ]
+        mock_process.stderr.read.side_effect = [b"", b""]
+        mock_process.wait.return_value = 0
+
+        with patch(
+            "asyncio.create_subprocess_exec", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = mock_process
+            events = [e async for e in session.start_task("Hello")]
+
+        assert events[0]["error"]["message"] == (
+            "Claude CLI emitted an oversized output line."
+        )
 
     @pytest.mark.asyncio
     async def test_drain_stderr_bounded_retains_cap_but_drains_to_eof(self):

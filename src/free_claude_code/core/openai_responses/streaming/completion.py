@@ -180,6 +180,11 @@ def tool_item(
 def reasoning_output_item(
     state: ReasoningBlockState, *, status: str
 ) -> dict[str, object]:
+    signature = "".join(state.signature_parts)
+    if signature:
+        item = reasoning_item(state.item_id, "".join(state.text_parts), status)
+        item["encrypted_content"] = signature
+        return item
     if state.encrypted_content is not None:
         return encrypted_reasoning_item(state.item_id, state.encrypted_content, status)
     return reasoning_item(state.item_id, "".join(state.text_parts), status)

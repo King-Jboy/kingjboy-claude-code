@@ -330,6 +330,11 @@ class ProviderAdmissionController:
         """Release the extra concurrency slot held while two hedged opens race."""
         self._concurrency_sem.release()
 
+    def release_unsent_hedge_slot(self) -> None:
+        """Return a hedge slot that reserved a rate token and then found no key."""
+        self._proactive_limiter.refund_latest()
+        self.release_hedge_slot()
+
     def new_retry_session(
         self,
         *,

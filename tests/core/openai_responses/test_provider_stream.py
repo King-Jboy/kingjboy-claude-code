@@ -451,3 +451,44 @@ def test_responses_provider_stream_buffers_tool_deltas_before_name_is_known() ->
         if event.data.get("delta", {}).get("type") == "input_json_delta"
     ]
     assert deltas == ['{"q":', '"hello"}']
+
+
+def test_text_delta_closes_an_open_thinking_block() -> None:
+    stream = ResponsesProviderStream(
+        origin=ReplayOrigin("test", "responses", "", "", "m"),
+        message_id="msg_test",
+        model="openai/gpt-test",
+        input_tokens=3,
+    )
+    output = stream.start()
+    output.extend(
+        stream.feed(
+            "response.reasoning_summary_text.delta",
+            {"item_id": "rs_1", "delta": "think"},
+        )
+    )
+    output.extend(stream.feed("response.output_text.delta", {"delta": "hi"}))
+    output.extend(
+        stream.feed(
+            "response.completed",
+            {"response": {"usage": {"input_tokens": 3, "output_tokens": 2}}},
+        )
+    )
+    events = parse_sse_text("".join(output))
+    assert_anthropic_stream_contract(events)
+    order = [
+        (
+            event.event,
+            event.data.get("content_block", {}).get("type")
+            if event.event == "content_block_start"
+            else event.data.get("index"),
+        )
+        for event in events
+        if event.event in {"content_block_start", "content_block_stop"}
+    ]
+    assert order == [
+        ("content_block_start", "thinking"),
+        ("content_block_stop", 0),
+        ("content_block_start", "text"),
+        ("content_block_stop", 1),
+    ]

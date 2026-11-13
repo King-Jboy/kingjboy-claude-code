@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from free_claude_code.config.settings import Settings
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.open_router import OpenRouterProvider
+from free_claude_code.providers.stream_recovery import TruncatedProviderStreamError
 from tests.providers.support import immediate_admission
 
 
@@ -400,6 +401,138 @@ async def test_hedging_never_races_more_than_two_keys():
     await provider._open_chat_stream({"model": "test-model"})
 
     assert calls == ["key-a", "key-b"]
+
+
+def _bad_request(api_key: str) -> Exception:
+    import openai
+
+    req = Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    resp = Response(400, request=req)
+    return openai.BadRequestError(f"{api_key} rejected", response=resp, body=None)
+
+
+@pytest.mark.asyncio
+async def test_hedged_race_keeps_a_request_error_when_the_other_racer_is_rate_limited():
+    """A 400 that finishes before a 429 is the error the client should see."""
+    import openai
+
+    keys = ["key-a", "key-b", "key-c"]
+    config = _pooled_config(keys, hedge_delay=0.01)
+    provider = OpenRouterProvider(config, admission=immediate_admission())
+    calls: list[str] = []
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            calls.append(api_key)
+            if api_key == "key-a":
+                await asyncio.sleep(0.02)
+                raise _bad_request(api_key)
+            if api_key == "key-b":
+                await asyncio.sleep(0.05)
+                raise _rate_limited(api_key)
+            return DummyStream(api_key)
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    with pytest.raises(openai.BadRequestError):
+        await provider._open_chat_stream({"model": "test-model"})
+
+    assert calls == ["key-a", "key-b"]
+
+
+@pytest.mark.asyncio
+async def test_usage_only_prologue_does_not_win_the_hedge():
+    keys = ["key-usage", "key-fast"]
+    config = _pooled_config(keys, hedge_delay=0.03)
+    provider = OpenRouterProvider(config, admission=immediate_admission())
+
+    class UsageThenContent:
+        def __init__(self, key: str):
+            self.key = key
+            self.closed = False
+
+        async def __aiter__(self):
+            yield SimpleNamespace(
+                choices=[],
+                usage=SimpleNamespace(prompt_tokens=1, completion_tokens=0),
+            )
+            await asyncio.sleep(0.5 if self.key == "key-usage" else 0.01)
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="pong"),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+
+        async def aclose(self):
+            self.closed = True
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            return UsageThenContent(api_key)
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    stream_adapter = await provider._open_chat_stream({"model": "test-model"})
+    assert stream_adapter._stream.key == "key-fast"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_stream_does_not_win_the_hedge():
+    keys = ["key-empty", "key-fast"]
+    config = _pooled_config(keys, hedge_delay=0.05)
+    provider = OpenRouterProvider(config, admission=immediate_admission())
+    calls: list[str] = []
+
+    class MaybeEmpty:
+        def __init__(self, key: str):
+            self.key = key
+
+        async def __aiter__(self):
+            if self.key == "key-empty":
+                return
+            await asyncio.sleep(0.01)
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))]
+            )
+
+        async def aclose(self):
+            return None
+
+    def fake_with_options(api_key: str):
+        sub_client = MagicMock()
+
+        async def _call(**kwargs):
+            calls.append(api_key)
+            return MaybeEmpty(api_key)
+
+        sub_client.chat.completions.create = AsyncMock(side_effect=_call)
+        return sub_client
+
+    mock_client = MagicMock()
+    mock_client.with_options = MagicMock(side_effect=fake_with_options)
+    provider._client = mock_client
+
+    with pytest.raises(TruncatedProviderStreamError):
+        await provider._open_chat_stream({"model": "test-model"})
+
+    assert calls == ["key-empty"]
 
 
 @pytest.mark.asyncio
