@@ -21,6 +21,7 @@ from free_claude_code.api.web_tools.outbound import (
     _drain_response_body_capped,
     _read_response_body_capped,
     _run_web_fetch,
+    _text_encoding,
 )
 from free_claude_code.api.web_tools.request import (
     HIDDEN_WEB_SEARCH_NAME,
@@ -962,6 +963,8 @@ def _aiohttp_response(
     url: str = "http://8.8.8.8/",
     location: str | None = None,
     body: bytes = b"hello world",
+    content_type: str | None = None,
+    charset: str | None = None,
 ) -> MagicMock:
     r = MagicMock()
     r.status = status
@@ -969,8 +972,15 @@ def _aiohttp_response(
     hdrs: dict[str, str] = {}
     if location is not None:
         hdrs["location"] = location
+    if content_type is not None:
+        hdrs["content-type"] = content_type
     r.headers = hdrs
-    r.get_encoding = MagicMock(return_value="utf-8")
+    r.charset = charset
+    r.get_encoding = MagicMock(
+        side_effect=RuntimeError(
+            "Cannot compute fallback encoding of a not yet read body"
+        )
+    )
     r.raise_for_status = MagicMock()
     r.request_info = MagicMock()
     r.history = ()
@@ -1048,6 +1058,65 @@ async def test_run_web_fetch_truncates_large_body_to_byte_cap(monkeypatch):
 
     assert len(out["data"]) <= 100
     assert out["data"] == "x" * 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content_type", "charset", "body", "data"),
+    [
+        ("text/html", None, b"<title>Hi</title>ok", "ok"),
+        (None, None, b"plain", "plain"),
+        (
+            "text/plain; charset=iso-8859-1",
+            "iso-8859-1",
+            "caf\u00e9".encode("latin-1"),
+            "caf\u00e9",
+        ),
+        ("text/plain; charset=bogus", "bogus", b"plain", "plain"),
+        ("application/pdf", None, b"%PDF", "%PDF"),
+    ],
+)
+async def test_run_web_fetch_decodes_without_reading_body_for_charset(
+    content_type: str | None,
+    charset: str | None,
+    body: bytes,
+    data: str,
+) -> None:
+    res_ok = _aiohttp_response(
+        200,
+        url="http://8.8.8.8/page",
+        body=body,
+        content_type=content_type,
+        charset=charset,
+    )
+    client_cm, _session = _aiohttp_client_session_patch(res_ok)
+    with patch(
+        "free_claude_code.api.web_tools.outbound.ClientSession", return_value=client_cm
+    ):
+        out = await _run_web_fetch("http://8.8.8.8/page", _STRICT_EGRESS)
+
+    assert out["data"] == data
+    res_ok.get_encoding.assert_not_called()
+    if content_type == "text/html":
+        assert out["title"] == "Hi"
+
+
+@pytest.mark.parametrize(
+    ("charset", "encoding"),
+    [
+        (None, "utf-8"),
+        ("", "utf-8"),
+        ("utf8", "utf-8"),
+        ("ISO-8859-1", "iso8859-1"),
+        ("bogus", "utf-8"),
+        ("not a charset", "utf-8"),
+    ],
+)
+def test_text_encoding_falls_back_when_charset_is_missing_or_unknown(
+    charset: str | None,
+    encoding: str,
+) -> None:
+    assert _text_encoding(charset) == encoding
 
 
 @pytest.mark.asyncio
