@@ -54,9 +54,7 @@ def apply_nim_request_options(
     sanitize_nim_tool_schemas(body)
 
     max_tokens = body.get("max_tokens") or request_data.max_tokens
-    if max_tokens is None:
-        max_tokens = nim.max_tokens
-    elif nim.max_tokens:
+    if isinstance(max_tokens, int) and nim.max_tokens:
         max_tokens = min(max_tokens, nim.max_tokens)
     set_if_not_none(body, "max_tokens", max_tokens)
 
@@ -126,16 +124,11 @@ def apply_nim_request_options(
                     )
                     or is_nim_hybrid_reasoning
                 ):
-                    # Unbounded NIM thinking delays the first answer token.
-                    budget = (
-                        ReasoningEffort.HIGH.budget_tokens
-                        if request_data.thinking is not None
-                        and request_data.thinking.type == "adaptive"
-                        else ReasoningEffort.MEDIUM.budget_tokens
-                    )
+                    # An invented 1k–2k budget is spent before the answer starts.
+                    budget = ReasoningEffort.MINIMAL.budget_tokens
                 if budget is not None:
                     chat_template_kwargs["reasoning_budget"] = budget
-            elif _nim_model_requires_off_budget_cap(model_name):
+            elif is_nim_hybrid_reasoning:
                 off_budget = 16
                 if isinstance(max_tokens, int) and max_tokens > 16:
                     off_budget = min(off_budget, max(1, max_tokens // 2))
@@ -169,20 +162,9 @@ _NIM_HYBRID_REASONING_PREFIXES: tuple[str, ...] = (
     "qwen/",
 )
 
-_NIM_OFF_BUDGET_CAP_PREFIXES: tuple[str, ...] = (
-    "stepfun-ai/",
-    "meta/muse-",
-)
-
-
 def _is_nim_hybrid_reasoning_model(model_name: str) -> bool:
     """Return whether a NIM model defaults to unbounded thinking if omitted."""
     return model_name.startswith(_NIM_HYBRID_REASONING_PREFIXES)
-
-
-def _nim_model_requires_off_budget_cap(model_name: str) -> bool:
-    """Return whether a NIM model still reasons when thinking=False unless capped."""
-    return model_name.startswith(_NIM_OFF_BUDGET_CAP_PREFIXES)
 
 
 def _set_extra(

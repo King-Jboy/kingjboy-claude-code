@@ -157,9 +157,9 @@ class TestBuildRequestBody:
             "reasoning_budget": 2048,
         }
 
-    def test_adaptive_thinking_without_a_budget_uses_the_high_effort_budget(self):
-        # Adaptive mode carries no number; unbounded NIM thinking delays the
-        # first answer token, so it gets the high-effort budget.
+    def test_adaptive_thinking_without_a_budget_uses_the_minimal_effort_budget(self):
+        # Adaptive mode carries no number. A 2k invented budget is spent
+        # before the answer starts, so the smallest budget is used instead.
         req = make_messages_request(model="test", thinking={"type": "adaptive"})
 
         body = build_request_body(req, NimSettings(), reasoning=REASONING_ON)
@@ -167,7 +167,7 @@ class TestBuildRequestBody:
         assert body["extra_body"]["chat_template_kwargs"] == {
             "thinking": True,
             "enable_thinking": True,
-            "reasoning_budget": ReasoningEffort.HIGH.budget_tokens,
+            "reasoning_budget": ReasoningEffort.MINIMAL.budget_tokens,
         }
 
     def test_adaptive_thinking_keeps_an_explicit_effort_budget(self):
@@ -786,7 +786,23 @@ class TestBuildRequestBody:
         assert body["extra_body"]["chat_template_kwargs"] == {
             "thinking": False,
             "enable_thinking": False,
+            "reasoning_budget": 16,
         }
+
+    def test_omitted_max_tokens_is_not_filled_with_the_nim_default(self):
+        req = make_messages_request(
+            model="stepfun-ai/step-5-preview",
+            thinking=None,
+            max_tokens=None,
+        )
+
+        body = build_request_body(
+            req,
+            NimSettings(),
+            reasoning=ReasoningPolicy.provider_default(),
+        )
+
+        assert "max_tokens" not in body
 
     def test_nim_off_budget_cap_model_includes_tight_budget_when_off(self):
         req = make_messages_request(
@@ -819,5 +835,5 @@ class TestBuildRequestBody:
         assert body["extra_body"]["chat_template_kwargs"] == {
             "thinking": True,
             "enable_thinking": True,
-            "reasoning_budget": ReasoningEffort.MEDIUM.budget_tokens,
+            "reasoning_budget": ReasoningEffort.MINIMAL.budget_tokens,
         }
