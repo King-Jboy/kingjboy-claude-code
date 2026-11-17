@@ -124,7 +124,7 @@ def apply_nim_request_options(
                     )
                     or is_nim_hybrid_reasoning
                 ):
-                    # An invented 1k–2k budget is spent before the answer starts.
+                    # An invented 1k-2k budget is spent before the answer starts.
                     budget = ReasoningEffort.MINIMAL.budget_tokens
                 if budget is not None:
                     chat_template_kwargs["reasoning_budget"] = budget
@@ -161,6 +161,7 @@ _NIM_HYBRID_REASONING_PREFIXES: tuple[str, ...] = (
     "moonshotai/",
     "qwen/",
 )
+
 
 def _is_nim_hybrid_reasoning_model(model_name: str) -> bool:
     """Return whether a NIM model defaults to unbounded thinking if omitted."""
