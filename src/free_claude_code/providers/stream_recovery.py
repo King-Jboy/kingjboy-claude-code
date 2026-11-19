@@ -49,8 +49,32 @@ class RecoveryDecision:
     has_buffered: bool
 
 
+def _is_meaningful_sse_event(event: str) -> bool:
+    """Return whether an Anthropic SSE frame carries real model output.
+
+    Pre-token prologue frames (such as ``message_start``) stay buffered so an
+    upstream cutoff before the first real token can still retry invisibly. Once
+    the first meaningful token, tool call, redacted thinking block, or terminal
+    frame arrives, the buffer flushes immediately with zero holdback latency.
+    """
+    return (
+        event.startswith("event: content_block_delta\n")
+        or event.startswith("event: message_delta\n")
+        or event.startswith("event: message_stop\n")
+        or (
+            event.startswith("event: content_block_start\n")
+            and (
+                '"type":"tool_use"' in event
+                or '"type":"redacted_thinking"' in event
+                or '"type": "tool_use"' in event
+                or '"type": "redacted_thinking"' in event
+            )
+        )
+    )
+
+
 class RecoveryHoldbackBuffer:
-    """Briefly retain SSE so early cutoffs can be retried invisibly."""
+    """Briefly retain pre-token SSE so early cutoffs can be retried invisibly."""
 
     def __init__(
         self,
@@ -79,7 +103,8 @@ class RecoveryHoldbackBuffer:
             else len(event.encode("utf-8", errors="replace"))
         )
         if (
-            self._bytes >= self._max_bytes
+            _is_meaningful_sse_event(event)
+            or self._bytes >= self._max_bytes
             or self._now() - self._started_at >= self._holdback_seconds
         ):
             return self.flush()

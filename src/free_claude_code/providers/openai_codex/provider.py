@@ -3,11 +3,12 @@
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import suppress
 from typing import Any
 
 import httpx
+import orjson
 
 from free_claude_code.application.errors import InvalidRequestError
 from free_claude_code.application.model_metadata import ProviderModelInfo
@@ -90,26 +91,105 @@ async def _sse_with_keepalive(
 ) -> AsyncIterator[tuple[str, dict[str, Any]] | None]:
     """Yield upstream Responses SSE events, emitting None during long silences."""
     iterator = aiter(events)
-    quiet = 0.0
-    while True:
-        next_task = asyncio.ensure_future(anext(iterator))
-        try:
-            while not await _settled_within(
-                next_task, _keepalive_wait_step(quiet, quiet_after, interval)
-            ):
-                quiet += _keepalive_wait_step(quiet, quiet_after, interval)
-                if quiet >= quiet_after:
-                    yield None
-        except BaseException:
-            await _discard_pending_task(next_task)
-            raise
-        try:
-            item = next_task.result()
-        except StopAsyncIteration:
-            return
-        quiet = 0.0
-        yield item
+    loop = asyncio.get_running_loop()
 
+    pull_waiter: asyncio.Future[None] | None = None
+    result_waiter: asyncio.Future[Any] | None = None
+    done_sentinel = object()
+
+    async def _reader() -> None:
+        nonlocal pull_waiter, result_waiter
+        while True:
+            waiter = loop.create_future()
+            pull_waiter = waiter
+            await waiter
+            pull_waiter = None
+            target = result_waiter
+            try:
+                item = await anext(iterator)
+            except StopAsyncIteration:
+                if target is not None and not target.done():
+                    target.set_result(done_sentinel)
+                return
+            except asyncio.CancelledError:
+                if target is not None and not target.done():
+                    target.cancel()
+                raise
+            except BaseException as exc:
+                if target is not None and not target.done():
+                    target.set_exception(exc)
+                return
+            else:
+                if target is not None and not target.done():
+                    target.set_result(item)
+
+    reader_task: asyncio.Task[None] | None = None
+    quiet = 0.0
+    try:
+        while True:
+            if reader_task is None:
+                reader_task = asyncio.create_task(_reader())
+
+            while pull_waiter is None:
+                if reader_task.done():
+                    return
+                await asyncio.sleep(0)
+
+            res_fut: asyncio.Future[Any] = loop.create_future()
+            result_waiter = res_fut
+            waiter = pull_waiter
+            pull_waiter = None
+            if not waiter.done():
+                waiter.set_result(None)
+
+            while not res_fut.done():
+                step = _keepalive_wait_step(quiet, quiet_after, interval)
+                if step <= 0.0:
+                    yield None
+                    step = interval
+                    if res_fut.done():
+                        break
+                timeout_fut: asyncio.Future[None] = loop.create_future()
+
+                def _wake_on_done(
+                    _fut: asyncio.Future[Any],
+                    tf: asyncio.Future[None] = timeout_fut,
+                ) -> None:
+                    if not tf.done():
+                        tf.set_result(None)
+
+                res_fut.add_done_callback(_wake_on_done)
+                timer = loop.call_later(
+                    step,
+                    lambda tf=timeout_fut: None if tf.done() else tf.set_result(None),
+                )
+                try:
+                    await timeout_fut
+                finally:
+                    timer.cancel()
+                    res_fut.remove_done_callback(_wake_on_done)
+
+                if not res_fut.done():
+                    quiet += step
+                    if quiet >= quiet_after:
+                        yield None
+
+            result_waiter = None
+            item = res_fut.result()
+            if item is done_sentinel:
+                return
+            quiet = 0.0
+            yield item
+    finally:
+        if pull_waiter is not None and not pull_waiter.done():
+            pull_waiter.cancel()
+        if reader_task is not None:
+            await _discard_pending_task(reader_task)
+        if result_waiter is not None:
+            if not result_waiter.done():
+                result_waiter.cancel()
+            elif not result_waiter.cancelled():
+                result_waiter.exception()
 
 class _TruncatedResponsesStream(RetryableProviderProtocolError):
     """A Responses stream ended without a terminal lifecycle event."""
@@ -117,6 +197,8 @@ class _TruncatedResponsesStream(RetryableProviderProtocolError):
 
 class OpenAICodexProvider(BaseProvider):
     """Use a ChatGPT subscription through OpenAI's Codex backend."""
+
+    _supports_deferred_input_tokens: bool = True
 
     def __init__(
         self,
@@ -190,7 +272,7 @@ class OpenAICodexProvider(BaseProvider):
     def stream_response(
         self,
         request: MessagesRequest,
-        input_tokens: int = 0,
+        input_tokens: int | Awaitable[int] = 0,
         *,
         request_id: str | None = None,
         response_model: str | None = None,
@@ -229,7 +311,7 @@ class OpenAICodexProvider(BaseProvider):
         self,
         body: dict[str, Any],
         *,
-        input_tokens: int,
+        input_tokens: int | Awaitable[int],
         request_id: str | None,
         response_model: str,
         tool_names: OpenAIToolNameCodec,
@@ -256,11 +338,21 @@ class OpenAICodexProvider(BaseProvider):
             tool_count=len(body.get("tools", [])),
         )
 
+        resolved_input_tokens: int | None = (
+            input_tokens if isinstance(input_tokens, int) else None
+        )
+
+        async def _get_input_tokens() -> int:
+            nonlocal resolved_input_tokens
+            if resolved_input_tokens is None:
+                resolved_input_tokens = int(await input_tokens)  # type: ignore[misc]
+            return resolved_input_tokens
+
         while retry_session.can_attempt:
             stream = ResponsesProviderStream(
                 message_id=message_id,
                 model=response_model,
-                input_tokens=input_tokens,
+                input_tokens=resolved_input_tokens or 0,
                 origin=ReplayOrigin(
                     "openai_codex", "responses", "", "", response_model
                 ),
@@ -269,10 +361,6 @@ class OpenAICodexProvider(BaseProvider):
             )
             if message_started_committed:
                 stream.ledger.message_started = True
-            else:
-                for event in stream.start():
-                    for held in recovery.push(event):
-                        yield held
 
             response: httpx.Response | None = None
             attempt: ProviderAttempt | None = None
@@ -280,21 +368,33 @@ class OpenAICodexProvider(BaseProvider):
             try:
                 access = await self._auth.access()
                 attempt = await self._admission.open_attempt(retry_session)
-                send_task = asyncio.ensure_future(
-                    self._client.send(
-                        self._client.build_request(
-                            "POST",
-                            "responses",
-                            json=body,
-                            headers={
-                                **self._client_headers,
-                                **_auth_headers(access),
-                                "Accept": "text/event-stream",
-                                "session_id": session_id,
-                            },
-                        ),
-                        stream=True,
+                request_headers = {
+                    **self._client_headers,
+                    **_auth_headers(access),
+                    "Accept": "text/event-stream",
+                    "session_id": session_id,
+                }
+                try:
+                    body_bytes = orjson.dumps(body)
+                except TypeError:
+                    http_request = self._client.build_request(
+                        "POST",
+                        "responses",
+                        json=body,
+                        headers=request_headers,
                     )
+                else:
+                    http_request = self._client.build_request(
+                        "POST",
+                        "responses",
+                        content=body_bytes,
+                        headers={
+                            **request_headers,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                send_task = asyncio.ensure_future(
+                    self._client.send(http_request, stream=True)
                 )
                 try:
                     waited = 0.0
@@ -306,6 +406,11 @@ class OpenAICodexProvider(BaseProvider):
                             recovery.committed
                             or waited >= UPSTREAM_QUIET_KEEPALIVE_SECONDS
                         ):
+                            if not stream.ledger.message_started:
+                                stream.ledger.input_tokens = await _get_input_tokens()
+                                for event in stream.start():
+                                    for held in recovery.push(event):
+                                        yield held
                             for event in recovery.flush():
                                 yield event
                             message_started_committed = True
@@ -353,6 +458,11 @@ class OpenAICodexProvider(BaseProvider):
                     )
                     raise error
                 stream_opened = True
+                if not stream.ledger.message_started:
+                    stream.ledger.input_tokens = await _get_input_tokens()
+                    for event in stream.start():
+                        for held in recovery.push(event):
+                            yield held
 
                 async with recovery.read_stream(
                     _sse_with_keepalive(_iter_sse(response))
@@ -491,11 +601,14 @@ async def _iter_sse(
             if raw_data == "[DONE]":
                 return
             try:
-                payload = json.loads(raw_data)
-            except json.JSONDecodeError as exc:
-                raise _TruncatedResponsesStream(
-                    "OpenAI returned malformed Responses SSE."
-                ) from exc
+                payload = orjson.loads(raw_data)
+            except orjson.JSONDecodeError:
+                try:
+                    payload = json.loads(raw_data)
+                except json.JSONDecodeError as exc:
+                    raise _TruncatedResponsesStream(
+                        "OpenAI returned malformed Responses SSE."
+                    ) from exc
             if not isinstance(payload, dict):
                 raise _TruncatedResponsesStream(
                     "OpenAI returned a non-object Responses event."

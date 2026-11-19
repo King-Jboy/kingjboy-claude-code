@@ -54,6 +54,17 @@ class OpenAIStreamAdapter[EventT](AsyncIterator[EventT]):
             if _chunk_has_meaningful_delta(chunk):
                 return True
 
+    def pop_ready_nowait(self) -> tuple[bool, EventT | None]:
+        """Synchronously return one primed or buffered chunk without awaiting."""
+        if self._primed:
+            return True, self._primed.popleft()
+        if self._exhausted:
+            return False, None
+        stream_pop = getattr(self._stream, "pop_ready_nowait", None)
+        if stream_pop is not None:
+            return stream_pop()
+        return False, None
+
     async def __anext__(self) -> EventT:
         if self._primed:
             return self._primed.popleft()

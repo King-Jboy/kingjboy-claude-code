@@ -52,7 +52,11 @@ from free_claude_code.core.anthropic.streaming import (
 from free_claude_code.core.anthropic.usage import anthropic_input_usage_fields
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
-from free_claude_code.core.trace import provider_chat_body_snapshot, trace_event
+from free_claude_code.core.trace import (
+    LazyTraceValue,
+    provider_chat_body_snapshot,
+    trace_event,
+)
 from free_claude_code.providers.admission import (
     ProviderAdmissionController,
     ProviderAttempt,
@@ -157,43 +161,123 @@ _PREPARED_BODY_LIMIT = 16
 async def _chunks_with_keepalive(
     stream: Any,
     *,
-    quiet_after: float,
-    interval: float,
+    quiet_after: float = UPSTREAM_QUIET_KEEPALIVE_SECONDS,
+    interval: float = KEEPALIVE_INTERVAL_SECONDS,
 ) -> AsyncIterator[Any]:
-    """Yield upstream chunks, marking stretches where the upstream says nothing.
+    """Yield upstream chunks, inserting ``_KEEPALIVE`` during long silences.
 
-    Claude Code aborts a response stream that delivers no data for 20 seconds and
-    shows "Waiting for API response". A reasoning model routinely thinks for
-    longer than that before its first token, so silence here is normal upstream
-    behaviour that the client reads as a stalled connection.
-
-    The wait is only reported once it has run past ``quiet_after``, so an
-    ordinary fast response never emits anything and the commit boundary stays
-    free to return a typed non-2xx.
+    Uses a single pull-driven reader task per stream (instead of allocating a
+    new task and ``asyncio.wait`` set per token) and drains already-buffered
+    SSE chunks synchronously when supported by the stream adapter.
     """
     iterator = aiter(stream)
-    quiet = 0.0
-    while True:
-        chunk_task = asyncio.ensure_future(anext(iterator))
-        try:
-            if not chunk_task.done():
-                await asyncio.sleep(0)
-            while not chunk_task.done() and not await _settled_within(
-                chunk_task, _keepalive_wait_step(quiet, quiet_after, interval)
-            ):
-                quiet += _keepalive_wait_step(quiet, quiet_after, interval)
-                if quiet >= quiet_after:
-                    yield _KEEPALIVE
-        except BaseException:
-            await _discard_pending_task(chunk_task)
-            raise
-        try:
-            chunk = chunk_task.result()
-        except StopAsyncIteration:
-            return
-        quiet = 0.0
-        yield chunk
+    pop_ready = getattr(stream, "pop_ready_nowait", None)
+    loop = asyncio.get_running_loop()
 
+    pull_waiter: asyncio.Future[None] | None = None
+    result_waiter: asyncio.Future[Any] | None = None
+    done_sentinel = object()
+
+    async def _reader() -> None:
+        nonlocal pull_waiter, result_waiter
+        while True:
+            waiter = loop.create_future()
+            pull_waiter = waiter
+            await waiter
+            pull_waiter = None
+            target = result_waiter
+            try:
+                item = await anext(iterator)
+            except StopAsyncIteration:
+                if target is not None and not target.done():
+                    target.set_result(done_sentinel)
+                return
+            except asyncio.CancelledError:
+                if target is not None and not target.done():
+                    target.cancel()
+                raise
+            except BaseException as exc:
+                if target is not None and not target.done():
+                    target.set_exception(exc)
+                return
+            else:
+                if target is not None and not target.done():
+                    target.set_result(item)
+
+    reader_task: asyncio.Task[None] | None = None
+    quiet = 0.0
+    try:
+        while True:
+            if pop_ready is not None:
+                has_ready, ready_chunk = pop_ready()
+                if has_ready:
+                    quiet = 0.0
+                    yield ready_chunk
+                    continue
+
+            if reader_task is None:
+                reader_task = asyncio.create_task(_reader())
+
+            while pull_waiter is None:
+                if reader_task.done():
+                    return
+                await asyncio.sleep(0)
+
+            res_fut: asyncio.Future[Any] = loop.create_future()
+            result_waiter = res_fut
+            waiter = pull_waiter
+            pull_waiter = None
+            if not waiter.done():
+                waiter.set_result(None)
+
+            while not res_fut.done():
+                step = _keepalive_wait_step(quiet, quiet_after, interval)
+                if step <= 0.0:
+                    yield _KEEPALIVE
+                    step = interval
+                    if res_fut.done():
+                        break
+                timeout_fut: asyncio.Future[None] = loop.create_future()
+
+                def _wake_on_done(
+                    _fut: asyncio.Future[Any],
+                    tf: asyncio.Future[None] = timeout_fut,
+                ) -> None:
+                    if not tf.done():
+                        tf.set_result(None)
+
+                res_fut.add_done_callback(_wake_on_done)
+                timer = loop.call_later(
+                    step,
+                    lambda tf=timeout_fut: None if tf.done() else tf.set_result(None),
+                )
+                try:
+                    await timeout_fut
+                finally:
+                    timer.cancel()
+                    res_fut.remove_done_callback(_wake_on_done)
+
+                if not res_fut.done():
+                    quiet += step
+                    if quiet >= quiet_after:
+                        yield _KEEPALIVE
+
+            result_waiter = None
+            chunk = res_fut.result()
+            if chunk is done_sentinel:
+                return
+            quiet = 0.0
+            yield chunk
+    finally:
+        if pull_waiter is not None and not pull_waiter.done():
+            pull_waiter.cancel()
+        if reader_task is not None:
+            await _discard_pending_task(reader_task)
+        if result_waiter is not None:
+            if not result_waiter.done():
+                result_waiter.cancel()
+            elif not result_waiter.cancelled():
+                result_waiter.exception()
 
 async def _discard_pending_task(task: asyncio.Task[Any]) -> None:
     """Cancel and drain a task the caller stopped awaiting."""
@@ -253,8 +337,51 @@ def _iter_text_tool_use_events(
         )
 
 
+def _body_requests_reasoning(create_body: Mapping[str, Any]) -> bool:
+    """Return whether the chat payload explicitly requests model reasoning."""
+
+    def _mapping_requests_reasoning(mapping: Mapping[str, Any]) -> bool:
+        effort = mapping.get("reasoning_effort")
+        if isinstance(effort, str) and effort.strip().lower() not in ("", "none", "off"):
+            return True
+        reasoning = mapping.get("reasoning")
+        if reasoning is True:
+            return True
+        if isinstance(reasoning, Mapping):
+            if reasoning.get("enabled") is False:
+                return False
+            r_effort = reasoning.get("effort")
+            if isinstance(r_effort, str) and r_effort.strip().lower() in ("none", "off"):
+                return False
+            return True
+        thinking = mapping.get("thinking")
+        if thinking is True:
+            return True
+        if isinstance(thinking, Mapping):
+            if thinking.get("enabled") is False:
+                return False
+            t_type = thinking.get("type")
+            if isinstance(t_type, str) and t_type.strip().lower() == "disabled":
+                return False
+            return True
+        template_kwargs = mapping.get("chat_template_kwargs")
+        if isinstance(template_kwargs, Mapping) and (
+            template_kwargs.get("thinking") is True
+            or template_kwargs.get("enable_thinking") is True
+        ):
+            return True
+        return False
+
+    if _mapping_requests_reasoning(create_body):
+        return True
+    extra_body = create_body.get("extra_body")
+    return isinstance(extra_body, Mapping) and _mapping_requests_reasoning(extra_body)
+
+
 class OpenAIChatProvider(BaseProvider):
     """OpenAI-compatible ``/chat/completions`` provider configured by a profile."""
+
+    _supports_deferred_input_tokens: bool = True
 
     def __init__(
         self,
@@ -706,10 +833,16 @@ class OpenAIChatProvider(BaseProvider):
         assert key_pool is not None
         hedge_delay = self._config.key_hedge_delay_seconds
 
-        async def _open_on_key(key: str) -> OpenAIStreamAdapter[Any]:
+        async def _open_on_key(
+            key: str,
+            *,
+            headers_event: asyncio.Event | None = None,
+        ) -> OpenAIStreamAdapter[Any]:
             raw_stream = await create_chat_stream(
                 self._client_for_key(key), create_body
             )
+            if headers_event is not None:
+                headers_event.set()
             adapter = OpenAIStreamAdapter(raw_stream)
             try:
                 found_token = await adapter.prime_first_chunk()
@@ -780,8 +913,12 @@ class OpenAIChatProvider(BaseProvider):
         tasks: dict[asyncio.Task[Any], str] = {}
         used_keys: set[str] = {key1}
         hedge_slots_held = 0
+        task1_headers_received = asyncio.Event()
+        reasoning_requested = _body_requests_reasoning(create_body)
         try:
-            task1: asyncio.Task[Any] = asyncio.create_task(_open_on_key(key1))
+            task1: asyncio.Task[Any] = asyncio.create_task(
+                _open_on_key(key1, headers_event=task1_headers_received)
+            )
             tasks[task1] = key1
             done, _ = await asyncio.wait({task1}, timeout=hedge_delay)
 
@@ -800,9 +937,21 @@ class OpenAIChatProvider(BaseProvider):
                 if isinstance(exc, BaseException):
                     raise exc
 
-            # Key 1 did not produce a first token within hedge_delay.
-            # Speculatively launch Key 2 if another eligible key exists.
-            key2, acquired2 = _acquire_hedged_key(used_keys)
+            # When a reasoning-enabled request already received HTTP 200
+            # headers, the model is thinking silently rather than stalled in
+            # TCP/TLS/queue setup; avoid launching a second billed generation.
+            if reasoning_requested and task1_headers_received.is_set():
+                logger.debug(
+                    "{} key hedging: key ...{} returned headers for a reasoning "
+                    "request; waiting instead of double-billing",
+                    self._provider_name,
+                    key1[-6:] if len(key1) >= 6 else "...",
+                )
+                key2, acquired2 = None, False
+            else:
+                # Key 1 did not produce a first token within hedge_delay.
+                # Speculatively launch Key 2 if another eligible key exists.
+                key2, acquired2 = _acquire_hedged_key(used_keys)
             if acquired2:
                 hedge_slots_held += 1
 
@@ -974,7 +1123,7 @@ class OpenAIChatProvider(BaseProvider):
     def stream_response(
         self,
         request: MessagesRequest,
-        input_tokens: int = 0,
+        input_tokens: int | Awaitable[int] = 0,
         *,
         request_id: str | None = None,
         response_model: str | None = None,
@@ -1020,14 +1169,15 @@ class _OpenAIChatStreamRunner:
         provider: OpenAIChatProvider,
         *,
         request: MessagesRequest,
-        input_tokens: int,
+        input_tokens: int | Awaitable[int],
         request_id: str | None,
         response_model: str | None,
         reasoning: ReasoningPolicy,
     ) -> None:
         self._provider = provider
         self._request = request
-        self._input_tokens = input_tokens
+        self._input_tokens_source: int | Awaitable[int] = input_tokens
+        self._input_tokens = input_tokens if isinstance(input_tokens, int) else 0
         self._request_id = request_id
         self._response_model = (
             request.model if response_model is None else response_model
@@ -1127,7 +1277,9 @@ class _OpenAIChatStreamRunner:
             downstream_model=body.get("model"),
             message_count=len(body.get("messages", [])),
             tool_count=len(body.get("tools", [])),
-            body=provider_chat_body_snapshot(body),
+            body=LazyTraceValue(
+                lambda snapshot_body=body: provider_chat_body_snapshot(snapshot_body)
+            ),
         )
 
         think_parser = ThinkTagParser()
@@ -1145,13 +1297,12 @@ class _OpenAIChatStreamRunner:
                 if self._provider._profile.structured_reasoning_details
                 else None
             )
-            if not ledger.message_started:
-                for event in hold_event(ledger.message_start()):
-                    yield event
             stream: Any | None = None
             attempt: ProviderAttempt | None = None
             stream_opened = False
             try:
+                # Launch the upstream HTTP stream first so deferred background
+                # token counting overlaps with admission, connect, and prefill.
                 # Opening the stream is the other place this request can go
                 # quiet, and the longer of the two: it covers admission, the
                 # connect, and however long the model takes
@@ -1172,6 +1323,10 @@ class _OpenAIChatStreamRunner:
                             recovery.committed
                             or waited >= UPSTREAM_QUIET_KEEPALIVE_SECONDS
                         ):
+                            if not ledger.message_started:
+                                ledger.input_tokens = await self._resolve_input_tokens()
+                                for event in hold_event(ledger.message_start()):
+                                    yield event
                             for event in recovery.flush():
                                 yield event
                             yield anthropic_ping_frame()
@@ -1187,6 +1342,10 @@ class _OpenAIChatStreamRunner:
                     raise
                 stream, body, attempt = create_task.result()
                 stream_opened = True
+                if not ledger.message_started:
+                    ledger.input_tokens = await self._resolve_input_tokens()
+                    for event in hold_event(ledger.message_start()):
+                        yield event
                 if self._headers_at is None:
                     self._headers_at = asyncio.get_running_loop().time()
                 tool_argument_aliases = self._provider._tool_argument_aliases(body)
@@ -2149,6 +2308,15 @@ class _OpenAIChatStreamRunner:
         if not all_emitted_tools_complete(ledger, self._request):
             return None
         return events
+
+    async def _resolve_input_tokens(self) -> int:
+        src = self._input_tokens_source
+        if isinstance(src, int):
+            return src
+        resolved = int(await src)
+        self._input_tokens = resolved
+        self._input_tokens_source = resolved
+        return resolved
 
     def _new_ledger(self) -> AnthropicStreamLedger:
         return AnthropicStreamLedger(

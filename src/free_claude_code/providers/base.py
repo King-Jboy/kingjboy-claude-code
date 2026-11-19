@@ -1,7 +1,7 @@
 """Base provider interface - extend this to implement your own provider."""
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 
 from loguru import logger
@@ -44,6 +44,8 @@ class ProviderConfig:
 
 class BaseProvider(ABC):
     """Base class for all providers. Extend this to add your own."""
+
+    _supports_deferred_input_tokens: bool = False
 
     def __init__(self, config: ProviderConfig):
         self._config = config
@@ -126,7 +128,7 @@ class BaseProvider(ABC):
     def stream_response(
         self,
         request: MessagesRequest,
-        input_tokens: int = 0,
+        input_tokens: int | Awaitable[int] = 0,
         *,
         request_id: str | None = None,
         response_model: str | None = None,

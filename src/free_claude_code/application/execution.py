@@ -4,7 +4,8 @@ import asyncio
 import math
 import sys
 from collections.abc import AsyncIterator, Callable
-from typing import Literal
+from contextlib import suppress
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -16,6 +17,7 @@ from free_claude_code.core.anthropic import (
 )
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.trace import (
+    LazyTraceValue,
     close_stream_input,
     trace_event,
     traced_async_stream,
@@ -116,8 +118,11 @@ class ProviderExecutor:
             route_trace["generation_id"] = self._generation_id
         trace_event(**route_trace)
 
-        request_snapshot = anthropic_request_snapshot(routed.request)
-        request_snapshot["model"] = gateway_model
+        def _build_request_snapshot() -> dict[str, object]:
+            snapshot = anthropic_request_snapshot(routed.request)
+            snapshot["model"] = gateway_model
+            return snapshot
+
         trace_event(
             stage="ingress",
             event=(
@@ -127,7 +132,7 @@ class ProviderExecutor:
             ),
             source="api",
             message_count=len(routed.request.messages),
-            snapshot=request_snapshot,
+            snapshot=LazyTraceValue(_build_request_snapshot),
             request_id=request_id,
         )
 
@@ -136,17 +141,31 @@ class ProviderExecutor:
 
         async def provider_body() -> AsyncIterator[str]:
             provider_stream: AsyncIterator[str] | None = None
+            token_count_task: asyncio.Task[int] | None = None
             try:
                 if self._token_counter is not None:
                     # Always off the loop: an uncached large block (a file read,
                     # a long tool result) costs ~90ms per 100k tokens to encode,
                     # and every other in-flight stream would stall for it.
-                    input_tokens = await asyncio.to_thread(
-                        self._token_counter,
-                        routed.request.messages,
-                        routed.request.system,
-                        routed.request.tools,
-                    )
+                    # Overlap counting with upstream connect when the provider
+                    # accepts a deferred input-token awaitable.
+                    if getattr(provider, "_supports_deferred_input_tokens", False):
+                        token_count_task = asyncio.create_task(
+                            asyncio.to_thread(
+                                self._token_counter,
+                                routed.request.messages,
+                                routed.request.system,
+                                routed.request.tools,
+                            )
+                        )
+                        input_tokens: Any = token_count_task
+                    else:
+                        input_tokens = await asyncio.to_thread(
+                            self._token_counter,
+                            routed.request.messages,
+                            routed.request.system,
+                            routed.request.tools,
+                        )
                 else:
                     input_tokens = 0
                 provider_stream = provider.stream_response(
@@ -157,38 +176,52 @@ class ProviderExecutor:
                     reasoning=routed.reasoning,
                 )
                 loop = asyncio.get_running_loop()
-                progress_deadline = loop.time() + self._progress_timeout_seconds
-                while True:
-                    if loop.time() >= progress_deadline:
-                        raise self._progress_timeout_failure(
-                            request_id=request_id,
-                            provider_id=routed.resolved.provider_id,
-                        )
-                    progress_timeout = asyncio.timeout_at(progress_deadline)
-                    try:
-                        async with progress_timeout:
-                            chunk = await anext(provider_stream)
-                    except StopAsyncIteration:
-                        break
-                    except TimeoutError as exc:
-                        if not progress_timeout.expired():
-                            raise
-                        raise self._progress_timeout_failure(
-                            request_id=request_id,
-                            provider_id=routed.resolved.provider_id,
-                        ) from exc
-                    if not chunk:
-                        await asyncio.sleep(0)
-                        continue
-                    yield chunk
-                    stripped = chunk.strip()
-                    if not (
-                        stripped.startswith(":")
-                        or stripped.startswith("event: ping\n")
-                        or stripped == "event: ping"
-                    ):
-                        progress_deadline = loop.time() + self._progress_timeout_seconds
+                scheduled_deadline = loop.time() + self._progress_timeout_seconds
+                reschedule_step = min(0.5, self._progress_timeout_seconds * 0.1)
+                progress_timeout = asyncio.timeout_at(scheduled_deadline)
+                try:
+                    async with progress_timeout:
+                        async for chunk in provider_stream:
+                            if not chunk:
+                                await asyncio.sleep(0)
+                                continue
+                            yield chunk
+                            stripped = chunk.strip()
+                            if not (
+                                stripped.startswith(":")
+                                or stripped.startswith("event: ping\n")
+                                or stripped == "event: ping"
+                            ):
+                                target_deadline = (
+                                    loop.time() + self._progress_timeout_seconds
+                                )
+                                if (
+                                    target_deadline - scheduled_deadline
+                                    >= reschedule_step
+                                ):
+                                    progress_timeout.reschedule(target_deadline)
+                                    scheduled_deadline = target_deadline
+                            elif loop.time() >= scheduled_deadline:
+                                raise self._progress_timeout_failure(
+                                    request_id=request_id,
+                                    provider_id=routed.resolved.provider_id,
+                                )
+                except TimeoutError as exc:
+                    if not progress_timeout.expired():
+                        raise
+                    raise self._progress_timeout_failure(
+                        request_id=request_id,
+                        provider_id=routed.resolved.provider_id,
+                    ) from exc
             finally:
+                if token_count_task is not None:
+                    if not token_count_task.done():
+                        token_count_task.cancel()
+                        with suppress(asyncio.CancelledError, Exception):
+                            await token_count_task
+                    elif not token_count_task.cancelled():
+                        # Retrieve any unconsumed exception to avoid loop warnings.
+                        token_count_task.exception()
                 if provider_stream is not None:
                     await close_stream_input(
                         provider_stream,

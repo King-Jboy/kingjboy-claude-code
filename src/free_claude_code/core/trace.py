@@ -8,7 +8,7 @@ INFO log level excludes these detailed request traces.
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from typing import Any
 
 from loguru import logger
@@ -95,17 +95,33 @@ def sanitize_trace_value(
     return obj
 
 
+class LazyTraceValue:
+    """Defer expensive trace payload construction until DEBUG logging emits it."""
+
+    __slots__ = ("_factory",)
+
+    def __init__(self, factory: Callable[[], Any]) -> None:
+        self._factory = factory
+
+    def resolve(self) -> Any:
+        return self._factory()
+
+
 def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
     """Emit one structured DEBUG trace row merged into JSON by the log sink.
 
     Loguru runs patchers only for records that pass its level filter, so the
-    sanitized copy is never built while DEBUG is off.
+    sanitized copy and any ``LazyTraceValue`` payloads are never built while
+    DEBUG is off.
     """
 
     def attach_payload(record: Any) -> None:
-        record["extra"][TRACE_PAYLOAD_BINDING] = sanitize_trace_value(
-            {"stage": stage, "event": event, "source": source, **fields}
-        )
+        payload: dict[str, Any] = {"stage": stage, "event": event, "source": source}
+        for key, value in fields.items():
+            payload[key] = (
+                value.resolve() if isinstance(value, LazyTraceValue) else value
+            )
+        record["extra"][TRACE_PAYLOAD_BINDING] = sanitize_trace_value(payload)
 
     logger.patch(attach_payload).debug("TRACE {}", event)
 

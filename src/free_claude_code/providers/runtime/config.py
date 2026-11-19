@@ -208,6 +208,11 @@ def build_provider_config(
         )
         rate_limit = key_rate_limit * len(api_keys)
         rate_window = 60.0
+    max_concurrency = settings.provider_max_concurrency
+    if len(api_keys) > 1 and not operator_configured(
+        settings, "provider_max_concurrency"
+    ):
+        max_concurrency = min(50, max_concurrency * len(api_keys))
     return ProviderConfig(
         api_key=credential,
         base_url=resolved_base_url,
@@ -216,7 +221,7 @@ def build_provider_config(
         key_rate_window=60.0,
         rate_limit=rate_limit,
         rate_window=rate_window,
-        max_concurrency=settings.provider_max_concurrency,
+        max_concurrency=max_concurrency,
         http_read_timeout=http_read_timeout,
         http_write_timeout=settings.http_write_timeout,
         http_connect_timeout=settings.http_connect_timeout,

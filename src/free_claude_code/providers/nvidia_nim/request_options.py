@@ -1,6 +1,5 @@
 """NVIDIA NIM request option injection."""
 
-from copy import deepcopy
 from typing import Any
 
 from free_claude_code.config.nim import NimSettings
@@ -83,7 +82,7 @@ def apply_nim_request_options(
     extra_body: dict[str, Any] = {}
     request_extra = request_data.extra_body
     if request_extra:
-        extra_body.update(deepcopy(request_extra))
+        extra_body.update(request_extra)
     for key in (
         "reasoning",
         "reasoning_budget",
@@ -95,9 +94,12 @@ def apply_nim_request_options(
         extra_body.pop(key, None)
     request_template_kwargs = extra_body.get("chat_template_kwargs")
     if isinstance(request_template_kwargs, dict):
+        request_template_kwargs = dict(request_template_kwargs)
         for key in ("thinking", "enable_thinking", "reasoning_budget"):
             request_template_kwargs.pop(key, None)
-        if not request_template_kwargs:
+        if request_template_kwargs:
+            extra_body["chat_template_kwargs"] = request_template_kwargs
+        else:
             extra_body.pop("chat_template_kwargs", None)
 
     model_name = str(body.get("model") or request_data.model or "").strip().lower()
