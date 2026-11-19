@@ -120,6 +120,26 @@ def replay_origin(
     )
 
 
+_INVALID_ID_RE = re.compile(
+    r"invalid.+(?:input|messages).+\.id.+(?:letters|characters|ID)",
+    re.I,
+)
+_INVALID_NATIVE_RE = re.compile(
+    r"invalid signature in thinking block|referenced reasoning item .+ (?:not found|expired)",
+    re.I,
+)
+_VALID_ID_FULLMATCH_RE = re.compile(r"[A-Za-z0-9_-]+")
+_LOCATION_PATH_RE = re.compile(
+    r"(?:input|messages)(?:\[\d+\]|\.\d+)(?:(?:\.content|\.reasoning_details)(?:\[\d+\]|\.\d+))?"
+)
+_PATH_TOKEN_RE = re.compile(r"[a-z_]+|\d+")
+_NAMED_ID_RE = re.compile(
+    r"\b(?:for item|reasoning item|and item)\s+"
+    r"(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z0-9_-]+))(?=\s|[.,:]|$)",
+    re.I,
+)
+
+
 def history_retry_body(
     error: Exception, body: Mapping[str, Any], protocol: HistoryProtocol
 ) -> dict[str, Any] | None:
@@ -138,23 +158,11 @@ def history_retry_body(
     for record in _error_records(payload):
         message = str(record.get("message", ""))
         code = record.get("code", record.get("type"))
-        invalid_id = bool(
-            re.search(
-                r"invalid.+(?:input|messages).+\.id.+(?:letters|characters|ID)",
-                message,
-                re.I,
-            )
-        )
+        invalid_id = bool(_INVALID_ID_RE.search(message))
         invalid_native = code in {
             "invalid_encrypted_content",
             "invalid_signature",
-        } or bool(
-            re.search(
-                r"invalid signature in thinking block|referenced reasoning item .+ (?:not found|expired)",
-                message,
-                re.I,
-            )
-        )
+        } or bool(_INVALID_NATIVE_RE.search(message))
         if not (invalid_id or invalid_native):
             continue
         matched = _rejected_record(record, candidates)
@@ -175,7 +183,7 @@ def history_retry_body(
             parent = parent[key]
         if invalid_id:
             value = original.get("id")
-            if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            if not isinstance(value, str) or _VALID_ID_FULLMATCH_RE.fullmatch(value):
                 continue
             corrected = "rs_" + hashlib.sha256(value.encode()).hexdigest()[:24]
             parent[path[-1]]["id"] = corrected
@@ -261,14 +269,11 @@ def _rejected_record(
     candidates: list[tuple[tuple[str | int, ...], Mapping[str, Any]]],
 ) -> tuple[tuple[str | int, ...], Mapping[str, Any]] | None:
     location = str(error.get("param") or error.get("loc") or error.get("message") or "")
-    match = re.search(
-        r"(?:input|messages)(?:\[\d+\]|\.\d+)(?:(?:\.content|\.reasoning_details)(?:\[\d+\]|\.\d+))?",
-        location,
-    )
+    match = _LOCATION_PATH_RE.search(location)
     if match:
         path = tuple(
             int(part) if part.isdigit() else part
-            for part in re.findall(r"[a-z_]+|\d+", match[0])
+            for part in _PATH_TOKEN_RE.findall(match[0])
         )
         found = next((entry for entry in candidates if entry[0] == path), None)
         if found is not None:
@@ -281,15 +286,7 @@ def _rejected_record(
             return None
     message = str(error.get("message", ""))
     named_ids = {
-        value
-        for match in re.findall(
-            r"\b(?:for item|reasoning item|and item)\s+"
-            r"(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z0-9_-]+))(?=\s|[.,:]|$)",
-            message,
-            re.I,
-        )
-        for value in match
-        if value
+        value for match in _NAMED_ID_RE.findall(message) for value in match if value
     }
     identified = [
         entry

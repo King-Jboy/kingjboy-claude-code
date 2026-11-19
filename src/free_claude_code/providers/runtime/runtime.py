@@ -39,10 +39,13 @@ class ProviderRuntime:
         """
         # getattr: runtime subclasses (test doubles among them) may not run
         # this class's __init__.
+        previous_inherited = getattr(previous, "_inherited_key_state", None) or {}
         previous_providers = getattr(previous, "_providers", None) or {}
         inherited_state = getattr(self, "_inherited_key_state", None)
         if inherited_state is None:
             return
+        for provider_id, snapshot in previous_inherited.items():
+            inherited_state[provider_id] = dict(snapshot)
         for provider_id, provider in previous_providers.items():
             pool = getattr(provider, "api_key_pool", None)
             if isinstance(pool, ApiKeyPool):

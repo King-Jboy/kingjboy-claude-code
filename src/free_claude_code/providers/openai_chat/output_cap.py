@@ -22,6 +22,7 @@ _OUTPUT_TOKEN_FIELDS = ("max_completion_tokens", "max_tokens")
 
 # Only treat a 400 as an output-cap rejection when it names one of these fields.
 _OUTPUT_TOKEN_KEYWORDS = ("max_completion_tokens", "max_tokens")
+_MAX_TOKENS_FIELD_RE = re.compile(r"(?<![\w.])max_tokens\b")
 
 # Comparator phrases that precede the allowed maximum in provider error text.
 _CAP_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -57,7 +58,7 @@ def parse_output_token_cap(error: Exception) -> int | None:
     text = _error_text(error)
     # `reasoning.max_tokens` is the thinking budget, not the chat output cap.
     names_output_field = "max_completion_tokens" in text or (
-        re.search(r"(?<![\w.])max_tokens\b", text) is not None
+        _MAX_TOKENS_FIELD_RE.search(text) is not None
     )
     if not names_output_field:
         return None

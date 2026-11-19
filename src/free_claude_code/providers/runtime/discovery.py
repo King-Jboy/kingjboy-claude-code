@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 
 import httpx
+import httpx2
 from loguru import logger
 
 from free_claude_code.application.errors import ApplicationUnavailableError
@@ -28,7 +29,7 @@ def _provider_query_failure_reason(exc: BaseException, settings: Settings) -> st
     """Return a concise model-list query failure reason for user-facing logs."""
     if isinstance(exc, ModelListResponseError):
         return f"malformed model-list response: {exc.message}"
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, (httpx.HTTPStatusError, httpx2.HTTPStatusError)):
         return f"query failure: HTTP {exc.response.status_code}"
     if isinstance(exc, ApplicationUnavailableError):
         return f"query failure: {exc.message}"

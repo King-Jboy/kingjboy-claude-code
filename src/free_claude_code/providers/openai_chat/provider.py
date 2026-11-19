@@ -82,7 +82,9 @@ from free_claude_code.providers.stream_recovery import (
     RecoveryController,
     RecoveryFailureAction,
     TruncatedProviderStreamError,
+    _discard_pending_task,
     is_retryable_stream_error,
+    iter_with_keepalive,
 )
 
 from .output_cap import clamp_output_tokens, parse_output_token_cap
@@ -137,18 +139,6 @@ async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
     return bool(done)
 
 
-def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> float:
-    """Return the next poll slice, landing directly on the keepalive threshold.
-
-    Quiet time before ``quiet_after`` does not emit keepalives, so waiting directly
-    for the remaining threshold avoids churning event loop timers during active streaming.
-    Once past the threshold, subsequent pings fire on fixed ``interval`` slices.
-    """
-    if quiet >= quiet_after:
-        return interval
-    return max(0.0, quiet_after - quiet)
-
-
 # Yielded in place of a chunk when the upstream has gone quiet long enough that
 # the client needs to hear something.
 _KEEPALIVE = object()
@@ -164,129 +154,15 @@ async def _chunks_with_keepalive(
     quiet_after: float = UPSTREAM_QUIET_KEEPALIVE_SECONDS,
     interval: float = KEEPALIVE_INTERVAL_SECONDS,
 ) -> AsyncIterator[Any]:
-    """Yield upstream chunks, inserting ``_KEEPALIVE`` during long silences.
-
-    Uses a single pull-driven reader task per stream (instead of allocating a
-    new task and ``asyncio.wait`` set per token) and drains already-buffered
-    SSE chunks synchronously when supported by the stream adapter.
-    """
-    iterator = aiter(stream)
-    pop_ready = getattr(stream, "pop_ready_nowait", None)
-    loop = asyncio.get_running_loop()
-
-    pull_waiter: asyncio.Future[None] | None = None
-    result_waiter: asyncio.Future[Any] | None = None
-    done_sentinel = object()
-
-    async def _reader() -> None:
-        nonlocal pull_waiter, result_waiter
-        while True:
-            waiter = loop.create_future()
-            pull_waiter = waiter
-            await waiter
-            pull_waiter = None
-            target = result_waiter
-            try:
-                item = await anext(iterator)
-            except StopAsyncIteration:
-                if target is not None and not target.done():
-                    target.set_result(done_sentinel)
-                return
-            except asyncio.CancelledError:
-                if target is not None and not target.done():
-                    target.cancel()
-                raise
-            except BaseException as exc:
-                if target is not None and not target.done():
-                    target.set_exception(exc)
-                return
-            else:
-                if target is not None and not target.done():
-                    target.set_result(item)
-
-    reader_task: asyncio.Task[None] | None = None
-    quiet = 0.0
-    try:
-        while True:
-            if pop_ready is not None:
-                has_ready, ready_chunk = pop_ready()
-                if has_ready:
-                    quiet = 0.0
-                    yield ready_chunk
-                    continue
-
-            if reader_task is None:
-                reader_task = asyncio.create_task(_reader())
-
-            while pull_waiter is None:
-                if reader_task.done():
-                    return
-                await asyncio.sleep(0)
-
-            res_fut: asyncio.Future[Any] = loop.create_future()
-            result_waiter = res_fut
-            waiter = pull_waiter
-            pull_waiter = None
-            if not waiter.done():
-                waiter.set_result(None)
-
-            while not res_fut.done():
-                step = _keepalive_wait_step(quiet, quiet_after, interval)
-                if step <= 0.0:
-                    yield _KEEPALIVE
-                    step = interval
-                    if res_fut.done():
-                        break
-                timeout_fut: asyncio.Future[None] = loop.create_future()
-
-                def _wake_on_done(
-                    _fut: asyncio.Future[Any],
-                    tf: asyncio.Future[None] = timeout_fut,
-                ) -> None:
-                    if not tf.done():
-                        tf.set_result(None)
-
-                res_fut.add_done_callback(_wake_on_done)
-                timer = loop.call_later(
-                    step,
-                    lambda tf=timeout_fut: None if tf.done() else tf.set_result(None),
-                )
-                try:
-                    await timeout_fut
-                finally:
-                    timer.cancel()
-                    res_fut.remove_done_callback(_wake_on_done)
-
-                if not res_fut.done():
-                    quiet += step
-                    if quiet >= quiet_after:
-                        yield _KEEPALIVE
-
-            result_waiter = None
-            chunk = res_fut.result()
-            if chunk is done_sentinel:
-                return
-            quiet = 0.0
-            yield chunk
-    finally:
-        if pull_waiter is not None and not pull_waiter.done():
-            pull_waiter.cancel()
-        if reader_task is not None:
-            await _discard_pending_task(reader_task)
-        if result_waiter is not None:
-            if not result_waiter.done():
-                result_waiter.cancel()
-            elif not result_waiter.cancelled():
-                result_waiter.exception()
-
-
-async def _discard_pending_task(task: asyncio.Task[Any]) -> None:
-    """Cancel and drain a task the caller stopped awaiting."""
-    if task.done():
-        return
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    """Yield upstream chunks, inserting ``_KEEPALIVE`` during long silences."""
+    async for item in iter_with_keepalive(
+        stream,
+        sentinel=_KEEPALIVE,
+        quiet_after=quiet_after,
+        interval=interval,
+        pop_ready=getattr(stream, "pop_ready_nowait", None),
+    ):
+        yield item
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,7 +288,8 @@ class OpenAIChatProvider(BaseProvider):
         self._admission = admission
         self._default_headers = default_headers
         self._client = self._build_client(api_key_provider or self._api_key)
-        self._key_clients: dict[tuple[int, str], Any] = {}
+        self._key_clients_owner: Any = self._client
+        self._key_clients: dict[str, Any] = {}
         self._key_pool = (
             ApiKeyPool(
                 config.api_keys,
@@ -466,12 +343,13 @@ class OpenAIChatProvider(BaseProvider):
 
     def _client_for_key(self, key: str) -> Any:
         """Return a cached per-key AsyncOpenAI view sharing the underlying HTTP pool."""
-        # id(self._client) only invalidates the cache if the client is replaced.
-        cache_key = (id(self._client), key)
-        cached = self._key_clients.get(cache_key)
+        if self._key_clients_owner is not self._client:
+            self._key_clients.clear()
+            self._key_clients_owner = self._client
+        cached = self._key_clients.get(key)
         if cached is None:
             cached = self._client.with_options(api_key=key)
-            self._key_clients[cache_key] = cached
+            self._key_clients[key] = cached
         return cached
 
     @property
@@ -506,6 +384,10 @@ class OpenAIChatProvider(BaseProvider):
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
+        key_clients = getattr(self, "_key_clients", None)
+        if key_clients is not None:
+            key_clients.clear()
+        self._key_clients_owner = None
         client = getattr(self, "_client", None)
         if client is not None:
             await client.close()
@@ -927,6 +809,9 @@ class OpenAIChatProvider(BaseProvider):
             done, _ = await asyncio.wait({task1}, timeout=hedge_delay)
 
             if task1 in done:
+                if task1.cancelled():
+                    tasks.clear()
+                    raise asyncio.CancelledError
                 exc = task1.exception()
                 if exc is None:
                     key_pool.mark_succeeded(key1)
@@ -996,7 +881,11 @@ class OpenAIChatProvider(BaseProvider):
                 )
                 for finished in done_tasks:
                     k = tasks.pop(finished)
-                    exc = finished.exception()
+                    exc = (
+                        asyncio.CancelledError()
+                        if finished.cancelled()
+                        else finished.exception()
+                    )
                     if exc is None:
                         winner_stream = finished.result()
                         key_pool.mark_succeeded(k)

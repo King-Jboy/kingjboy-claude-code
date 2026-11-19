@@ -10,6 +10,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+import orjson
+
 from .errors import ResponsesConversionError
 from .models import OpenAIResponsesRequest
 
@@ -70,7 +72,7 @@ class ResponsesStore:
             "instructions": request.instructions,
         }
         # Reject non-JSON state before mutating the in-memory continuation chain.
-        json.dumps(record, ensure_ascii=False)
+        _encode_json_bytes(record)
         with self._lock:
             self._load_locked()
             self._records.pop(response_id, None)
@@ -88,10 +90,14 @@ class ResponsesStore:
         self._loaded = True
         assert self._path is not None
         try:
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = self._path.read_bytes()
+            try:
+                payload = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                payload = json.loads(raw.decode("utf-8"))
         except FileNotFoundError:
             return
-        except OSError, json.JSONDecodeError:
+        except OSError, UnicodeDecodeError, json.JSONDecodeError:
             return
         records = payload.get("records") if isinstance(payload, dict) else None
         if not isinstance(records, dict):
@@ -107,7 +113,7 @@ class ResponsesStore:
         if self._path is None:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"records": self._records}, ensure_ascii=False)
+        payload = _encode_json_bytes({"records": self._records})
         fd, temporary_name = tempfile.mkstemp(
             dir=self._path.parent,
             prefix=f".{self._path.name}.",
@@ -115,7 +121,7 @@ class ResponsesStore:
         )
         temporary = Path(temporary_name)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as file:
+            with os.fdopen(fd, "wb") as file:
                 file.write(payload)
                 file.flush()
                 os.fsync(file.fileno())
@@ -144,3 +150,10 @@ def _valid_record(value: object) -> bool:
             or isinstance(value.get("instructions"), str)
         )
     )
+
+
+def _encode_json_bytes(value: Any) -> bytes:
+    try:
+        return orjson.dumps(value)
+    except TypeError, ValueError:
+        return json.dumps(value, ensure_ascii=False).encode("utf-8")

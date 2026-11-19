@@ -1383,3 +1383,54 @@ def test_admin_context_windows_editor_persists_and_prunes_removed_models(
         "nvidia_nim/deepseek-ai/deepseek-v4.1-flash": 131072,
         "nvidia_nim/mistralai/mistral-large-4-1t-a52b": None,
     }
+
+
+def test_admin_local_provider_status_normalizes_urls_and_passes_lmstudio_auth(
+    monkeypatch, tmp_path
+):
+    _set_home(monkeypatch, tmp_path)
+    _clear_process_config(monkeypatch)
+    app = create_test_app()
+
+    probed: list[tuple[str, dict[str, str] | None]] = []
+
+    class RecordingAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url: str, headers: dict[str, str] | None = None):
+            probed.append((url, headers))
+            return httpx.Response(200, json={"data": []})
+
+    fake_config = {
+        "fields": [
+            {"key": "LM_STUDIO_BASE_URL", "value": "http://localhost:1234"},
+            {"key": "LM_STUDIO_API_KEY", "value": "lm-secret"},
+            {"key": "OLLAMA_BASE_URL", "value": "http://localhost:11434/v1"},
+        ]
+    }
+    with (
+        patch.object(
+            app.state.services.admin,
+            "admin_config",
+            AsyncMock(return_value=fake_config),
+        ),
+        patch(
+            "free_claude_code.api.admin_routes.httpx.AsyncClient",
+            RecordingAsyncClient,
+        ),
+    ):
+        response = _local_client(app).get("/admin/api/providers/local-status")
+
+    assert response.status_code == 200
+    assert (
+        "http://localhost:1234/v1/models",
+        {"Authorization": "Bearer lm-secret"},
+    ) in probed
+    assert ("http://localhost:11434/api/tags", None) in probed

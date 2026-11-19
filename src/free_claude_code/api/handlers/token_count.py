@@ -20,7 +20,7 @@ from free_claude_code.core.anthropic import (
     get_token_count,
 )
 from free_claude_code.core.diagnostics import safe_exception_message
-from free_claude_code.core.trace import trace_event
+from free_claude_code.core.trace import LazyTraceValue, trace_event
 
 
 class TokenCountHandler:
@@ -60,8 +60,6 @@ class TokenCountHandler:
                     provider_model_ref=routed.resolved.provider_model_ref,
                     gateway_model=routed.resolved.original_model,
                 )
-                request_snapshot = anthropic_request_snapshot(routed.request)
-                request_snapshot["model"] = routed.resolved.original_model
                 trace_event(
                     stage="ingress",
                     event="free_claude_code.api.count_tokens.completed",
@@ -69,7 +67,12 @@ class TokenCountHandler:
                     request_id=request_id,
                     message_count=len(routed.request.messages),
                     input_tokens=tokens,
-                    snapshot=request_snapshot,
+                    snapshot=LazyTraceValue(
+                        lambda: {
+                            **anthropic_request_snapshot(routed.request),
+                            "model": routed.resolved.original_model,
+                        }
+                    ),
                 )
                 return TokenCountResponse(input_tokens=tokens)
             except ApplicationError:

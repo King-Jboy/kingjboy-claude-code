@@ -4,9 +4,10 @@ import asyncio
 import ssl
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from enum import Enum, StrEnum, auto
+from typing import cast
 
 import httpx
 import httpx2
@@ -298,3 +299,136 @@ def is_retryable_stream_error(exc: BaseException) -> bool:
             openai.APIConnectionError,
         ),
     )
+
+
+def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> float:
+    if quiet >= quiet_after:
+        return interval
+    return max(0.0, quiet_after - quiet)
+
+
+async def _discard_pending_task(task: asyncio.Task[object]) -> None:
+    """Cancel and drain a task the caller stopped awaiting."""
+    if task.done():
+        return
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def iter_with_keepalive[ItemT, SentinelT](
+    source: AsyncIterator[ItemT],
+    *,
+    sentinel: SentinelT,
+    quiet_after: float,
+    interval: float,
+    pop_ready: Callable[[], tuple[bool, ItemT]] | None = None,
+) -> AsyncIterator[ItemT | SentinelT]:
+    """Yield items from ``source``, emitting ``sentinel`` during quiet periods."""
+    iterator = aiter(source)
+    loop = asyncio.get_running_loop()
+
+    pull_waiter: asyncio.Future[None] | None = None
+    result_waiter: asyncio.Future[object] | None = None
+    done_sentinel = object()
+
+    async def _reader() -> None:
+        nonlocal pull_waiter, result_waiter
+        while True:
+            waiter: asyncio.Future[None] = loop.create_future()
+            pull_waiter = waiter
+            await waiter
+            pull_waiter = None
+            target = result_waiter
+            try:
+                item = await anext(iterator)
+            except StopAsyncIteration:
+                if target is not None and not target.done():
+                    target.set_result(done_sentinel)
+                return
+            except asyncio.CancelledError:
+                if target is not None and not target.done():
+                    target.cancel()
+                raise
+            except BaseException as exc:
+                if target is not None and not target.done():
+                    target.set_exception(exc)
+                return
+            else:
+                if target is not None and not target.done():
+                    target.set_result(item)
+
+    reader_task: asyncio.Task[None] | None = None
+    quiet = 0.0
+    try:
+        while True:
+            if pop_ready is not None:
+                has_ready, ready_item = pop_ready()
+                if has_ready:
+                    quiet = 0.0
+                    yield ready_item
+                    continue
+
+            if reader_task is None:
+                reader_task = asyncio.create_task(_reader())
+
+            while pull_waiter is None:
+                if reader_task.done():
+                    return
+                await asyncio.sleep(0)
+
+            res_fut: asyncio.Future[object] = loop.create_future()
+            result_waiter = res_fut
+            waiter = pull_waiter
+            pull_waiter = None
+            if not waiter.done():
+                waiter.set_result(None)
+
+            while not res_fut.done():
+                step = _keepalive_wait_step(quiet, quiet_after, interval)
+                if step <= 0.0:
+                    yield sentinel
+                    step = interval
+                    if res_fut.done():
+                        break
+                timeout_fut: asyncio.Future[None] = loop.create_future()
+
+                def _wake_on_done(
+                    _fut: asyncio.Future[object],
+                    tf: asyncio.Future[None] = timeout_fut,
+                ) -> None:
+                    if not tf.done():
+                        tf.set_result(None)
+
+                res_fut.add_done_callback(_wake_on_done)
+                timer = loop.call_later(
+                    step,
+                    lambda tf=timeout_fut: None if tf.done() else tf.set_result(None),
+                )
+                try:
+                    await timeout_fut
+                finally:
+                    timer.cancel()
+                    res_fut.remove_done_callback(_wake_on_done)
+
+                if not res_fut.done():
+                    quiet += step
+                    if quiet >= quiet_after:
+                        yield sentinel
+
+            result_waiter = None
+            item = res_fut.result()
+            if item is done_sentinel:
+                return
+            quiet = 0.0
+            yield cast(ItemT, item)
+    finally:
+        if pull_waiter is not None and not pull_waiter.done():
+            pull_waiter.cancel()
+        if reader_task is not None:
+            await _discard_pending_task(reader_task)
+        if result_waiter is not None:
+            if not result_waiter.done():
+                result_waiter.cancel()
+            elif not result_waiter.cancelled():
+                result_waiter.exception()

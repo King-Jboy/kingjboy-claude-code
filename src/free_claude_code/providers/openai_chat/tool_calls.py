@@ -6,6 +6,8 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+import orjson
+
 from free_claude_code.core.anthropic import OpenAIToolNameCodec
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import (
@@ -466,8 +468,8 @@ def restore_tool_argument_aliases(
 ) -> str | None:
     """Restore provider-private argument aliases in one complete JSON object."""
     try:
-        parsed = json.loads(argument_json)
-    except json.JSONDecodeError:
+        parsed = orjson.loads(argument_json)
+    except ValueError:
         return None
     if not isinstance(parsed, dict):
         return argument_json

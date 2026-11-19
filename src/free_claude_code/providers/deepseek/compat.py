@@ -9,10 +9,14 @@ from free_claude_code.application.errors import InvalidRequestError
 from free_claude_code.config.constants import ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS
 from free_claude_code.core.anthropic import (
     ReasoningReplayMode,
-    dump_messages_request,
     serialize_tool_result_content,
 )
-from free_claude_code.core.anthropic.models import MessagesRequest
+from free_claude_code.core.anthropic.content import get_block_attr, get_block_type
+from free_claude_code.core.anthropic.models import (
+    ContentBlockText,
+    Message,
+    MessagesRequest,
+)
 from free_claude_code.core.reasoning import (
     ReasoningControl,
     ReasoningEffort,
@@ -44,6 +48,14 @@ _OMITTED_ATTACHMENT_TEXT = (
     "[attachment omitted: DeepSeek does not support image or document inputs]"
 )
 _OMITTED_ATTACHMENT_BLOCK = {"type": "text", "text": _OMITTED_ATTACHMENT_TEXT}
+_OMITTED_ATTACHMENT_TEXT_BLOCK = ContentBlockText.model_construct(
+    type="text", text=_OMITTED_ATTACHMENT_TEXT
+)
+
+_ASSISTANT_TOOL_USE_TYPES = frozenset({"tool_use", "mcp_tool_use"})
+_USER_TOOL_RESULT_TYPES = frozenset(
+    {"tool_result", "mcp_tool_result", "tool_search_tool_result"}
+)
 
 
 def _is_vision_capable_model(model: str | None) -> bool:
@@ -69,52 +81,76 @@ def build_deepseek_request_body(
     )
 
     vision_capable = _is_vision_capable_model(request_data.model)
-    data = dump_messages_request(request_data)
-    if "messages" in data:
-        data["messages"] = _strip_unsupported_attachment_blocks(
-            data["messages"], allow_attachments=vision_capable
-        )
-    _validate_deepseek_request_dict(data, allow_attachments=vision_capable)
-    _downgrade_forced_tool_choice(data)
+    messages = _strip_unsupported_attachment_blocks_models(
+        request_data.messages, allow_attachments=vision_capable
+    )
+    _validate_deepseek_request(request_data, messages, allow_attachments=vision_capable)
+    tool_choice = _downgrade_forced_tool_choice_value(request_data.tool_choice)
+    output_config = request_data.output_config
+    context_management = request_data.context_management
 
-    has_tool_history = _has_tool_history(data)
-    has_replayable_tool_thinking = _all_tool_calls_have_replayable_thinking(data)
+    has_tool_history = _has_tool_history_models(messages)
+    has_replayable_tool_thinking = _all_tool_calls_have_replayable_thinking_models(
+        messages
+    )
     unsafe_tool_followup = has_tool_history and not has_replayable_tool_thinking
     effective_reasoning = reasoning
+    tool_count = len(request_data.tools) if request_data.tools else 0
     if reasoning.control is not ReasoningControl.OFF:
         if unsafe_tool_followup:
             logger.debug(
                 "DEEPSEEK_REQUEST: disabling thinking for tool follow-up without "
                 "replayable thinking model={} msgs={} tools={}",
-                data.get("model"),
-                len(data.get("messages", [])),
-                len(data.get("tools", [])),
+                request_data.model,
+                len(messages),
+                tool_count,
             )
-            _remove_deepseek_thinking_hints(data)
+            output_config, context_management = _clean_deepseek_thinking_hints(
+                output_config, context_management
+            )
             effective_reasoning = ReasoningPolicy.off()
         elif has_tool_history:
             logger.debug(
                 "DEEPSEEK_REQUEST: keeping thinking for tool follow-up with "
                 "replayable thinking model={} msgs={} tools={}",
-                data.get("model"),
-                len(data.get("messages", [])),
-                len(data.get("tools", [])),
+                request_data.model,
+                len(messages),
+                tool_count,
             )
-        elif data.get("tools") or data.get("tool_choice"):
+        elif request_data.tools or tool_choice:
             logger.debug(
                 "DEEPSEEK_REQUEST: keeping thinking for initial tool request "
                 "model={} msgs={} tools={}",
-                data.get("model"),
-                len(data.get("messages", [])),
-                len(data.get("tools", [])),
+                request_data.model,
+                len(messages),
+                tool_count,
             )
 
-    if "messages" in data:
-        data["messages"] = _normalize_tool_result_content(
-            sanitize_deepseek_messages_for_openai(data["messages"])
-        )
+    sanitized_messages = _sanitize_and_normalize_messages_models(messages)
 
-    sanitized_request = MessagesRequest.model_validate(data)
+    sanitized_request = MessagesRequest.model_construct(
+        model=request_data.model,
+        original_model=request_data.original_model,
+        resolved_provider_model=request_data.resolved_provider_model,
+        max_tokens=request_data.max_tokens,
+        messages=sanitized_messages,
+        system=request_data.system,
+        stop_sequences=request_data.stop_sequences,
+        stream=request_data.stream,
+        temperature=request_data.temperature,
+        top_p=request_data.top_p,
+        top_k=request_data.top_k,
+        metadata=request_data.metadata,
+        tools=request_data.tools,
+        tool_choice=tool_choice,
+        parallel_tool_calls=request_data.parallel_tool_calls,
+        thinking=request_data.thinking,
+        context_management=context_management,
+        output_config=output_config,
+        mcp_servers=request_data.mcp_servers,
+        extra_body=request_data.extra_body,
+        betas=request_data.betas,
+    )
     body = build_openai_chat_request_body(
         sanitized_request,
         reasoning=effective_reasoning,
@@ -171,76 +207,91 @@ def sanitize_deepseek_messages_for_openai(messages: Any) -> Any:
     return sanitized
 
 
-def _strip_unsupported_attachment_blocks(
-    messages: Any, *, allow_attachments: bool = False
-) -> Any:
-    if not isinstance(messages, list):
-        return messages
+def _copy_block_with_content(block: Any, content: Any) -> Any:
+    if isinstance(block, dict):
+        copied = dict(block)
+        copied["content"] = content
+        return copied
+    if hasattr(block, "model_copy"):
+        return block.model_copy(update={"content": content}, deep=False)
+    return block
 
-    stripped: list[Any] = []
+
+def _strip_unsupported_attachment_blocks_models(
+    messages: list[Message], *, allow_attachments: bool = False
+) -> list[Message]:
+    stripped: list[Message] = []
     top_level_dropped: dict[str, int] = {}
     nested_dropped: dict[str, int] = {}
     placeholder_replacements = 0
+    any_changed = False
 
     for message in messages:
-        if not isinstance(message, dict):
-            stripped.append(message)
-            continue
-        content = message.get("content")
+        content = message.content
         if not isinstance(content, list):
             stripped.append(message)
             continue
 
         new_content: list[Any] = []
+        message_changed = False
         message_dropped_attachment = False
         for block in content:
-            if isinstance(block, dict):
-                btype = block.get("type")
-                if btype in _STRIPPABLE_MESSAGE_BLOCK_TYPES:
-                    if (
-                        allow_attachments
-                        and btype in _FORWARDABLE_ATTACHMENT_BLOCK_TYPES
-                    ):
-                        new_content.append(block)
-                        continue
-                    top_level_dropped[btype] = top_level_dropped.get(btype, 0) + 1
-                    message_dropped_attachment = True
+            btype = get_block_type(block)
+            if btype in _STRIPPABLE_MESSAGE_BLOCK_TYPES:
+                if allow_attachments and btype in _FORWARDABLE_ATTACHMENT_BLOCK_TYPES:
+                    new_content.append(block)
                     continue
-                if btype == "tool_result":
-                    inner = block.get("content")
-                    if isinstance(inner, list):
-                        filtered_inner: list[Any] = []
-                        for sub in inner:
+                top_level_dropped[btype] = top_level_dropped.get(btype, 0) + 1
+                message_dropped_attachment = True
+                message_changed = True
+                continue
+            if btype == "tool_result":
+                inner = get_block_attr(block, "content")
+                if isinstance(inner, list):
+                    filtered_inner: list[Any] = []
+                    inner_changed = False
+                    for sub in inner:
+                        sub_type = get_block_type(sub)
+                        if sub_type in _STRIPPABLE_MESSAGE_BLOCK_TYPES:
                             if (
-                                isinstance(sub, dict)
-                                and sub.get("type") in _STRIPPABLE_MESSAGE_BLOCK_TYPES
+                                allow_attachments
+                                and sub_type in _FORWARDABLE_ATTACHMENT_BLOCK_TYPES
                             ):
-                                sub_type = sub["type"]
-                                if (
-                                    allow_attachments
-                                    and sub_type in _FORWARDABLE_ATTACHMENT_BLOCK_TYPES
-                                ):
-                                    filtered_inner.append(sub)
-                                    continue
-                                nested_dropped[sub_type] = (
-                                    nested_dropped.get(sub_type, 0) + 1
-                                )
+                                filtered_inner.append(sub)
                                 continue
-                            filtered_inner.append(sub)
+                            nested_dropped[sub_type] = (
+                                nested_dropped.get(sub_type, 0) + 1
+                            )
+                            inner_changed = True
+                            continue
+                        filtered_inner.append(sub)
+                    if inner_changed:
                         if not filtered_inner:
                             filtered_inner = [_OMITTED_ATTACHMENT_BLOCK]
                             placeholder_replacements += 1
-                        new_block = dict(block)
-                        new_block["content"] = filtered_inner
-                        new_content.append(new_block)
+                        new_content.append(
+                            _copy_block_with_content(block, filtered_inner)
+                        )
+                        message_changed = True
                         continue
             new_content.append(block)
+
         if not new_content and message_dropped_attachment:
-            new_content = [_OMITTED_ATTACHMENT_BLOCK]
+            new_content = [_OMITTED_ATTACHMENT_TEXT_BLOCK]
             placeholder_replacements += 1
-        new_msg = dict(message)
-        new_msg["content"] = new_content
-        stripped.append(new_msg)
+            message_changed = True
+
+        if message_changed:
+            any_changed = True
+            stripped.append(
+                Message.model_construct(
+                    role=message.role,
+                    content=new_content,
+                    reasoning_content=message.reasoning_content,
+                )
+            )
+        else:
+            stripped.append(message)
 
     if top_level_dropped or nested_dropped:
         logger.warning(
@@ -251,14 +302,14 @@ def _strip_unsupported_attachment_blocks(
             dict(nested_dropped),
             placeholder_replacements,
         )
-    return stripped
+    return stripped if any_changed else messages
 
 
-def _is_server_listed_tool(tool: Mapping[str, Any]) -> bool:
-    name = (tool.get("name") or "").strip()
+def _is_server_listed_tool(tool: Any) -> bool:
+    name = (get_block_attr(tool, "name") or "").strip()
     if name in ("web_search", "web_fetch"):
         return True
-    typ = tool.get("type")
+    typ = get_block_attr(tool, "type")
     if isinstance(typ, str):
         return typ.startswith("web_search") or typ.startswith("web_fetch")
     return False
@@ -270,73 +321,63 @@ def _walk_block_list_for_unsupported(
     if not isinstance(blocks, list):
         return
     for block in blocks:
-        if not isinstance(block, dict):
+        btype = get_block_type(block)
+        if btype is None:
             continue
-        btype = block.get("type")
         if btype in _UNSUPPORTED_MESSAGE_BLOCK_TYPES:
             if allow_attachments and btype in _FORWARDABLE_ATTACHMENT_BLOCK_TYPES:
                 continue
             raise InvalidRequestError(
                 f"DeepSeek native does not support {btype!r} blocks ({where})."
             )
-        if btype == "tool_result" and "content" in block:
-            _walk_block_list_for_unsupported(
-                block["content"],
-                where=f"{where} (tool_result content)",
-                allow_attachments=allow_attachments,
-            )
+        if btype == "tool_result":
+            inner = get_block_attr(block, "content")
+            if inner is not None:
+                _walk_block_list_for_unsupported(
+                    inner,
+                    where=f"{where} (tool_result content)",
+                    allow_attachments=allow_attachments,
+                )
 
 
-def _validate_deepseek_request_dict(
-    data: dict[str, Any], *, allow_attachments: bool = False
+def _validate_deepseek_request(
+    request_data: MessagesRequest,
+    messages: list[Message],
+    *,
+    allow_attachments: bool = False,
 ) -> None:
-    mcp = data.get("mcp_servers")
-    if mcp:
+    if request_data.mcp_servers:
         raise InvalidRequestError("DeepSeek does not support mcp_servers on requests.")
 
-    for tool in data.get("tools") or ():
-        if not isinstance(tool, dict):
-            continue
+    for tool in request_data.tools or ():
         if _is_server_listed_tool(tool):
             raise InvalidRequestError(
                 "DeepSeek does not support listed Anthropic server tools "
                 "(web_search / web_fetch). Remove them or use a different provider."
             )
 
-    for i, message in enumerate(data.get("messages") or ()):
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        if isinstance(content, list):
+    for i, message in enumerate(messages):
+        if isinstance(message.content, list):
             _walk_block_list_for_unsupported(
-                content,
+                message.content,
                 where=f"messages[{i}].content",
                 allow_attachments=allow_attachments,
             )
 
-    system = data.get("system")
-    if isinstance(system, list):
+    if isinstance(request_data.system, list):
         _walk_block_list_for_unsupported(
-            system, where="system", allow_attachments=allow_attachments
+            request_data.system, where="system", allow_attachments=allow_attachments
         )
 
 
-_ASSISTANT_TOOL_USE_TYPES = frozenset({"tool_use", "mcp_tool_use"})
-_USER_TOOL_RESULT_TYPES = frozenset(
-    {"tool_result", "mcp_tool_result", "tool_search_tool_result"}
-)
-
-
-def _has_tool_history_blocks(message: Mapping[str, Any]) -> bool:
-    role = message.get("role")
-    content = message.get("content")
+def _has_tool_history_blocks_model(message: Message) -> bool:
+    role = message.role
+    content = message.content
     if not isinstance(content, list):
         return False
 
     for block in content:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get("type")
+        btype = get_block_type(block)
         if role == "assistant" and btype in _ASSISTANT_TOOL_USE_TYPES:
             return True
         if role == "user" and btype in _USER_TOOL_RESULT_TYPES:
@@ -344,19 +385,17 @@ def _has_tool_history_blocks(message: Mapping[str, Any]) -> bool:
     return False
 
 
-def _has_replayable_thinking_before_tool_use(message: Mapping[str, Any]) -> bool:
-    if message.get("role") != "assistant":
+def _has_replayable_thinking_before_tool_use_model(message: Message) -> bool:
+    if message.role != "assistant":
         return False
-    content = message.get("content")
+    content = message.content
     if not isinstance(content, list):
         return False
 
-    has_thinking = isinstance(message.get("reasoning_content"), str)
+    has_thinking = isinstance(message.reasoning_content, str)
     for block in content:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get("type")
-        if btype == "thinking" and isinstance(block.get("thinking"), str):
+        btype = get_block_type(block)
+        if btype == "thinking" and isinstance(get_block_attr(block, "thinking"), str):
             has_thinking = True
             continue
         if btype in _ASSISTANT_TOOL_USE_TYPES:
@@ -374,114 +413,153 @@ def _assistant_has_tool_use(message: Mapping[str, Any]) -> bool:
     )
 
 
-def _has_tool_history(data: dict[str, Any]) -> bool:
-    for message in data.get("messages") or ():
-        if isinstance(message, Mapping) and _has_tool_history_blocks(message):
-            return True
-    return False
+def _assistant_has_tool_use_model(message: Message) -> bool:
+    if message.role != "assistant":
+        return False
+    content = message.content
+    return isinstance(content, list) and any(
+        get_block_type(block) in _ASSISTANT_TOOL_USE_TYPES for block in content
+    )
 
 
-def _all_tool_calls_have_replayable_thinking(data: dict[str, Any]) -> bool:
+def _has_tool_history_models(messages: list[Message]) -> bool:
+    return any(_has_tool_history_blocks_model(message) for message in messages)
+
+
+def _all_tool_calls_have_replayable_thinking_models(messages: list[Message]) -> bool:
     found_tool_call = False
-    for message in data.get("messages") or ():
-        if not isinstance(message, Mapping) or not _assistant_has_tool_use(message):
+    for message in messages:
+        if not _assistant_has_tool_use_model(message):
             continue
         found_tool_call = True
-        if not _has_replayable_thinking_before_tool_use(message):
+        if not _has_replayable_thinking_before_tool_use_model(message):
             return False
     return found_tool_call
 
 
-def _remove_deepseek_thinking_hints(data: dict[str, Any]) -> None:
-    output_config = data.get("output_config")
+def _clean_deepseek_thinking_hints(
+    output_config: dict[str, Any] | None,
+    context_management: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    cleaned_output = output_config
     if isinstance(output_config, dict) and "effort" in output_config:
-        cleaned_output_config = dict(output_config)
-        cleaned_output_config.pop("effort", None)
-        if cleaned_output_config:
-            data["output_config"] = cleaned_output_config
-        else:
-            data.pop("output_config", None)
+        tmp = dict(output_config)
+        tmp.pop("effort", None)
+        cleaned_output = tmp or None
 
-    context_management = data.get("context_management")
-    if not isinstance(context_management, dict):
-        return
-    edits = context_management.get("edits")
-    if not isinstance(edits, list):
-        return
-    filtered_edits = [
-        edit
-        for edit in edits
-        if not (
-            isinstance(edit, dict)
-            and isinstance(edit.get("type"), str)
-            and edit["type"].startswith("clear_thinking_")
-        )
-    ]
-    if len(filtered_edits) == len(edits):
-        return
-    cleaned_context_management = dict(context_management)
-    if filtered_edits:
-        cleaned_context_management["edits"] = filtered_edits
-        data["context_management"] = cleaned_context_management
-    else:
-        cleaned_context_management.pop("edits", None)
-        if cleaned_context_management:
-            data["context_management"] = cleaned_context_management
-        else:
-            data.pop("context_management", None)
-
-
-def _normalize_tool_result_content(messages: Any) -> Any:
-    if not isinstance(messages, list):
-        return messages
-
-    normalized: list[Any] = []
-    for message in messages:
-        if not isinstance(message, dict):
-            normalized.append(message)
-            continue
-
-        content = message.get("content")
-        if not isinstance(content, list):
-            normalized.append(message)
-            continue
-
-        new_content: list[Any] = []
-        for block in content:
-            if not isinstance(block, dict):
-                new_content.append(block)
-                continue
-
-            if block.get("type") in _USER_TOOL_RESULT_TYPES:
-                normalized_block = dict(block)
-                normalized_block["content"] = serialize_tool_result_content(
-                    block.get("content")
+    cleaned_ctx = context_management
+    if isinstance(context_management, dict):
+        edits = context_management.get("edits")
+        if isinstance(edits, list):
+            filtered_edits = [
+                edit
+                for edit in edits
+                if not (
+                    isinstance(edit, dict)
+                    and isinstance(edit.get("type"), str)
+                    and edit["type"].startswith("clear_thinking_")
                 )
-                new_content.append(normalized_block)
+            ]
+            if len(filtered_edits) != len(edits):
+                tmp_ctx = dict(context_management)
+                if filtered_edits:
+                    tmp_ctx["edits"] = filtered_edits
+                    cleaned_ctx = tmp_ctx
+                else:
+                    tmp_ctx.pop("edits", None)
+                    cleaned_ctx = tmp_ctx or None
+
+    return cleaned_output, cleaned_ctx
+
+
+def _sanitize_and_normalize_messages_models(
+    messages: list[Message],
+) -> list[Message]:
+    result: list[Message] = []
+    any_changed = False
+
+    for message in messages:
+        content = message.content
+        reasoning_content = message.reasoning_content
+        changed = False
+
+        if message.role == "assistant":
+            replay_tool_reasoning = _assistant_has_tool_use_model(message)
+            if not replay_tool_reasoning and reasoning_content is not None:
+                reasoning_content = None
+                changed = True
+            if isinstance(content, list):
+                filtered: list[Any] = []
+                for block in content:
+                    btype = get_block_type(block)
+                    if btype == "redacted_thinking" or (
+                        btype == "thinking" and not replay_tool_reasoning
+                    ):
+                        changed = True
+                        continue
+                    if btype in _USER_TOOL_RESULT_TYPES:
+                        raw_inner = get_block_attr(block, "content")
+                        normalized_inner = serialize_tool_result_content(raw_inner)
+                        if normalized_inner is not raw_inner:
+                            filtered.append(
+                                _copy_block_with_content(block, normalized_inner)
+                            )
+                            changed = True
+                            continue
+                    filtered.append(block)
+                new_content: Any = filtered or ""
+                if not filtered and content != "":
+                    changed = True
             else:
-                new_content.append(block)
+                new_content = content
+        else:
+            if isinstance(content, list):
+                new_blocks: list[Any] = []
+                for block in content:
+                    if get_block_type(block) in _USER_TOOL_RESULT_TYPES:
+                        raw_inner = get_block_attr(block, "content")
+                        normalized_inner = serialize_tool_result_content(raw_inner)
+                        if normalized_inner is not raw_inner:
+                            new_blocks.append(
+                                _copy_block_with_content(block, normalized_inner)
+                            )
+                            changed = True
+                            continue
+                    new_blocks.append(block)
+                new_content = new_blocks if changed else content
+            else:
+                new_content = content
 
-        new_msg = dict(message)
-        new_msg["content"] = new_content
-        normalized.append(new_msg)
+        if changed:
+            any_changed = True
+            result.append(
+                Message.model_construct(
+                    role=message.role,
+                    content=new_content,
+                    reasoning_content=reasoning_content,
+                )
+            )
+        else:
+            result.append(message)
 
-    return normalized
+    return result if any_changed else messages
 
 
-def _downgrade_forced_tool_choice(data: dict[str, Any]) -> None:
-    tool_choice = data.get("tool_choice")
+def _downgrade_forced_tool_choice_value(
+    tool_choice: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     if not isinstance(tool_choice, dict):
-        return
+        return tool_choice
     if tool_choice.get("type") != "tool" or not isinstance(
         tool_choice.get("name"), str
     ):
-        return
+        return tool_choice
     logger.debug(
         "DEEPSEEK_REQUEST: downgrading forced tool_choice to auto for unsupported "
         "native request shape tool={}",
         tool_choice["name"],
     )
-    data["tool_choice"] = {"type": "auto"}
+    return {"type": "auto"}
 
 
 def _apply_deepseek_chat_extras(

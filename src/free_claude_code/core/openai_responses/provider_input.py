@@ -1,6 +1,5 @@
 """Convert Anthropic Messages into an upstream OpenAI Responses request."""
 
-import json
 from typing import Any
 
 from free_claude_code.core.anthropic.content import get_block_attr, get_block_type
@@ -26,6 +25,7 @@ from free_claude_code.core.history_replay import (
     validate_hosted_tool_history,
 )
 from free_claude_code.core.json_types import JsonObject
+from free_claude_code.core.json_utils import fast_json_dumps
 from free_claude_code.core.openai_tool_names import OpenAIToolNameCodec
 from free_claude_code.core.reasoning import ReasoningPolicy
 from free_claude_code.core.tool_schema_patterns import translate_tool_schema_patterns
@@ -293,10 +293,8 @@ def _assistant_items(
                     "type": "function_call",
                     "call_id": str(get_block_attr(block, "id", "")),
                     "name": tool_names.encode(str(get_block_attr(block, "name", ""))),
-                    "arguments": json.dumps(
+                    "arguments": fast_json_dumps(
                         get_block_attr(block, "input", {}),
-                        ensure_ascii=False,
-                        separators=(",", ":"),
                     ),
                 }
             )

@@ -1,6 +1,5 @@
 import threading
 from collections import OrderedDict
-from functools import lru_cache
 
 import tiktoken
 import xxhash
@@ -11,9 +10,21 @@ from free_claude_code.core.json_utils import fast_json_dumps
 from .content import get_block_attr
 from .models import Message, SystemContent, Tool
 
-ENCODER = tiktoken.get_encoding("cl100k_base")
-
 _DISALLOWED_SPECIAL: tuple[str, ...] = ()
+_encoder: tiktoken.Encoding | None = None
+_encoder_lock = threading.Lock()
+
+
+def _get_encoder() -> tiktoken.Encoding:
+    global _encoder
+    enc = _encoder
+    if enc is not None:
+        return enc
+    with _encoder_lock:
+        if _encoder is None:
+            _encoder = tiktoken.get_encoding("cl100k_base")
+        return _encoder
+
 
 # Counts are cached by a digest of the text, not the text itself: history is
 # replayed every turn, so the same blocks recur, but keying on the strings
@@ -32,7 +43,7 @@ def _count_text_tokens(text: str) -> int:
         if cached is not None:
             _token_cache.move_to_end(key)
             return cached
-    count = len(ENCODER.encode(text, disallowed_special=_DISALLOWED_SPECIAL))
+    count = len(_get_encoder().encode(text, disallowed_special=_DISALLOWED_SPECIAL))
     with _token_cache_lock:
         _token_cache[key] = count
         _token_cache.move_to_end(key)
@@ -41,7 +52,6 @@ def _count_text_tokens(text: str) -> int:
     return count
 
 
-@lru_cache(maxsize=1024)
 def _count_tool_tokens(name: str, description: str, schema_json: str) -> int:
     return _count_text_tokens(name + description + schema_json)
 
@@ -140,7 +150,7 @@ def get_token_count(
                         total_tokens += _count_text_tokens(
                             fast_json_dumps(fallback_blob)
                         )
-                    except TypeError, ValueError:
+                    except TypeError, ValueError, OverflowError:
                         total_tokens += _count_text_tokens(str(fallback_blob))
 
     if tools:

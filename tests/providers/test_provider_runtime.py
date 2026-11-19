@@ -418,3 +418,33 @@ async def test_provider_runtime_cleanup_exceptiongroup_on_multiple_failures() ->
 
     assert not runtime.is_cached("x")
     assert not runtime.is_cached("y")
+
+
+def test_inherit_credential_state_survives_consecutive_reloads() -> None:
+    from free_claude_code.providers.key_pool import ApiKeyPool
+
+    pool1 = ApiKeyPool(("k1", "k2"), rate_limit=10, rate_window=60.0)
+    pool1.mark_rate_limited("k1")
+
+    provider1 = MagicMock()
+    provider1.api_key_pool = pool1
+
+    rt1 = ProviderRuntime(_make_settings(), {"nvidia_nim": provider1})
+
+    # Generation 2 inherits state without instantiating the provider.
+    rt2 = ProviderRuntime(_make_settings())
+    rt2.inherit_credential_state(rt1)
+
+    # Generation 3 reloads from generation 2 and still receives k1's cooldown.
+    pool3 = ApiKeyPool(("k1", "k2"), rate_limit=10, rate_window=60.0)
+    provider3 = MagicMock()
+    provider3.api_key_pool = pool3
+    rt3 = ProviderRuntime(
+        _make_settings(),
+        provider_constructor=lambda _pid, _settings: provider3,
+    )
+    rt3.inherit_credential_state(rt2)
+
+    resolved = rt3.resolve_provider("nvidia_nim")
+    assert resolved is provider3
+    assert pool3.get_next_key() == "k2"

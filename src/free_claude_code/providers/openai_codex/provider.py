@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import suppress
@@ -50,6 +51,8 @@ from free_claude_code.providers.stream_recovery import (
     HoldbackSignal,
     RecoveryController,
     RecoveryFailureAction,
+    _discard_pending_task,
+    iter_with_keepalive,
 )
 
 from .auth import OpenAIAccess, OpenAIAuthManager, OpenAIReconnectRequired
@@ -59,6 +62,8 @@ FCC_VERSION = package_version()
 
 KEEPALIVE_INTERVAL_SECONDS = 1.5
 UPSTREAM_QUIET_KEEPALIVE_SECONDS = 5.0
+KEEPALIVE_PING_INTERVAL_SECONDS = 25.0
+KEEPALIVE_IDLE_LIMIT_SECONDS = 300.0
 
 
 async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
@@ -69,20 +74,6 @@ async def _settled_within(task: asyncio.Task[Any], timeout: float) -> bool:
     return bool(done)
 
 
-def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> float:
-    if quiet >= quiet_after:
-        return interval
-    return max(0.0, quiet_after - quiet)
-
-
-async def _discard_pending_task(task: asyncio.Task[Any]) -> None:
-    if task.done():
-        return
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
-
-
 async def _sse_with_keepalive(
     events: AsyncIterator[tuple[str, dict[str, Any]]],
     *,
@@ -90,106 +81,13 @@ async def _sse_with_keepalive(
     interval: float = KEEPALIVE_INTERVAL_SECONDS,
 ) -> AsyncIterator[tuple[str, dict[str, Any]] | None]:
     """Yield upstream Responses SSE events, emitting None during long silences."""
-    iterator = aiter(events)
-    loop = asyncio.get_running_loop()
-
-    pull_waiter: asyncio.Future[None] | None = None
-    result_waiter: asyncio.Future[Any] | None = None
-    done_sentinel = object()
-
-    async def _reader() -> None:
-        nonlocal pull_waiter, result_waiter
-        while True:
-            waiter = loop.create_future()
-            pull_waiter = waiter
-            await waiter
-            pull_waiter = None
-            target = result_waiter
-            try:
-                item = await anext(iterator)
-            except StopAsyncIteration:
-                if target is not None and not target.done():
-                    target.set_result(done_sentinel)
-                return
-            except asyncio.CancelledError:
-                if target is not None and not target.done():
-                    target.cancel()
-                raise
-            except BaseException as exc:
-                if target is not None and not target.done():
-                    target.set_exception(exc)
-                return
-            else:
-                if target is not None and not target.done():
-                    target.set_result(item)
-
-    reader_task: asyncio.Task[None] | None = None
-    quiet = 0.0
-    try:
-        while True:
-            if reader_task is None:
-                reader_task = asyncio.create_task(_reader())
-
-            while pull_waiter is None:
-                if reader_task.done():
-                    return
-                await asyncio.sleep(0)
-
-            res_fut: asyncio.Future[Any] = loop.create_future()
-            result_waiter = res_fut
-            waiter = pull_waiter
-            pull_waiter = None
-            if not waiter.done():
-                waiter.set_result(None)
-
-            while not res_fut.done():
-                step = _keepalive_wait_step(quiet, quiet_after, interval)
-                if step <= 0.0:
-                    yield None
-                    step = interval
-                    if res_fut.done():
-                        break
-                timeout_fut: asyncio.Future[None] = loop.create_future()
-
-                def _wake_on_done(
-                    _fut: asyncio.Future[Any],
-                    tf: asyncio.Future[None] = timeout_fut,
-                ) -> None:
-                    if not tf.done():
-                        tf.set_result(None)
-
-                res_fut.add_done_callback(_wake_on_done)
-                timer = loop.call_later(
-                    step,
-                    lambda tf=timeout_fut: None if tf.done() else tf.set_result(None),
-                )
-                try:
-                    await timeout_fut
-                finally:
-                    timer.cancel()
-                    res_fut.remove_done_callback(_wake_on_done)
-
-                if not res_fut.done():
-                    quiet += step
-                    if quiet >= quiet_after:
-                        yield None
-
-            result_waiter = None
-            item = res_fut.result()
-            if item is done_sentinel:
-                return
-            quiet = 0.0
-            yield item
-    finally:
-        if pull_waiter is not None and not pull_waiter.done():
-            pull_waiter.cancel()
-        if reader_task is not None:
-            await _discard_pending_task(reader_task)
-        if result_waiter is not None:
-            if not result_waiter.done():
-                result_waiter.cancel()
-            elif not result_waiter.cancelled():
-                result_waiter.exception()
+    async for item in iter_with_keepalive(
+        events,
+        sentinel=None,
+        quiet_after=quiet_after,
+        interval=interval,
+    ):
+        yield item
 
 
 class _TruncatedResponsesStream(RetryableProviderProtocolError):
@@ -226,10 +124,23 @@ class OpenAICodexProvider(BaseProvider):
                 connect=config.http_connect_timeout,
                 write=config.http_write_timeout,
             ),
+            limits=httpx.Limits(
+                max_keepalive_connections=64,
+                max_connections=128,
+                keepalive_expiry=60.0,
+            ),
             headers=self._client_headers,
             http2=use_http2,
         )
         self._owns_client = client is None
+        self._last_activity_at = time.monotonic()
+        self._keepalive_task: asyncio.Task[None] | None = None
+        if self._owns_client:
+            try:
+                loop = asyncio.get_running_loop()
+                self._keepalive_task = loop.create_task(self._prewarm_and_keepalive())
+            except RuntimeError:
+                pass
 
     def preflight_stream(
         self,
@@ -241,14 +152,34 @@ class OpenAICodexProvider(BaseProvider):
 
         self._build_body(request, reasoning=reasoning)
 
+    async def _prewarm_and_keepalive(self) -> None:
+        """Keep the upstream TLS socket warm across idle gaps."""
+        while True:
+            await asyncio.sleep(KEEPALIVE_PING_INTERVAL_SECONDS)
+            idle_for = time.monotonic() - self._last_activity_at
+            if idle_for < KEEPALIVE_IDLE_LIMIT_SECONDS:
+                await self.warmup()
+
+    async def warmup(self) -> None:
+        """Pre-warm the HTTP/2 TLS socket to the upstream Codex endpoint."""
+        with suppress(Exception):
+            await self._client.head("", timeout=3.0)
+
     async def cleanup(self) -> None:
         """Close only provider-owned transport resources."""
-
+        task = getattr(self, "_keepalive_task", None)
+        if task is not None:
+            self._keepalive_task = None
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
         if self._owns_client:
             await self._client.aclose()
 
     async def list_model_infos(self) -> frozenset[ProviderModelInfo]:
         """Discover models visible to the currently connected ChatGPT account."""
+
+        self._last_activity_at = time.monotonic()
 
         async def fetch() -> Any:
             access = await self._auth.access()
@@ -281,6 +212,7 @@ class OpenAICodexProvider(BaseProvider):
     ) -> AsyncIterator[str]:
         """Stream Responses output in Anthropic Messages format."""
 
+        self._last_activity_at = time.monotonic()
         tool_names = OpenAIToolNameCodec.from_request(request)
         body = self._build_body(request, reasoning=reasoning)
         return self._run_stream(

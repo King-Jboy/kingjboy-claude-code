@@ -76,7 +76,12 @@ class ResponsesHandler:
             )
 
         try:
-            request_data = self._responses_store.resolve(request_data)
+            if request_data.previous_response_id is not None:
+                request_data = await asyncio.to_thread(
+                    self._responses_store.resolve, request_data
+                )
+            else:
+                request_data = self._responses_store.resolve(request_data)
             anthropic_payload = self._responses_adapter.to_anthropic_payload(
                 request_data
             )

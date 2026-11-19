@@ -63,7 +63,12 @@ class TranscriptionService:
     def _transcribe_sync(self, file_path: Path) -> str:
         pipe = self._get_pipeline()
         audio = _load_audio(file_path)
-        result = pipe(audio, generate_kwargs={"language": "en", "task": "transcribe"})
+        if self._model_id.lower().endswith(".en"):
+            result = pipe(audio)
+        else:
+            result = pipe(
+                audio, generate_kwargs={"language": "en", "task": "transcribe"}
+            )
         text = result.get("text", "") or ""
         if isinstance(text, list):
             text = " ".join(text) if text else ""
@@ -115,9 +120,11 @@ async def _wait_for_thread_exit(worker: asyncio.Task[str]) -> None:
     """Wait through repeated caller cancellation without cancelling thread work."""
     while not worker.done():
         try:
-            await asyncio.shield(asyncio.wait((worker,)))
+            await asyncio.shield(worker)
         except asyncio.CancelledError:
             continue
+        except BaseException:
+            return
     if not worker.cancelled():
         worker.exception()
 

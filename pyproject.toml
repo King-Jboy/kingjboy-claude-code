@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "free-claude-code"
-version = "6.25.0"
+version = "6.25.1"
 description = "Local proxy connecting coding agents to OpenAI-compatible AI providers"
 readme = "README.md"
 requires-python = ">=3.14.0"
@@ -134,6 +134,7 @@ skip-magic-trailing-comma = false
 pythonpath = ["src"]
 addopts = "-n auto"
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "live: opt-in local smoke tests that can touch real services",
     "interactive: smoke tests requiring manual user interaction",

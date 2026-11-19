@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Literal, cast
 
+import orjson
+
 from .json_types import JsonObject, JsonValue
 from .openai_chat import ChatToolResultImages
 
@@ -97,7 +99,12 @@ def encode_replay(record: ReplayRecord) -> str:
     if associated:
         payload.update(group_id=record.group_id, part=record.part)
     _validate_record(payload, associated=associated)
-    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    try:
+        raw = orjson.dumps(payload)
+    except TypeError, ValueError:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
     prefix = _ASSOCIATED_PREFIX if associated else _PREFIX
     return prefix + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 

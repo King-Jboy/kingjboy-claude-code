@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from free_claude_code.core.json_utils import fast_json_dumps
+
 from .errors import ResponsesConversionError
 from .ids import new_call_id
 
@@ -219,7 +221,7 @@ def parse_arguments(value: Any) -> dict[str, Any]:
 
 
 def normalized_function_call_arguments(value: Any) -> str:
-    return json.dumps(parse_arguments(value), separators=(",", ":"))
+    return fast_json_dumps(parse_arguments(value))
 
 
 def custom_tool_input_to_anthropic(value: Any) -> dict[str, str]:

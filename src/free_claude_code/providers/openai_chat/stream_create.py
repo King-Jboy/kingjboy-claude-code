@@ -4,8 +4,15 @@ import json
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+import httpx2
 import orjson
-from openai import APIError, AsyncOpenAI, AsyncStream
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AsyncStream,
+)
 from openai.resources.chat.completions import AsyncCompletions
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
@@ -225,7 +232,17 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
         if stripped == b"[DONE]":
             self._done = True
             return False, None
-        payload = _decode_sse_json(stripped)
+        try:
+            payload = _decode_sse_json(stripped)
+        except ValueError:
+            if event_name == "error":
+                text = stripped.decode("utf-8", errors="replace")
+                raise APIError(
+                    message=text or "An error occurred during streaming",
+                    request=self.response.request,
+                    body=text,
+                ) from None
+            raise
         if event_name == "error" or (
             isinstance(payload, dict)
             and payload.get("error") is not None
@@ -322,6 +339,10 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
                 final_chunk = self._flush_eof()
                 if final_chunk is not None:
                     yield final_chunk
+        except httpx2.TimeoutException as err:
+            raise APITimeoutError(request=self.response.request) from err
+        except httpx2.RequestError as err:
+            raise APIConnectionError(request=self.response.request) from err
         finally:
             self._done = True
             self._buf.clear()

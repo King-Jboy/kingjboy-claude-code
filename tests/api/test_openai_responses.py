@@ -1002,3 +1002,60 @@ def _anthropic_redacted_thinking_stream() -> list[str]:
         ),
         format_sse_event("message_stop", {"type": "message_stop"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_responses_handler_offloads_continuation_resolve_to_thread() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    from free_claude_code.api.handlers.responses import ResponsesHandler
+    from free_claude_code.config.settings import Settings
+    from free_claude_code.core.openai_responses import (
+        OpenAIResponsesRequest,
+        ResponsesStore,
+    )
+
+    store = ResponsesStore()
+    first = OpenAIResponsesRequest(model="claude-sonnet-4-5", input="hello")
+    store.record(
+        first,
+        {
+            "id": "resp_prev_1",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "world"}],
+                }
+            ],
+        },
+    )
+
+    to_thread_calls: list[object] = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy_to_thread(func, /, *args, **kwargs):
+        to_thread_calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    provider: Any = FakeProvider(_anthropic_text_stream("next"))
+    handler = ResponsesHandler(
+        Settings(),
+        lambda _pid: provider,
+        responses_store=store,
+    )
+    followup = OpenAIResponsesRequest(
+        model="claude-sonnet-4-5",
+        input="follow up",
+        previous_response_id="resp_prev_1",
+    )
+
+    with patch(
+        "free_claude_code.api.handlers.responses.asyncio.to_thread", spy_to_thread
+    ):
+        response = await handler.create(followup)
+
+    assert hasattr(response, "body_iterator")
+    assert any(fn == store.resolve for fn in to_thread_calls)

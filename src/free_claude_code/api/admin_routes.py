@@ -238,6 +238,7 @@ async def local_provider_status(
                     provider_id,
                     _local_provider_url(provider_id, values),
                     path,
+                    api_key=_local_provider_api_key(provider_id, values),
                 )
                 for provider_id, path in LOCAL_PROVIDER_PATHS.items()
             )
@@ -371,8 +372,31 @@ def _local_provider_url(provider_id: str, values: dict[str, str]) -> str:
     return ""
 
 
+def _local_provider_api_key(provider_id: str, values: dict[str, str]) -> str:
+    if provider_id == "lmstudio":
+        return str(values.get("LM_STUDIO_API_KEY", "") or "").strip()
+    return ""
+
+
+def _local_provider_probe_url(provider_id: str, clean_url: str, path: str) -> str:
+    if provider_id == "lmstudio":
+        if clean_url.endswith("/v1"):
+            return f"{clean_url}/models"
+        return f"{clean_url}/v1/models"
+    if provider_id == "ollama":
+        if clean_url.endswith("/v1"):
+            return f"{clean_url[:-3]}/api/tags"
+        return f"{clean_url}/api/tags"
+    return f"{clean_url}{path}"
+
+
 async def _check_local_provider(
-    client: httpx.AsyncClient, provider_id: str, base_url: str, path: str
+    client: httpx.AsyncClient,
+    provider_id: str,
+    base_url: str,
+    path: str,
+    *,
+    api_key: str = "",
 ) -> dict[str, Any]:
     clean_url = base_url.strip().rstrip("/")
     if not clean_url:
@@ -383,9 +407,14 @@ async def _check_local_provider(
             "base_url": base_url,
         }
 
-    url = f"{clean_url}{path}"
+    url = _local_provider_probe_url(provider_id, clean_url, path)
     try:
-        response = await client.get(url)
+        if api_key:
+            response = await client.get(
+                url, headers={"Authorization": f"Bearer {api_key}"}
+            )
+        else:
+            response = await client.get(url)
         ok = 200 <= response.status_code < 300
         return {
             "provider_id": provider_id,

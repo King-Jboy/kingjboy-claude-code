@@ -599,3 +599,35 @@ def test_statusless_credential_failure_is_not_an_invalid_request() -> None:
         error, provider_name="TEST", read_timeout_s=1, request_id=None
     )
     assert failure.kind is not FailureKind.INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_kind", "expected_failure_status", "expected_retryable"),
+    [
+        (401, FailureKind.AUTHENTICATION, 401, False),
+        (429, FailureKind.RATE_LIMIT, 429, True),
+        (503, FailureKind.OVERLOADED, 529, True),
+    ],
+)
+def test_httpx2_http_status_errors_classify_accurately(
+    status_code: int,
+    expected_kind: FailureKind,
+    expected_failure_status: int,
+    expected_retryable: bool,
+) -> None:
+    request = httpx2.Request("POST", "https://provider.test/v1/chat/completions")
+    response = httpx2.Response(status_code, request=request)
+    error = httpx2.HTTPStatusError(
+        f"HTTP {status_code}", request=request, response=response
+    )
+    failure = classify_provider_failure(
+        error, provider_name="TEST", read_timeout_s=1, request_id=None
+    )
+    assert failure.kind is expected_kind
+    assert failure.status_code == expected_failure_status
+    assert failure.retryable is expected_retryable
+    if expected_retryable:
+        assert retryable_upstream_status(error) == status_code
+        assert is_retryable_provider_error(error)
+    else:
+        assert retryable_upstream_status(error) is None

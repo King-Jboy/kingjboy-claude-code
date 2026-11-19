@@ -3,6 +3,7 @@
 import asyncio
 import codecs
 import socket
+import weakref
 from collections.abc import AsyncIterator
 from email.message import Message
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -174,23 +175,59 @@ def _pinned_fetch_targets(
     return targets
 
 
-async def _run_web_search(query: str) -> list[dict[str, str]]:
-    async with (
-        httpx.AsyncClient(
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+_SEARCH_CLIENTS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, httpx.AsyncClient
+] = weakref.WeakKeyDictionary()
+
+
+def _get_pooled_search_client() -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    client = _SEARCH_CLIENTS.get(loop)
+    if client is None or client.is_closed:
+        client = _REAL_ASYNC_CLIENT(
             timeout=_REQUEST_TIMEOUT_S,
             follow_redirects=True,
             headers=_WEB_TOOL_HTTP_HEADERS,
-        ) as client,
-        client.stream(
+            limits=httpx.Limits(
+                max_keepalive_connections=16,
+                max_connections=32,
+                keepalive_expiry=60.0,
+            ),
+        )
+        _SEARCH_CLIENTS[loop] = client
+    return client
+
+
+async def _run_web_search(query: str) -> list[dict[str, str]]:
+    if httpx.AsyncClient is _REAL_ASYNC_CLIENT:
+        client = _get_pooled_search_client()
+        async with client.stream(
             "GET",
             "https://lite.duckduckgo.com/lite/",
             params={"q": query},
-        ) as response,
-    ):
-        response.raise_for_status()
-        body_bytes = await _read_response_body_capped(
-            response, constants._MAX_WEB_FETCH_RESPONSE_BYTES
-        )
+        ) as response:
+            response.raise_for_status()
+            body_bytes = await _read_response_body_capped(
+                response, constants._MAX_WEB_FETCH_RESPONSE_BYTES
+            )
+    else:
+        async with (
+            httpx.AsyncClient(
+                timeout=_REQUEST_TIMEOUT_S,
+                follow_redirects=True,
+                headers=_WEB_TOOL_HTTP_HEADERS,
+            ) as client,
+            client.stream(
+                "GET",
+                "https://lite.duckduckgo.com/lite/",
+                params={"q": query},
+            ) as response,
+        ):
+            response.raise_for_status()
+            body_bytes = await _read_response_body_capped(
+                response, constants._MAX_WEB_FETCH_RESPONSE_BYTES
+            )
     text = body_bytes.decode("utf-8", errors="replace")
     parser = SearchResultParser()
     parser.feed(text)
@@ -217,79 +254,78 @@ async def _run_web_fetch(url: str, egress: WebFetchEgressPolicy) -> dict[str, st
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _REQUEST_TIMEOUT_S
 
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise TimeoutError("web_fetch cumulative timeout exceeded")
-        addr_infos = await asyncio.to_thread(
-            get_validated_stream_addrinfos_for_egress, current_url, egress
-        )
-        targets = _pinned_fetch_targets(current_url, addr_infos)
-
-        redirect_target: str | None = None
-        last_connect_error: Exception | None = None
-        final_url = current_url
-        content_type = "text/plain"
-        encoding = "utf-8"
-        body_bytes = b""
-
-        for pinned_url, headers, extensions in targets:
+    async with httpx.AsyncClient(
+        timeout=_REQUEST_TIMEOUT_S,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError("web_fetch cumulative timeout exceeded")
-            try:
-                async with (
-                    httpx.AsyncClient(
-                        timeout=remaining,
-                        follow_redirects=False,
-                        trust_env=False,
-                    ) as client,
-                    client.stream(
+            addr_infos = await asyncio.to_thread(
+                get_validated_stream_addrinfos_for_egress, current_url, egress
+            )
+            targets = _pinned_fetch_targets(current_url, addr_infos)
+
+            redirect_target: str | None = None
+            last_connect_error: Exception | None = None
+            final_url = current_url
+            content_type = "text/plain"
+            encoding = "utf-8"
+            body_bytes = b""
+
+            for pinned_url, headers, extensions in targets:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError("web_fetch cumulative timeout exceeded")
+                try:
+                    async with client.stream(
                         "GET",
                         pinned_url,
                         headers=headers,
                         extensions=extensions or None,
-                    ) as response,
-                ):
-                    if response.status_code in _WEB_FETCH_REDIRECT_STATUSES:
-                        await _drain_response_body_capped(
-                            response, _REDIRECT_RESPONSE_BODY_CAP_BYTES
+                        timeout=remaining,
+                    ) as response:
+                        if response.status_code in _WEB_FETCH_REDIRECT_STATUSES:
+                            await _drain_response_body_capped(
+                                response, _REDIRECT_RESPONSE_BODY_CAP_BYTES
+                            )
+                            if redirect_hops >= constants._MAX_WEB_FETCH_REDIRECTS:
+                                raise WebFetchEgressViolation(
+                                    "web_fetch exceeded maximum redirects "
+                                    f"({constants._MAX_WEB_FETCH_REDIRECTS})"
+                                )
+                            location = response.headers.get("location")
+                            if not location or not location.strip():
+                                raise WebFetchEgressViolation(
+                                    "web_fetch redirect response missing Location header"
+                                )
+                            redirect_target = urljoin(current_url, location.strip())
+                            break
+                        response.raise_for_status()
+                        raw_content_type = response.headers.get("content-type")
+                        content_type = raw_content_type or "text/plain"
+                        encoding = _text_encoding(
+                            _charset_from_content_type(raw_content_type)
                         )
-                        if redirect_hops >= constants._MAX_WEB_FETCH_REDIRECTS:
-                            raise WebFetchEgressViolation(
-                                "web_fetch exceeded maximum redirects "
-                                f"({constants._MAX_WEB_FETCH_REDIRECTS})"
-                            )
-                        location = response.headers.get("location")
-                        if not location or not location.strip():
-                            raise WebFetchEgressViolation(
-                                "web_fetch redirect response missing Location header"
-                            )
-                        redirect_target = urljoin(current_url, location.strip())
+                        body_bytes = await _read_response_body_capped(
+                            response, constants._MAX_WEB_FETCH_RESPONSE_BYTES
+                        )
                         break
-                    response.raise_for_status()
-                    raw_content_type = response.headers.get("content-type")
-                    content_type = raw_content_type or "text/plain"
-                    encoding = _text_encoding(
-                        _charset_from_content_type(raw_content_type)
-                    )
-                    body_bytes = await _read_response_body_capped(
-                        response, constants._MAX_WEB_FETCH_RESPONSE_BYTES
-                    )
-                    break
-            except (httpx.ConnectError, httpx.ConnectTimeout, OSError) as exc:
-                last_connect_error = exc
+                except (httpx.ConnectError, httpx.ConnectTimeout, OSError) as exc:
+                    last_connect_error = exc
+                    continue
+            else:
+                assert last_connect_error is not None
+                raise last_connect_error
+
+            if redirect_target is not None:
+                current_url = redirect_target
+                redirect_hops += 1
                 continue
-        else:
-            assert last_connect_error is not None
-            raise last_connect_error
 
-        if redirect_target is not None:
-            current_url = redirect_target
-            redirect_hops += 1
-            continue
-
-        break
+            break
 
     try:
         text = body_bytes.decode(encoding, errors="replace")

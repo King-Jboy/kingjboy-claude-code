@@ -260,3 +260,53 @@ async def test_transcription_service_reports_missing_local_extra(
         pytest.raises(ImportError, match="voice_local extra"),
     ):
         await service.transcribe(audio_path)
+
+
+@pytest.mark.asyncio
+async def test_transcription_service_skips_language_kwargs_for_english_only_models(
+    tmp_path: Path,
+) -> None:
+    audio_path = tmp_path / "voice.ogg"
+    audio_path.write_bytes(b"voice")
+
+    en_service = TranscriptionService(model="openai/whisper-small.en", device="cpu")
+    en_pipe = MagicMock(return_value={"text": "hello english"})
+    with (
+        patch.object(en_service, "_get_pipeline", return_value=en_pipe),
+        patch(
+            "free_claude_code.messaging.transcription._load_audio",
+            return_value={"array": [0.0], "sampling_rate": 16000},
+        ),
+    ):
+        assert await en_service.transcribe(audio_path) == "hello english"
+    en_pipe.assert_called_once_with({"array": [0.0], "sampling_rate": 16000})
+
+    multi_service = TranscriptionService(model="base", device="cpu")
+    multi_pipe = MagicMock(return_value={"text": "hello world"})
+    with (
+        patch.object(multi_service, "_get_pipeline", return_value=multi_pipe),
+        patch(
+            "free_claude_code.messaging.transcription._load_audio",
+            return_value={"array": [0.0], "sampling_rate": 16000},
+        ),
+    ):
+        assert await multi_service.transcribe(audio_path) == "hello world"
+    multi_pipe.assert_called_once_with(
+        {"array": [0.0], "sampling_rate": 16000},
+        generate_kwargs={"language": "en", "task": "transcribe"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_for_thread_exit_consumes_worker_exception() -> None:
+    from free_claude_code.messaging.transcription import _wait_for_thread_exit
+
+    async def failing_worker() -> str:
+        await asyncio.sleep(0.01)
+        raise RuntimeError("boom")
+
+    worker = asyncio.create_task(failing_worker())
+    await _wait_for_thread_exit(worker)
+    assert worker.done()
+    assert not worker.cancelled()
+    assert isinstance(worker.exception(), RuntimeError)

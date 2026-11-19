@@ -139,3 +139,78 @@ async def test_non_sdk_clients_and_request_options_use_create() -> None:
 
     assert captured[0].headers["x-trace"] == "1"
     assert json.loads(captured[1].content)["logit_bias"] == {"50256": -100}
+
+
+@pytest.mark.asyncio
+async def test_fast_stream_handles_plain_text_sse_error_event() -> None:
+    from openai import APIError
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=b"event: error\ndata: upstream overloaded\n\n",
+            request=request,
+        )
+
+    client = AsyncOpenAI(
+        api_key="test-key",
+        base_url="https://api.example.test/v1",
+        max_retries=0,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    try:
+        stream = await create_chat_stream(client, BODY)
+        with pytest.raises(APIError, match="upstream overloaded"):
+            async for _ in stream:
+                pass
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_fast_stream_translates_mid_stream_httpx2_transport_errors() -> None:
+    from openai import APIConnectionError, APITimeoutError
+
+    class _FailingStream(httpx2.AsyncByteStream):
+        def __init__(self, exc: Exception) -> None:
+            self._exc = exc
+
+        async def __aiter__(self):
+            yield (
+                b'data: {"id":"c1","object":"chat.completion.chunk","created":0,'
+                b'"model":"m","choices":[{"index":0,"delta":{"content":"hi"},'
+                b'"finish_reason":null}]}\n\n'
+            )
+            raise self._exc
+
+    for raw_exc, expected_type in (
+        (httpx2.ReadTimeout("read timed out"), APITimeoutError),
+        (httpx2.RemoteProtocolError("peer closed"), APIConnectionError),
+    ):
+
+        def handler(
+            request: httpx2.Request, exc: Exception = raw_exc
+        ) -> httpx2.Response:
+            return httpx2.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=_FailingStream(exc),
+                request=request,
+            )
+
+        client = AsyncOpenAI(
+            api_key="test-key",
+            base_url="https://api.example.test/v1",
+            max_retries=0,
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+        )
+        try:
+            stream = await create_chat_stream(client, BODY)
+            seen = 0
+            with pytest.raises(expected_type):
+                async for _ in stream:
+                    seen += 1
+            assert seen == 1
+        finally:
+            await client.close()
