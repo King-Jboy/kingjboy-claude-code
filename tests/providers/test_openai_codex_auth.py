@@ -248,13 +248,15 @@ async def test_browser_authorization_validates_state_and_returns_pkce_grant(
     monkeypatch,
 ) -> None:
     callback_hosts: list[str] = []
-    tcp_site = openai_login.web.TCPSite
+    start_server = openai_login.asyncio.start_server
 
-    def recording_site(runner, host: str, port: int):
+    async def recording_start_server(
+        client_connected_cb, host: str, port: int, **kwargs
+    ):
         callback_hosts.append(host)
-        return tcp_site(runner, host, port)
+        return await start_server(client_connected_cb, host, port, **kwargs)
 
-    monkeypatch.setattr(openai_login.web, "TCPSite", recording_site)
+    monkeypatch.setattr(openai_login.asyncio, "start_server", recording_start_server)
     browser = await BrowserAuthorization.start()
     query = parse_qs(urlparse(browser.auth_url).query)
     redirect_uri = query["redirect_uri"][0]

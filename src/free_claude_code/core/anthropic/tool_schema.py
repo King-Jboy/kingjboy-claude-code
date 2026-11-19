@@ -1,10 +1,18 @@
 """JSON Schema helpers for text-emitted Anthropic tool input."""
 
 import json
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
 
-import jsonschema
+import jsonschema_rs
+import orjson
+import xxhash
+
+_VALIDATOR_CACHE_MAX_ENTRIES = 512
+_validator_cache: OrderedDict[bytes, Any] = OrderedDict()
+_validator_cache_lock = threading.Lock()
 
 
 def schema_type(schema: Mapping[str, Any]) -> str | None:
@@ -79,16 +87,42 @@ def coerce_text_argument(value: str, schema: Mapping[str, Any]) -> Any:
     return value
 
 
+def compile_json_schema_validator(schema: Mapping[str, Any]) -> Any:
+    """Compile and cache one Rust-backed ``jsonschema_rs`` validator."""
+    plain_schema = schema if isinstance(schema, dict) else dict(schema)
+    cache_key: bytes | None = None
+    try:
+        cache_key = xxhash.xxh3_128_digest(
+            orjson.dumps(plain_schema, option=orjson.OPT_SORT_KEYS)
+        )
+    except (TypeError, ValueError):
+        cache_key = None
+
+    if cache_key is not None:
+        with _validator_cache_lock:
+            cached = _validator_cache.get(cache_key)
+            if cached is not None:
+                _validator_cache.move_to_end(cache_key)
+                return cached
+
+    validator = jsonschema_rs.validator_for(plain_schema)
+
+    if cache_key is not None:
+        with _validator_cache_lock:
+            _validator_cache[cache_key] = validator
+            _validator_cache.move_to_end(cache_key)
+            while len(_validator_cache) > _VALIDATOR_CACHE_MAX_ENTRIES:
+                _validator_cache.popitem(last=False)
+
+    return validator
+
+
 def arguments_match_schema(
     arguments: dict[str, Any], schema: Mapping[str, Any]
 ) -> bool:
     """Return whether arguments satisfy a valid JSON Schema."""
     try:
-        validator_type = jsonschema.validators.validator_for(schema)
-        validator_type.check_schema(schema)
-        validator_type(schema).validate(arguments)
-    except jsonschema.exceptions.SchemaError:
+        validator = compile_json_schema_validator(schema)
+    except ValueError, TypeError, jsonschema_rs.ValidationError:
         return True
-    except jsonschema.exceptions.ValidationError:
-        return False
-    return True
+    return bool(validator.is_valid(arguments))

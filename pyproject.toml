@@ -18,15 +18,12 @@ dependencies = [
     "pydantic>=2.14.1",
     "python-dotenv>=1.2.4",
     "tiktoken>=0.14.0",
-    "python-telegram-bot>=22.8",
-    "discord.py>=2.7.1",
     "pydantic-settings>=2.16.2",
     "openai>=3.40.0",
     "loguru>=0.7.3",
-    "aiohttp>=3.14.5",
-    "jsonschema>=4.26.0",
+    "jsonschema-rs>=0.29.0",
+    "xxhash>=3.5.0",
     "google-auth[requests]>=2.62.0",
-    "requests[socks]>=2.34.2",
     "pystray>=0.19.5; sys_platform == 'win32' or sys_platform == 'darwin'",
     "Pillow>=13.0.0; sys_platform == 'win32' or sys_platform == 'darwin'",
     "pywebview>=6.2.1; sys_platform == 'win32' or sys_platform == 'darwin'",
@@ -53,6 +50,10 @@ fcc-grok = "free_claude_code.cli.launchers.grok:launch"
 fcc-desktop = "free_claude_code.cli.desktop_entrypoint:launch"
 
 [project.optional-dependencies]
+messaging = [
+    "python-telegram-bot>=22.8",
+    "discord.py>=2.7.1",
+]
 voice = [
     "grpcio>=1.85.0",
     "grpcio-tools>=1.81.1",
@@ -160,4 +161,9 @@ allowed-unresolved-imports = [
     "pystray",
     "PIL",
     "webview",
+    "telegram",
+    "telegram.error",
+    "telegram.ext",
+    "telegram.request",
+    "discord",
 ]

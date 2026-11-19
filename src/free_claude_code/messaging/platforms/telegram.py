@@ -58,7 +58,7 @@ class TelegramRuntime:
     ) -> None:
         if not TELEGRAM_AVAILABLE:
             raise ImportError(
-                "python-telegram-bot is required. Install with: pip install python-telegram-bot"
+                'python-telegram-bot is required. Install with: pip install "free-claude-code[messaging]"'
             )
 
         self.bot_token = bot_token

@@ -957,17 +957,16 @@ async def _streaming_body_text(response: StreamingResponse) -> str:
     return "".join(parts)
 
 
-def _aiohttp_response(
+def _httpx_response(
     status: int,
     *,
     url: str = "http://8.8.8.8/",
     location: str | None = None,
     body: bytes = b"hello world",
     content_type: str | None = None,
-    charset: str | None = None,
 ) -> MagicMock:
     r = MagicMock()
-    r.status = status
+    r.status_code = status
     r.url = url
     hdrs: dict[str, str] = {}
     if location is not None:
@@ -975,31 +974,28 @@ def _aiohttp_response(
     if content_type is not None:
         hdrs["content-type"] = content_type
     r.headers = hdrs
-    r.charset = charset
-    r.get_encoding = MagicMock(
+    r.read = AsyncMock(
         side_effect=RuntimeError(
             "Cannot compute fallback encoding of a not yet read body"
         )
     )
     r.raise_for_status = MagicMock()
-    r.request_info = MagicMock()
-    r.history = ()
 
-    async def iter_chunked(_n: int) -> Any:
+    async def aiter_bytes(chunk_size: int = 65_536) -> Any:
         yield body
 
-    r.content.iter_chunked = MagicMock(side_effect=iter_chunked)
+    r.aiter_bytes = MagicMock(side_effect=aiter_bytes)
     return r
 
 
-def _aiohttp_client_session_patch(
+def _httpx_async_client_patch(
     *responses: MagicMock,
 ) -> tuple[MagicMock, MagicMock]:
-    """Build ``ClientSession`` mock that serves ``responses`` to successive ``get`` calls."""
+    """Build ``httpx.AsyncClient`` mock serving ``responses`` to successive ``stream`` calls."""
     queue = list(responses)
     n = 0
 
-    def get_side(*_a: Any, **_k: Any) -> Any:
+    def stream_side(*_a: Any, **_k: Any) -> Any:
         nonlocal n
         resp = queue[n] if n < len(queue) else queue[-1]
         n += 1
@@ -1008,13 +1004,13 @@ def _aiohttp_client_session_patch(
         cm.__aexit__ = AsyncMock(return_value=None)
         return cm
 
-    session = MagicMock()
-    session.get = MagicMock(side_effect=get_side)
+    client = MagicMock()
+    client.stream = MagicMock(side_effect=stream_side)
 
     client_cm = MagicMock()
-    client_cm.__aenter__ = AsyncMock(return_value=session)
+    client_cm.__aenter__ = AsyncMock(return_value=client)
     client_cm.__aexit__ = AsyncMock(return_value=None)
-    return client_cm, session
+    return client_cm, client
 
 
 def test_enforce_web_fetch_egress_documents_connect_time_pinning():
@@ -1031,28 +1027,30 @@ def test_enforce_web_fetch_egress_documents_connect_time_pinning():
 
 @pytest.mark.asyncio
 async def test_run_web_fetch_follows_redirect_when_each_hop_is_allowed():
-    res_redirect = _aiohttp_response(
+    res_redirect = _httpx_response(
         302, url="http://8.8.8.8/start", location="/final", body=b""
     )
-    res_ok = _aiohttp_response(200, url="http://8.8.8.8/final", body=b"hello world")
-    client_cm, session = _aiohttp_client_session_patch(res_redirect, res_ok)
+    res_ok = _httpx_response(200, url="http://8.8.8.8/final", body=b"hello world")
+    client_cm, client = _httpx_async_client_patch(res_redirect, res_ok)
     with patch(
-        "free_claude_code.api.web_tools.outbound.ClientSession", return_value=client_cm
+        "free_claude_code.api.web_tools.outbound.httpx.AsyncClient",
+        return_value=client_cm,
     ):
         out = await _run_web_fetch("http://8.8.8.8/start", _STRICT_EGRESS)
 
     assert out["data"] == "hello world"
-    assert session.get.call_count == 2
+    assert client.stream.call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_run_web_fetch_truncates_large_body_to_byte_cap(monkeypatch):
     huge = b"x" * 5000
-    res_ok = _aiohttp_response(200, url="http://8.8.8.8/big", body=huge)
-    client_cm, _ = _aiohttp_client_session_patch(res_ok)
+    res_ok = _httpx_response(200, url="http://8.8.8.8/big", body=huge)
+    client_cm, _ = _httpx_async_client_patch(res_ok)
     monkeypatch.setattr(web_tool_constants, "_MAX_WEB_FETCH_RESPONSE_BYTES", 100)
     with patch(
-        "free_claude_code.api.web_tools.outbound.ClientSession", return_value=client_cm
+        "free_claude_code.api.web_tools.outbound.httpx.AsyncClient",
+        return_value=client_cm,
     ):
         out = await _run_web_fetch("http://8.8.8.8/big", _STRICT_EGRESS)
 
@@ -1062,41 +1060,39 @@ async def test_run_web_fetch_truncates_large_body_to_byte_cap(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("content_type", "charset", "body", "data"),
+    ("content_type", "body", "data"),
     [
-        ("text/html", None, b"<title>Hi</title>ok", "ok"),
-        (None, None, b"plain", "plain"),
+        ("text/html", b"<title>Hi</title>ok", "ok"),
+        (None, b"plain", "plain"),
         (
             "text/plain; charset=iso-8859-1",
-            "iso-8859-1",
             "caf\u00e9".encode("latin-1"),
             "caf\u00e9",
         ),
-        ("text/plain; charset=bogus", "bogus", b"plain", "plain"),
-        ("application/pdf", None, b"%PDF", "%PDF"),
+        ("text/plain; charset=bogus", b"plain", "plain"),
+        ("application/pdf", b"%PDF", "%PDF"),
     ],
 )
 async def test_run_web_fetch_decodes_without_reading_body_for_charset(
     content_type: str | None,
-    charset: str | None,
     body: bytes,
     data: str,
 ) -> None:
-    res_ok = _aiohttp_response(
+    res_ok = _httpx_response(
         200,
         url="http://8.8.8.8/page",
         body=body,
         content_type=content_type,
-        charset=charset,
     )
-    client_cm, _session = _aiohttp_client_session_patch(res_ok)
+    client_cm, _client = _httpx_async_client_patch(res_ok)
     with patch(
-        "free_claude_code.api.web_tools.outbound.ClientSession", return_value=client_cm
+        "free_claude_code.api.web_tools.outbound.httpx.AsyncClient",
+        return_value=client_cm,
     ):
         out = await _run_web_fetch("http://8.8.8.8/page", _STRICT_EGRESS)
 
     assert out["data"] == data
-    res_ok.get_encoding.assert_not_called()
+    res_ok.read.assert_not_called()
     if content_type == "text/html":
         assert out["title"] == "Hi"
 
@@ -1121,32 +1117,32 @@ def test_text_encoding_falls_back_when_charset_is_missing_or_unknown(
 
 @pytest.mark.asyncio
 async def test_run_web_fetch_redirect_to_blocked_host_raises():
-    res_redirect = _aiohttp_response(
+    res_redirect = _httpx_response(
         302,
         url="http://8.8.8.8/start",
         location="http://127.0.0.1/secret",
         body=b"",
     )
-    client_cm, session = _aiohttp_client_session_patch(res_redirect)
+    client_cm, client = _httpx_async_client_patch(res_redirect)
     with (
         patch(
-            "free_claude_code.api.web_tools.outbound.ClientSession",
+            "free_claude_code.api.web_tools.outbound.httpx.AsyncClient",
             return_value=client_cm,
         ),
         pytest.raises(WebFetchEgressViolation),
     ):
         await _run_web_fetch("http://8.8.8.8/start", _STRICT_EGRESS)
 
-    session.get.assert_called_once()
+    client.stream.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_run_web_fetch_redirect_without_location_raises():
-    res_bad = _aiohttp_response(302, url="http://8.8.8.8/here", body=b"")
-    client_cm, _ = _aiohttp_client_session_patch(res_bad)
+    res_bad = _httpx_response(302, url="http://8.8.8.8/here", body=b"")
+    client_cm, _ = _httpx_async_client_patch(res_bad)
     with (
         patch(
-            "free_claude_code.api.web_tools.outbound.ClientSession",
+            "free_claude_code.api.web_tools.outbound.httpx.AsyncClient",
             return_value=client_cm,
         ),
         pytest.raises(WebFetchEgressViolation, match="missing Location"),
@@ -1156,13 +1152,13 @@ async def test_run_web_fetch_redirect_without_location_raises():
 
 @pytest.mark.asyncio
 async def test_run_web_fetch_excess_redirects_raises():
-    res1 = _aiohttp_response(302, url="http://8.8.8.8/a", location="/b", body=b"")
-    res2 = _aiohttp_response(302, url="http://8.8.8.8/b", location="/c", body=b"")
-    client_cm, _ = _aiohttp_client_session_patch(res1, res2)
+    res1 = _httpx_response(302, url="http://8.8.8.8/a", location="/b", body=b"")
+    res2 = _httpx_response(302, url="http://8.8.8.8/b", location="/c", body=b"")
+    client_cm, _ = _httpx_async_client_patch(res1, res2)
     with (
         patch("free_claude_code.api.web_tools.constants._MAX_WEB_FETCH_REDIRECTS", 1),
         patch(
-            "free_claude_code.api.web_tools.outbound.ClientSession",
+            "free_claude_code.api.web_tools.outbound.httpx.AsyncClient",
             return_value=client_cm,
         ),
         pytest.raises(WebFetchEgressViolation, match="exceeded maximum redirects"),

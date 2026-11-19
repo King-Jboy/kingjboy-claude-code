@@ -1,9 +1,9 @@
-import hashlib
 import threading
 from collections import OrderedDict
 from functools import lru_cache
 
 import tiktoken
+import xxhash
 from loguru import logger
 
 from free_claude_code.core.json_utils import fast_json_dumps
@@ -26,9 +26,7 @@ _token_cache_lock = threading.Lock()
 def _count_text_tokens(text: str) -> int:
     if not text:
         return 0
-    key = hashlib.blake2b(
-        text.encode("utf-8", "surrogatepass"), digest_size=16
-    ).digest()
+    key = xxhash.xxh3_128_digest(text.encode("utf-8", "surrogatepass"))
     with _token_cache_lock:
         cached = _token_cache.get(key)
         if cached is not None:

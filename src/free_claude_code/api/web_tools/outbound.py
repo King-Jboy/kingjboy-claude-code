@@ -4,12 +4,10 @@ import asyncio
 import codecs
 import socket
 from collections.abc import AsyncIterator
-from urllib.parse import urljoin, urlparse
+from email.message import Message
+from urllib.parse import urljoin, urlparse, urlunparse
 
-import aiohttp
 import httpx
-from aiohttp import ClientSession, ClientTimeout, TCPConnector
-from aiohttp.abc import AbstractResolver, ResolveResult
 from loguru import logger
 
 from . import constants
@@ -103,84 +101,75 @@ async def _read_response_body_capped(response: httpx.Response, max_bytes: int) -
     )
 
 
-_NUMERIC_RESOLVE_FLAGS = socket.AI_NUMERICHOST | socket.AI_NUMERICSERV
-_NAME_RESOLVE_FLAGS = socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
+def _charset_from_content_type(content_type: str | None) -> str | None:
+    """Extract the charset parameter from a Content-Type header without body sniffing."""
+    if not content_type:
+        return None
+    msg = Message()
+    msg["content-type"] = content_type
+    charset = msg.get_param("charset", header="content-type")
+    if isinstance(charset, tuple):
+        charset = charset[2]
+    if isinstance(charset, str):
+        stripped = charset.strip()
+        return stripped or None
+    return None
 
 
-def getaddrinfo_rows_to_resolve_results(
-    host: str, addrinfos: list[tuple]
-) -> list[ResolveResult]:
-    """Map :func:`socket.getaddrinfo` rows to aiohttp :class:`ResolveResult` (ThreadedResolver logic)."""
-    out: list[ResolveResult] = []
-    for family, _type, proto, _canon, sockaddr in addrinfos:
+def _pinned_fetch_targets(
+    url: str, addrinfos: list[tuple]
+) -> list[tuple[str, dict[str, str], dict[str, str]]]:
+    """Build DNS-pinned httpx request targets from validated ``getaddrinfo`` rows.
+
+    Connects directly to each validated IP literal while preserving the original
+    ``Host`` header and TLS SNI hostname so redirects and connections cannot
+    re-resolve to a different address.
+    """
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "http").lower()
+    original_host = parsed.hostname or ""
+    default_port = 443 if scheme == "https" else 80
+    parsed_port = parsed.port
+
+    formatted_host = f"[{original_host}]" if ":" in original_host else original_host
+    if parsed_port is not None and parsed_port != default_port:
+        host_header = f"{formatted_host}:{parsed_port}"
+    else:
+        host_header = formatted_host
+
+    headers = {**_WEB_TOOL_HTTP_HEADERS, "Host": host_header}
+    extensions = {"sni_hostname": original_host} if scheme == "https" and original_host else {}
+
+    seen: set[tuple[str, int]] = set()
+    targets: list[tuple[str, dict[str, str], dict[str, str]]] = []
+    for family, _type, _proto, _canon, sockaddr in addrinfos:
         if family == socket.AF_INET6:
-            if len(sockaddr) < 4:
+            if len(sockaddr) < 2:
                 continue
-            if sockaddr[3]:
-                resolved_host, port = socket.getnameinfo(sockaddr, _NAME_RESOLVE_FLAGS)
-            else:
-                resolved_host, port = sockaddr[:2]
+            resolved_ip = str(sockaddr[0])
+            port = int(sockaddr[1])
+            ip_host = f"[{resolved_ip}]"
+        elif family == socket.AF_INET:
+            resolved_ip = str(sockaddr[0])
+            port = int(sockaddr[1])
+            ip_host = resolved_ip
         else:
-            assert family == socket.AF_INET, family
-            resolved_host, port = sockaddr[0], sockaddr[1]
-            resolved_host = str(resolved_host)
-            port = int(port)
-        out.append(
-            ResolveResult(
-                hostname=host,
-                host=resolved_host,
-                port=int(port),
-                family=family,
-                proto=proto,
-                flags=_NUMERIC_RESOLVE_FLAGS,
-            )
+            continue
+
+        key = (resolved_ip, port)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        pinned_netloc = f"{ip_host}:{port}" if port != default_port else ip_host
+        pinned_url = urlunparse(
+            (scheme, pinned_netloc, parsed.path, parsed.params, parsed.query, "")
         )
-    return out
+        targets.append((pinned_url, headers, extensions))
 
-
-class _PinnedEgressStaticResolver(AbstractResolver):
-    """Return only pre-validated :class:`ResolveResult` for the outbound request."""
-
-    def __init__(self, results: list[ResolveResult]) -> None:
-        self._results = results
-
-    async def resolve(
-        self, host: str, port: int = 0, family: int = socket.AF_INET
-    ) -> list[ResolveResult]:
-        return self._results
-
-    async def close(self) -> None:  # pragma: no cover - aiohttp contract
-        return
-
-
-async def _read_aiohttp_body_capped(
-    response: aiohttp.ClientResponse, max_bytes: int
-) -> bytes:
-    received = 0
-    parts: list[bytes] = []
-    async for chunk in response.content.iter_chunked(65_536):
-        if received >= max_bytes:
-            break
-        remaining = max_bytes - received
-        if len(chunk) <= remaining:
-            received += len(chunk)
-            parts.append(chunk)
-        else:
-            parts.append(chunk[:remaining])
-            break
-    return b"".join(parts)
-
-
-async def _drain_aiohttp_body_capped(
-    response: aiohttp.ClientResponse, max_bytes: int
-) -> None:
-    if max_bytes <= 0:
-        return
-    received = 0
-    async for chunk in response.content.iter_chunked(65_536):
-        received += len(chunk)
-        if received >= max_bytes:
-            break
+    if not targets:
+        raise WebFetchEgressViolation(f"Could not resolve host {original_host!r}")
+    return targets
 
 
 async def _run_web_search(query: str) -> list[dict[str, str]]:
@@ -209,8 +198,7 @@ async def _run_web_search(query: str) -> list[dict[str, str]]:
 def _text_encoding(charset: str | None) -> str:
     """Return a usable codec name from a Content-Type charset, defaulting to utf-8.
 
-    ``response.charset`` reads the header only. ``response.get_encoding()`` sniffs
-    the body and raises before that body has been read.
+    Reads the header charset only without sniffing the unread response body.
     """
     if isinstance(charset, str) and charset:
         try:
@@ -231,52 +219,73 @@ async def _run_web_fetch(url: str, egress: WebFetchEgressPolicy) -> dict[str, st
         remaining = deadline - loop.time()
         if remaining <= 0:
             raise TimeoutError("web_fetch cumulative timeout exceeded")
-        timeout = ClientTimeout(total=remaining)
         addr_infos = await asyncio.to_thread(
             get_validated_stream_addrinfos_for_egress, current_url, egress
         )
-        host = urlparse(current_url).hostname or ""
-        results = getaddrinfo_rows_to_resolve_results(host, addr_infos)
-        resolver = _PinnedEgressStaticResolver(results)
-        connector = TCPConnector(
-            resolver=resolver,
-            force_close=True,
-        )
-        try:
-            async with (
-                ClientSession(
-                    timeout=timeout,
-                    headers=_WEB_TOOL_HTTP_HEADERS,
-                    connector=connector,
-                ) as session,
-                session.get(current_url, allow_redirects=False) as response,
-            ):
-                if response.status in _WEB_FETCH_REDIRECT_STATUSES:
-                    await _drain_aiohttp_body_capped(
-                        response, _REDIRECT_RESPONSE_BODY_CAP_BYTES
+        targets = _pinned_fetch_targets(current_url, addr_infos)
+
+        redirect_target: str | None = None
+        last_connect_error: Exception | None = None
+        final_url = current_url
+        content_type = "text/plain"
+        encoding = "utf-8"
+        body_bytes = b""
+
+        for pinned_url, headers, extensions in targets:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("web_fetch cumulative timeout exceeded")
+            try:
+                async with (
+                    httpx.AsyncClient(
+                        timeout=remaining,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client,
+                    client.stream(
+                        "GET",
+                        pinned_url,
+                        headers=headers,
+                        extensions=extensions or None,
+                    ) as response,
+                ):
+                    if response.status_code in _WEB_FETCH_REDIRECT_STATUSES:
+                        await _drain_response_body_capped(
+                            response, _REDIRECT_RESPONSE_BODY_CAP_BYTES
+                        )
+                        if redirect_hops >= constants._MAX_WEB_FETCH_REDIRECTS:
+                            raise WebFetchEgressViolation(
+                                "web_fetch exceeded maximum redirects "
+                                f"({constants._MAX_WEB_FETCH_REDIRECTS})"
+                            )
+                        location = response.headers.get("location")
+                        if not location or not location.strip():
+                            raise WebFetchEgressViolation(
+                                "web_fetch redirect response missing Location header"
+                            )
+                        redirect_target = urljoin(current_url, location.strip())
+                        break
+                    response.raise_for_status()
+                    raw_content_type = response.headers.get("content-type")
+                    content_type = raw_content_type or "text/plain"
+                    encoding = _text_encoding(
+                        _charset_from_content_type(raw_content_type)
                     )
-                    if redirect_hops >= constants._MAX_WEB_FETCH_REDIRECTS:
-                        raise WebFetchEgressViolation(
-                            "web_fetch exceeded maximum redirects "
-                            f"({constants._MAX_WEB_FETCH_REDIRECTS})"
-                        )
-                    location = response.headers.get("location")
-                    if not location or not location.strip():
-                        raise WebFetchEgressViolation(
-                            "web_fetch redirect response missing Location header"
-                        )
-                    current_url = urljoin(str(response.url), location.strip())
-                    redirect_hops += 1
-                    continue
-                response.raise_for_status()
-                content_type = response.headers.get("content-type", "text/plain")
-                final_url = str(response.url)
-                encoding = _text_encoding(response.charset)
-                body_bytes = await _read_aiohttp_body_capped(
-                    response, constants._MAX_WEB_FETCH_RESPONSE_BYTES
-                )
-        finally:
-            await connector.close()
+                    body_bytes = await _read_response_body_capped(
+                        response, constants._MAX_WEB_FETCH_RESPONSE_BYTES
+                    )
+                    break
+            except (httpx.ConnectError, httpx.ConnectTimeout, OSError) as exc:
+                last_connect_error = exc
+                continue
+        else:
+            assert last_connect_error is not None
+            raise last_connect_error
+
+        if redirect_target is not None:
+            current_url = redirect_target
+            redirect_hops += 1
+            continue
 
         break
 

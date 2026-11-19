@@ -1,8 +1,12 @@
 """Telegram inbound event normalization."""
 
+from typing import TYPE_CHECKING
+
 from loguru import logger
-from telegram import Update
-from telegram.ext import ContextTypes
+
+if TYPE_CHECKING:
+    from telegram import Update
+    from telegram.ext import ContextTypes
 
 from ..models import IncomingMessage
 from ..rendering.telegram_markdown import format_status

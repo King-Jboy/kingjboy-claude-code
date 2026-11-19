@@ -2,15 +2,15 @@
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import html
 import secrets
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
-from aiohttp import web
 
 OPENAI_AUTH_ISSUER = "https://auth.openai.com"
 OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -26,6 +26,13 @@ OPENAI_DEVICE_VERIFICATION_URL = f"{OPENAI_AUTH_ISSUER}/codex/device"
 OPENAI_DEVICE_REDIRECT_URI = f"{OPENAI_AUTH_ISSUER}/deviceauth/callback"
 OPENAI_CALLBACK_HOST = "localhost"
 LOGIN_LIFETIME_SECONDS = 15 * 60
+
+_HTTP_REASONS = {
+    200: "OK",
+    400: "Bad Request",
+    404: "Not Found",
+    405: "Method Not Allowed",
+}
 
 
 class OpenAILoginError(RuntimeError):
@@ -59,13 +66,13 @@ class BrowserAuthorization:
         auth_url: str,
         redirect_uri: str,
         code_verifier: str,
-        runner: web.AppRunner,
+        server: asyncio.Server,
         result: asyncio.Future[AuthorizationGrant],
     ) -> None:
         self.auth_url = auth_url
         self.redirect_uri = redirect_uri
         self.code_verifier = code_verifier
-        self._runner = runner
+        self._server = server
         self._result = result
         self._closed = False
 
@@ -78,59 +85,101 @@ class BrowserAuthorization:
         challenge = _base64url(hashlib.sha256(verifier.encode()).digest())
         loop = asyncio.get_running_loop()
         result: asyncio.Future[AuthorizationGrant] = loop.create_future()
-        runner: web.AppRunner | None = None
+        server: asyncio.Server | None = None
         redirect_uri = ""
         for candidate in (1455, 1457):
             candidate_redirect_uri = (
                 f"http://{OPENAI_CALLBACK_HOST}:{candidate}/auth/callback"
             )
-            app = web.Application()
 
-            async def callback(
-                request: web.Request,
+            async def handle_client(
+                reader: asyncio.StreamReader,
+                writer: asyncio.StreamWriter,
                 callback_redirect_uri: str = candidate_redirect_uri,
-            ) -> web.Response:
-                if request.query.get("state") != state:
-                    return web.Response(status=400, text="State mismatch")
-                if error := request.query.get("error"):
-                    description = request.query.get("error_description", error)
-                    if not result.done():
-                        result.set_exception(OpenAILoginError(description))
-                    return _callback_page("Sign-in failed", description, status=400)
-                code = request.query.get("code")
-                if not code:
-                    return web.Response(status=400, text="Missing authorization code")
-                if not result.done():
-                    result.set_result(
-                        AuthorizationGrant(
-                            code=code,
-                            redirect_uri=callback_redirect_uri,
-                            code_verifier=verifier,
+            ) -> None:
+                try:
+                    try:
+                        raw = await asyncio.wait_for(
+                            reader.readuntil(b"\r\n\r\n"),
+                            timeout=5.0,
                         )
-                    )
-                return _callback_page(
-                    "Connected",
-                    "OpenAI is connected to Free Claude Code. You can close this tab.",
-                    close_window=True,
-                )
+                    except asyncio.IncompleteReadError as exc:
+                        raw = exc.partial
+                    except TimeoutError, asyncio.LimitOverrunError, OSError:
+                        return
+                    if not raw:
+                        return
 
-            app.router.add_get("/auth/callback", callback)
-            candidate_runner = web.AppRunner(app, access_log=None)
-            await candidate_runner.setup()
+                    request_line = raw.split(b"\r\n", 1)[0].decode(
+                        "latin-1", errors="replace"
+                    )
+                    parts = request_line.split(" ", 2)
+                    if len(parts) < 2:
+                        response = _http_response(400, "Bad Request")
+                    else:
+                        method, target = parts[0], parts[1]
+                        parsed = urlsplit(target)
+                        if parsed.path != "/auth/callback":
+                            response = _http_response(404, "Not Found")
+                        elif method != "GET":
+                            response = _http_response(405, "Method Not Allowed")
+                        else:
+                            query = parse_qs(parsed.query, keep_blank_values=True)
+                            req_state = query.get("state", [None])[0]
+                            req_error = query.get("error", [None])[0]
+                            req_code = query.get("code", [None])[0]
+                            if req_state != state:
+                                response = _http_response(400, "State mismatch")
+                            elif req_error:
+                                description = (
+                                    query.get("error_description", [None])[0]
+                                    or req_error
+                                )
+                                if not result.done():
+                                    result.set_exception(OpenAILoginError(description))
+                                response = _callback_page(
+                                    "Sign-in failed", description, status=400
+                                )
+                            elif not req_code:
+                                response = _http_response(
+                                    400, "Missing authorization code"
+                                )
+                            else:
+                                if not result.done():
+                                    result.set_result(
+                                        AuthorizationGrant(
+                                            code=req_code,
+                                            redirect_uri=callback_redirect_uri,
+                                            code_verifier=verifier,
+                                        )
+                                    )
+                                response = _callback_page(
+                                    "Connected",
+                                    "OpenAI is connected to Free Claude Code. You can close this tab.",
+                                    close_window=True,
+                                )
+
+                    writer.write(response)
+                    await writer.drain()
+                except OSError:
+                    return
+                finally:
+                    writer.close()
+                    with contextlib.suppress(OSError):
+                        await writer.wait_closed()
+
             try:
-                candidate_site = web.TCPSite(
-                    candidate_runner,
+                candidate_server = await asyncio.start_server(
+                    handle_client,
                     OPENAI_CALLBACK_HOST,
                     candidate,
                 )
-                await candidate_site.start()
             except OSError:
-                await candidate_runner.cleanup()
                 continue
-            runner = candidate_runner
+            server = candidate_server
             redirect_uri = candidate_redirect_uri
             break
-        if runner is None:
+        if server is None:
             raise OpenAILoginError(
                 "OpenAI sign-in could not bind localhost ports 1455 or 1457."
             )
@@ -153,7 +202,7 @@ class BrowserAuthorization:
             auth_url=auth_url,
             redirect_uri=redirect_uri,
             code_verifier=verifier,
-            runner=runner,
+            server=server,
             result=result,
         )
 
@@ -173,7 +222,8 @@ class BrowserAuthorization:
         self._closed = True
         if not self._result.done():
             self._result.cancel()
-        await self._runner.cleanup()
+        self._server.close()
+        await self._server.wait_closed()
 
 
 async def request_device_authorization(
@@ -241,20 +291,37 @@ def _base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
 
+def _http_response(
+    status: int,
+    body: str,
+    *,
+    content_type: str = "text/plain; charset=utf-8",
+) -> bytes:
+    payload = body.encode("utf-8")
+    reason = _HTTP_REASONS.get(status, "OK")
+    head = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(payload)}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii")
+    return head + payload
+
+
 def _callback_page(
     title: str,
     message: str,
     *,
     status: int = 200,
     close_window: bool = False,
-) -> web.Response:
+) -> bytes:
     safe_title = html.escape(title)
     safe_message = html.escape(message)
     close_script = "<script>window.close()</script>" if close_window else ""
-    return web.Response(
-        status=status,
-        content_type="text/html",
-        text=(
+    return _http_response(
+        status,
+        (
             "<!doctype html><meta charset='utf-8'>"
             f"<title>{safe_title}</title>"
             "<style>body{font-family:system-ui;max-width:36rem;margin:12vh auto;"
@@ -262,4 +329,5 @@ def _callback_page(
             f"<h1>{safe_title}</h1><p>{safe_message}</p>"
             f"{close_script}"
         ),
+        content_type="text/html; charset=utf-8",
     )

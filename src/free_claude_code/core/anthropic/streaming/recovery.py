@@ -5,10 +5,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-import jsonschema
+import jsonschema_rs
 from loguru import logger
 
 from ..models import MessagesRequest
+from ..tool_schema import compile_json_schema_validator
 
 _RECOVERY_USER_PREFIX = (
     "The previous provider stream was interrupted. Continue the assistant response "
@@ -60,15 +61,11 @@ def validate_tool_input(
     if tool_schema is None:
         return True
     try:
-        validator_cls = jsonschema.validators.validator_for(tool_schema.input_schema)
-        validator_cls.check_schema(tool_schema.input_schema)
-        validator_cls(tool_schema.input_schema).validate(parsed_input)
-    except jsonschema.exceptions.SchemaError as exc:
+        validator = compile_json_schema_validator(tool_schema.input_schema)
+    except (ValueError, TypeError, jsonschema_rs.ValidationError) as exc:
         logger.warning("Skipping invalid tool schema for {}: {}", tool_name, exc)
         return True
-    except jsonschema.exceptions.ValidationError:
-        return False
-    return True
+    return bool(validator.is_valid(parsed_input))
 
 
 def parse_complete_tool_input(
