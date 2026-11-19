@@ -131,9 +131,7 @@ class LMStudioProvider(OpenAIChatProvider):
             root = self._base_url
             root = root[: -len("/v1")] if root.endswith("/v1") else root
             headers = (
-                {"Authorization": f"Bearer {self._api_key}"}
-                if self._api_key
-                else None
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             )
             async with httpx.AsyncClient(
                 timeout=2.0,

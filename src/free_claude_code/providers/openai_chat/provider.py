@@ -279,6 +279,7 @@ async def _chunks_with_keepalive(
             elif not result_waiter.cancelled():
                 result_waiter.exception()
 
+
 async def _discard_pending_task(task: asyncio.Task[Any]) -> None:
     """Cancel and drain a task the caller stopped awaiting."""
     if task.done():
@@ -342,7 +343,11 @@ def _body_requests_reasoning(create_body: Mapping[str, Any]) -> bool:
 
     def _mapping_requests_reasoning(mapping: Mapping[str, Any]) -> bool:
         effort = mapping.get("reasoning_effort")
-        if isinstance(effort, str) and effort.strip().lower() not in ("", "none", "off"):
+        if isinstance(effort, str) and effort.strip().lower() not in (
+            "",
+            "none",
+            "off",
+        ):
             return True
         reasoning = mapping.get("reasoning")
         if reasoning is True:
@@ -351,9 +356,10 @@ def _body_requests_reasoning(create_body: Mapping[str, Any]) -> bool:
             if reasoning.get("enabled") is False:
                 return False
             r_effort = reasoning.get("effort")
-            if isinstance(r_effort, str) and r_effort.strip().lower() in ("none", "off"):
-                return False
-            return True
+            return not (
+                isinstance(r_effort, str)
+                and r_effort.strip().lower() in ("none", "off")
+            )
         thinking = mapping.get("thinking")
         if thinking is True:
             return True
@@ -361,16 +367,14 @@ def _body_requests_reasoning(create_body: Mapping[str, Any]) -> bool:
             if thinking.get("enabled") is False:
                 return False
             t_type = thinking.get("type")
-            if isinstance(t_type, str) and t_type.strip().lower() == "disabled":
-                return False
-            return True
+            return not (
+                isinstance(t_type, str) and t_type.strip().lower() == "disabled"
+            )
         template_kwargs = mapping.get("chat_template_kwargs")
-        if isinstance(template_kwargs, Mapping) and (
+        return isinstance(template_kwargs, Mapping) and (
             template_kwargs.get("thinking") is True
             or template_kwargs.get("enable_thinking") is True
-        ):
-            return True
-        return False
+        )
 
     if _mapping_requests_reasoning(create_body):
         return True

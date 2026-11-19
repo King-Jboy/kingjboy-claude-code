@@ -55,9 +55,7 @@ def _is_ip_global(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
             return _is_ip_global(ip.ipv4_mapped)
         if ip.sixtofour is not None and not _is_ip_global(ip.sixtofour):
             return False
-        if ip.teredo is not None and not all(
-            _is_ip_global(addr) for addr in ip.teredo
-        ):
+        if ip.teredo is not None and not all(_is_ip_global(addr) for addr in ip.teredo):
             return False
     return ip.is_global
 

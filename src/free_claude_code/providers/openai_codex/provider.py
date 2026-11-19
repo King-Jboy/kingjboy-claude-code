@@ -191,6 +191,7 @@ async def _sse_with_keepalive(
             elif not result_waiter.cancelled():
                 result_waiter.exception()
 
+
 class _TruncatedResponsesStream(RetryableProviderProtocolError):
     """A Responses stream ended without a terminal lifecycle event."""
 

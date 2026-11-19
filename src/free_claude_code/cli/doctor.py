@@ -23,15 +23,18 @@ from pydantic import ValidationError
 
 from free_claude_code.config.admin.status import provider_config_status
 from free_claude_code.config.admin.values import load_value_state
+from free_claude_code.config.api_key_pool import parse_api_key_pool
 from free_claude_code.config.context_windows import (
     CONTEXT_WINDOWS_FILENAME,
     recorded_route_windows,
     resolve_client_context_window,
 )
-from free_claude_code.config.api_key_pool import parse_api_key_pool
 from free_claude_code.config.model_refs import parse_model_name, parse_provider_type
 from free_claude_code.config.paths import managed_env_path, openai_auth_path
-from free_claude_code.config.provider_catalog import PROVIDER_CATALOG, ProviderDescriptor
+from free_claude_code.config.provider_catalog import (
+    PROVIDER_CATALOG,
+    ProviderDescriptor,
+)
 from free_claude_code.config.settings import Settings
 
 _POOL_ATTR_BY_PROVIDER: dict[str, str] = {

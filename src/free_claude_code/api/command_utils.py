@@ -22,7 +22,9 @@ def _strip_env_assignments(parts: list[str]) -> list[str]:
     return parts[cmd_start:]
 
 
-_SHELL_CONTROL_OPERATOR_CHARS = frozenset({";", "|", "&", ">", "<", "(", ")", "\n", "\r"})
+_SHELL_CONTROL_OPERATOR_CHARS = frozenset(
+    {";", "|", "&", ">", "<", "(", ")", "\n", "\r"}
+)
 
 
 def has_unquoted_shell_operator(command: str) -> bool:

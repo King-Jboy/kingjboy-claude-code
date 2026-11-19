@@ -39,12 +39,12 @@ import os
 import re
 import sys
 import time
-from uuid import uuid4
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 from pydantic import ValidationError

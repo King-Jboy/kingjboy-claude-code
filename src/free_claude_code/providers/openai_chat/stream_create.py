@@ -100,7 +100,12 @@ class _FastChoice:
 
 
 class _FastUsageDetails:
-    __slots__ = ("cache_write_tokens", "cached_tokens", "model_extra", "reasoning_tokens")
+    __slots__ = (
+        "cache_write_tokens",
+        "cached_tokens",
+        "model_extra",
+        "reasoning_tokens",
+    )
 
     def __init__(self, raw: dict[str, Any]) -> None:
         self.cached_tokens = raw.get("cached_tokens")
@@ -198,7 +203,9 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
             return False, None
         return self._consume_buffered_event()
 
-    def _dispatch_event(self, event_name: str, data_lines: list[bytes]) -> tuple[bool, Any]:
+    def _dispatch_event(
+        self, event_name: str, data_lines: list[bytes]
+    ) -> tuple[bool, Any]:
         raw = data_lines[0] if len(data_lines) == 1 else b"\n".join(data_lines)
         stripped = raw.strip()
         if not stripped:

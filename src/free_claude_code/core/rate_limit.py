@@ -1,6 +1,7 @@
 """Shared strict sliding-window rate limiting primitives."""
 
 import asyncio
+import contextlib
 import threading
 import time
 from collections import deque
@@ -68,10 +69,8 @@ class StrictSlidingWindowLimiter:
                 waiters_to_wake = list(self._capacity_waiters)
         for loop, waiter in waiters_to_wake:
             if not loop.is_closed():
-                try:
+                with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(waiter.set)
-                except RuntimeError:
-                    pass
 
     def recorded_times(self) -> tuple[float, ...]:
         """Return the acquisitions still inside the window, oldest first."""
@@ -151,11 +150,11 @@ class StrictSlidingWindowLimiter:
                 except TimeoutError:
                     pass
                 finally:
-                    with self._state_lock:
-                        try:
-                            self._capacity_waiters.remove(waiter_entry)
-                        except ValueError:
-                            pass
+                    with (
+                        self._state_lock,
+                        contextlib.suppress(ValueError),
+                    ):
+                        self._capacity_waiters.remove(waiter_entry)
             else:
                 await asyncio.sleep(0)
 

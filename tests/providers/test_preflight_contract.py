@@ -1,7 +1,7 @@
 """The shared OpenAI-chat provider owns explicit request preflight."""
 
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 
 import pytest
 
@@ -37,7 +37,7 @@ class ProviderWithoutPreflight(BaseProvider):
     async def stream_response(
         self,
         request: MessagesRequest,
-        input_tokens: int = 0,
+        input_tokens: int | Awaitable[int] = 0,
         *,
         request_id: str | None = None,
         response_model: str | None = None,

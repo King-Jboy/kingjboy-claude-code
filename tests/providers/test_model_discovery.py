@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -338,7 +338,7 @@ class FakeProvider(BaseProvider):
     async def stream_response(
         self,
         request: Any,
-        input_tokens: int = 0,
+        input_tokens: int | Awaitable[int] = 0,
         *,
         request_id: str | None = None,
         response_model: str | None = None,
