@@ -279,3 +279,38 @@ class MessagesResponse(BaseModel):
     ) = None
     stop_sequence: str | None = None
     usage: Usage
+
+
+_CONTENT_BLOCK_MODEL_BY_TYPE: dict[str, type[_AnthropicBlockBase]] = {
+    "text": ContentBlockText,
+    "image": ContentBlockImage,
+    "document": ContentBlockDocument,
+    "tool_use": ContentBlockToolUse,
+    "tool_result": ContentBlockToolResult,
+    "thinking": ContentBlockThinking,
+    "redacted_thinking": ContentBlockRedactedThinking,
+    "server_tool_use": ContentBlockServerToolUse,
+    "web_search_tool_result": ContentBlockWebSearchToolResult,
+    "web_fetch_tool_result": ContentBlockWebFetchToolResult,
+    "tool_reference": ContentBlockToolReference,
+    "tool_addition": ContentBlockToolAddition,
+    "tool_definition": ContentBlockToolDefinition,
+    "tool_search_tool_result": ContentBlockToolSearchToolResult,
+    "mcp_tool_use": ContentBlockMcpToolUse,
+    "mcp_tool_result": ContentBlockMcpToolResult,
+}
+
+
+def construct_content_block(block: Any) -> Any:
+    """Construct a typed Anthropic content block without full Pydantic validation."""
+    if not isinstance(block, dict):
+        return block
+    block_type = block.get("type")
+    model_cls = (
+        _CONTENT_BLOCK_MODEL_BY_TYPE.get(block_type)
+        if isinstance(block_type, str)
+        else None
+    )
+    if model_cls is None:
+        return ContentBlockGeneric.model_construct(**block)
+    return model_cls.model_construct(**block)

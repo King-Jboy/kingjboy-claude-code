@@ -82,10 +82,15 @@ class ResponsesHandler:
                 )
             else:
                 request_data = self._responses_store.resolve(request_data)
-            anthropic_payload = self._responses_adapter.to_anthropic_payload(
-                request_data
-            )
-            response_request = MessagesRequest(**anthropic_payload)
+            if hasattr(self._responses_adapter, "to_anthropic_messages_request"):
+                response_request = (
+                    self._responses_adapter.to_anthropic_messages_request(request_data)
+                )
+            else:
+                anthropic_payload = self._responses_adapter.to_anthropic_payload(
+                    request_data
+                )
+                response_request = MessagesRequest(**anthropic_payload)
             require_non_empty_messages(response_request.messages)
             routed = self._model_router.resolve_messages_request(response_request)
 

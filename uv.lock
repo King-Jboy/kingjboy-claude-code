@@ -874,7 +874,7 @@ wheels = [
 
 [[package]]
 name = "free-claude-code"
-version = "6.25.1"
+version = "6.26.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },

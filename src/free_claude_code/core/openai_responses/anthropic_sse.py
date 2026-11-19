@@ -1,86 +1,27 @@
 """Anthropic SSE parsing used by the Responses stream adapter."""
 
-import codecs
-import re
-import sys
-from collections.abc import AsyncIterable, AsyncIterator
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, AsyncIterable
 from typing import Any
 
-from free_claude_code.core.json_utils import fast_json_loads
-from free_claude_code.core.trace import close_stream_input
+from free_claude_code.core.anthropic.sse_parse import (
+    AnthropicSseEvent,
+    parse_sse_event,
+)
+from free_claude_code.core.anthropic.sse_parse import (
+    iter_sse_events as _iter_sse_events,
+)
 
 from .errors import ResponsesConversionError
 
-# RFC 8895 permits either LF or CRLF line endings.  Provider adapters mostly
-# emit LF today, but accepting CRLF here keeps the protocol boundary portable.
-_SSE_EVENT_BOUNDARY = re.compile(r"\r?\n\r?\n")
-_MAX_SSE_BUFFER_LEN = 16 * 1024 * 1024  # 16 MB
+__all__ = ["AnthropicSseEvent", "iter_sse_events", "parse_sse_event"]
 
 
-@dataclass(slots=True)
-class AnthropicSseEvent:
-    event: str
-    data: dict[str, Any]
-
-
-async def iter_sse_events(
+def iter_sse_events(
     chunks: AsyncIterable[Any],
-) -> AsyncIterator[AnthropicSseEvent]:
-    buffer = ""
-    decoder = codecs.getincrementaldecoder("utf-8")("replace")
-    iterator = aiter(chunks)
-    try:
-        async for chunk in iterator:
-            if isinstance(chunk, bytes):
-                buffer += decoder.decode(chunk, final=False)
-            else:
-                buffer += str(chunk)
-
-            if len(buffer) > _MAX_SSE_BUFFER_LEN:
-                raise ResponsesConversionError(
-                    "SSE stream event exceeded maximum buffer capacity"
-                )
-
-            while (boundary := _SSE_EVENT_BOUNDARY.search(buffer)) is not None:
-                raw = buffer[: boundary.start()]
-                buffer = buffer[boundary.end() :]
-                event = parse_sse_event(raw)
-                if event is not None:
-                    yield event
-
-        buffer += decoder.decode(b"", final=True)
-        if buffer.strip():
-            event = parse_sse_event(buffer)
-            if event is not None:
-                yield event
-    finally:
-        await close_stream_input(
-            iterator,
-            owner="openai_responses.anthropic_sse",
-            source="core",
-            preserved_error=sys.exception(),
-        )
-
-
-def parse_sse_event(raw: str) -> AnthropicSseEvent | None:
-    event_type = ""
-    data_parts: list[str] = []
-    for line in raw.splitlines():
-        stripped = line.rstrip("\r")
-        if stripped.startswith("event:"):
-            event_type = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("data:"):
-            data_parts.append(stripped.split(":", 1)[1].strip())
-    if not event_type and not data_parts:
-        return None
-    data_text = "\n".join(data_parts)
-    if data_text == "[DONE]":
-        return None
-    try:
-        parsed = fast_json_loads(data_text) if data_text else {}
-    except Exception:
-        parsed = {"raw": data_text}
-    if not isinstance(parsed, dict):
-        parsed = {"value": parsed}
-    return AnthropicSseEvent(event=event_type, data=parsed)
+) -> AsyncGenerator[AnthropicSseEvent]:
+    """Yield parsed Anthropic SSE frames, raising ResponsesConversionError on overflow."""
+    return _iter_sse_events(
+        chunks,
+        owner="openai_responses.anthropic_sse",
+        overflow_error_factory=ResponsesConversionError,
+    )

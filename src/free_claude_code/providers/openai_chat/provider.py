@@ -51,6 +51,13 @@ from free_claude_code.core.anthropic.streaming import (
 )
 from free_claude_code.core.anthropic.usage import anthropic_input_usage_fields
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
+from free_claude_code.core.openai_chat_wire import (
+    OPENAI_CHAT_SSE_DONE,
+    format_chat_completion_sse_chunk,
+    format_chat_completion_sse_error,
+    new_chat_completion_id,
+    serialize_upstream_chat_chunk,
+)
 from free_claude_code.core.reasoning import DEFAULT_REASONING_POLICY, ReasoningPolicy
 from free_claude_code.core.trace import (
     LazyTraceValue,
@@ -90,7 +97,10 @@ from free_claude_code.providers.stream_recovery import (
 from .output_cap import clamp_output_tokens, parse_output_token_cap
 from .profiles import OpenAIChatProfile
 from .reasoning_details import StructuredReasoningStream
-from .request_policy import build_openai_chat_request_body
+from .request_policy import (
+    _apply_common_openai_chat_policy,
+    build_openai_chat_request_body,
+)
 from .stream_create import create_chat_stream
 from .tool_call_identity import AmbiguousToolCallIdentityError
 from .tool_calls import (
@@ -153,7 +163,7 @@ async def _chunks_with_keepalive(
     *,
     quiet_after: float = UPSTREAM_QUIET_KEEPALIVE_SECONDS,
     interval: float = KEEPALIVE_INTERVAL_SECONDS,
-) -> AsyncIterator[Any]:
+) -> AsyncGenerator[Any]:
     """Yield upstream chunks, inserting ``_KEEPALIVE`` during long silences."""
     async for item in iter_with_keepalive(
         stream,
@@ -1012,6 +1022,83 @@ class OpenAIChatProvider(BaseProvider):
             cap,
         )
         return clamped
+
+    async def stream_openai_chat_passthrough(
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        response_model: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream an OpenAI Chat Completions body directly without Anthropic conversion."""
+        tag = self._provider_name
+        req_tag = f" request_id={request_id}" if request_id else ""
+        passthrough_body = dict(body)
+        _apply_common_openai_chat_policy(passthrough_body, self._profile.request_policy)
+        completion_id = new_chat_completion_id()
+        created_ts = int(time.time())
+        resolved_model = response_model or str(passthrough_body.get("model") or "")
+        retry_session = self._admission.new_retry_session(request_id=request_id)
+
+        stream: Any | None = None
+        attempt: ProviderAttempt | None = None
+        emitted_any = False
+        try:
+            stream, _, attempt = await self._create_stream(
+                passthrough_body, retry_session
+            )
+            async with aclosing(_chunks_with_keepalive(stream)) as chunks:
+                async for chunk in chunks:
+                    if chunk is _KEEPALIVE:
+                        yield ": keepalive\n\n"
+                        continue
+                    if not attempt.accepted:
+                        await attempt.succeeded()
+                    payload = serialize_upstream_chat_chunk(
+                        chunk,
+                        response_model=resolved_model,
+                        completion_id=completion_id,
+                        created=created_ts,
+                    )
+                    if payload is None:
+                        continue
+                    emitted_any = True
+                    yield format_chat_completion_sse_chunk(payload)
+            yield OPENAI_CHAT_SSE_DONE
+        except asyncio.CancelledError, GeneratorExit:
+            raise
+        except Exception as raw_error:
+            failure = self._provider_failure_override(
+                raw_error
+            ) or classify_provider_failure(
+                raw_error,
+                provider_name=tag,
+                read_timeout_s=self._config.http_read_timeout,
+                request_id=request_id,
+            )
+            self._log_stream_transport_error(
+                tag,
+                req_tag,
+                raw_error,
+                request_id=request_id,
+                downstream_model=str(passthrough_body.get("model") or ""),
+                attempts_started=retry_session.attempts_started,
+                max_attempts=retry_session.max_attempts,
+            )
+            if not emitted_any:
+                raise failure from raw_error
+            yield format_chat_completion_sse_error(failure)
+            yield OPENAI_CHAT_SSE_DONE
+        finally:
+            if stream is not None:
+                await close_provider_stream(
+                    stream,
+                    active_error=sys.exception(),
+                    provider_name=tag,
+                    request_id=request_id,
+                )
+            if attempt is not None:
+                await attempt.aclose()
 
     def stream_response(
         self,

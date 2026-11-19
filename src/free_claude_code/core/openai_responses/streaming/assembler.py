@@ -1,12 +1,12 @@
 """Anthropic SSE to OpenAI Responses stream assembly."""
 
-import json
 import time
 import uuid
 from collections.abc import Mapping
 from typing import Any
 
 from free_claude_code.core.failures import ExecutionFailure
+from free_claude_code.core.json_utils import fast_json_dumps
 from free_claude_code.core.trace import trace_event
 
 from ..anthropic_sse import AnthropicSseEvent
@@ -391,7 +391,7 @@ class ResponsesStreamAssembler:
             initial_str = (
                 initial_input
                 if identity.kind == "custom" and isinstance(initial_input, str)
-                else json.dumps(initial_input)
+                else fast_json_dumps(initial_input)
             )
             state.argument_parts.append(initial_str)
         self._ledger.set_active_block(state)

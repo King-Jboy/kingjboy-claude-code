@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from free_claude_code.config.settings import Settings
 from free_claude_code.core.anthropic import MessagesRequest
@@ -29,6 +29,19 @@ class ProviderPort(Protocol):
         request_id: str,
         response_model: str,
         reasoning: ReasoningPolicy,
+    ) -> AsyncIterator[str]: ...
+
+
+@runtime_checkable
+class ChatCompletionsPassthroughProvider(Protocol):
+    """Optional direct OpenAI Chat Completions passthrough capability."""
+
+    def stream_openai_chat_passthrough(
+        self,
+        body: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        response_model: str | None = None,
     ) -> AsyncIterator[str]: ...
 
 

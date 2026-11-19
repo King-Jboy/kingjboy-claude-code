@@ -30,7 +30,7 @@ TokenCounter = Callable[
     [list[Message], str | list[SystemContent] | None, list[Tool] | None],
     int,
 ]
-WireApi = Literal["messages", "responses"]
+WireApi = Literal["messages", "responses", "chat_completions"]
 
 
 class ProviderExecutor:
@@ -112,8 +112,8 @@ class ProviderExecutor:
             ),
             "reasoning_budget_tokens": routed.reasoning.budget_tokens,
         }
-        if wire_api == "responses":
-            route_trace["wire_api"] = "responses"
+        if wire_api in ("responses", "chat_completions"):
+            route_trace["wire_api"] = wire_api
         if self._generation_id is not None:
             route_trace["generation_id"] = self._generation_id
         trace_event(**route_trace)
@@ -128,6 +128,8 @@ class ProviderExecutor:
             event=(
                 "free_claude_code.api.responses.request.received"
                 if wire_api == "responses"
+                else "free_claude_code.api.chat_completions.request.received"
+                if wire_api == "chat_completions"
                 else "free_claude_code.api.request.received"
             ),
             source="api",
