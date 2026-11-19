@@ -130,7 +130,7 @@ def is_title_generation_request(request_data: MessagesRequest) -> bool:
     if getattr(request_data, "tools", None):
         return False
     view = _inspect_request(request_data)
-    if view.sole_user_turn is None:
+    if getattr(request_data, "messages", None) and view.sole_user_turn is None:
         return False
     system_text = view.system_text_lower
     if "title" not in system_text:

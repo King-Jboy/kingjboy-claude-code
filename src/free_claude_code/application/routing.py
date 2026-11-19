@@ -77,7 +77,7 @@ class ModelRouter:
                 original_model=claude_model_name,
                 provider_id=direct_provider_id,
                 provider_model=direct_provider_model,
-                provider_model_ref=f"{direct_provider_id}/{direct_provider_model}",
+                provider_model_ref=claude_model_name,
                 reasoning_preference=reasoning_preference,
             )
 

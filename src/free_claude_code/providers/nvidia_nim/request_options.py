@@ -1,5 +1,6 @@
 """NVIDIA NIM request option injection."""
 
+from copy import deepcopy
 from typing import Any
 
 from free_claude_code.config.nim import NimSettings
@@ -59,8 +60,7 @@ def apply_nim_request_options(
 
     if body.get("temperature") is None and nim.temperature is not None:
         body["temperature"] = nim.temperature
-    if body.get("top_p") is None and nim.top_p is not None:
-        body["top_p"] = nim.top_p
+    body["top_p"] = nim.top_p
 
     if "stop" not in body and nim.stop:
         body["stop"] = nim.stop
@@ -82,7 +82,7 @@ def apply_nim_request_options(
     extra_body: dict[str, Any] = {}
     request_extra = request_data.extra_body
     if request_extra:
-        extra_body.update(request_extra)
+        extra_body.update(deepcopy(request_extra))
     for key in (
         "reasoning",
         "reasoning_budget",

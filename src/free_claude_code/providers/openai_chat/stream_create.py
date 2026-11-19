@@ -186,13 +186,25 @@ def _decode_sse_json(raw: bytes) -> Any:
 class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
     """Zero-Pydantic orjson SSE stream plugged into AsyncOpenAI.post()."""
 
-    def __init__(self, *, cast_to: type[ResponseT], response: Any, client: Any) -> None:
+    def __init__(
+        self,
+        *,
+        cast_to: type[ResponseT],
+        response: Any,
+        client: Any,
+        options: Any = None,
+    ) -> None:
         self._buf = bytearray()
         self._pos = 0
         self._event_name = ""
         self._data_lines: list[bytes] = []
         self._done = False
-        super().__init__(cast_to=cast_to, response=response, client=client)
+        super().__init__(
+            cast_to=cast_to,
+            response=response,
+            client=client,
+            options=options,
+        )
 
     async def aclose(self) -> None:
         await self.close()

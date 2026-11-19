@@ -1,6 +1,7 @@
 """Request-body policy for OpenAI-compatible chat providers."""
 
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -67,10 +68,7 @@ def build_openai_chat_request_body(
         if policy.reject_extra_body_message:
             raise InvalidRequestError(policy.reject_extra_body_message)
         if policy.include_extra_body:
-            extra_body = dict(request_extra)
-            template_kwargs = extra_body.get("chat_template_kwargs")
-            if isinstance(template_kwargs, dict):
-                extra_body["chat_template_kwargs"] = dict(template_kwargs)
+            extra_body = deepcopy(request_extra)
             if policy.extra_body_validator is not None:
                 try:
                     policy.extra_body_validator(extra_body)

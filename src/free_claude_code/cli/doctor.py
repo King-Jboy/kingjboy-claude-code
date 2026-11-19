@@ -147,7 +147,7 @@ def check_providers(settings: Settings) -> Iterator[Finding]:
             continue
         if status["status"] == "configured":
             yield Finding(Level.OK, env_name, model_ref)
-        elif status["kind"] == "local":
+        elif status.get("kind") == "local":
             if status["status"] == "missing_url":
                 yield Finding(
                     Level.FAIL,
@@ -161,7 +161,7 @@ def check_providers(settings: Settings) -> Iterator[Finding]:
                     env_name,
                     f"{model_ref} (local: {status.get('base_url', '')})",
                 )
-        elif status["kind"] == "connected_account":
+        elif status.get("kind") == "connected_account":
             if status["status"] == "connected" or (
                 provider_id == "openai" and openai_auth_path().is_file()
             ):

@@ -15,7 +15,11 @@ from free_claude_code.core.anthropic import (
     Usage,
 )
 
-from .command_utils import extract_filepaths_from_command, extract_safe_command_prefix
+from .command_utils import (
+    extract_command_prefix,
+    extract_filepaths_from_command,
+    has_unquoted_shell_operator,
+)
 from .detection import (
     is_filepath_extraction_request,
     is_prefix_detection_request,
@@ -52,9 +56,12 @@ def try_prefix_detection(
     if not is_prefix_req:
         return None
 
-    prefix = extract_safe_command_prefix(command)
-    if prefix is None:
+    if "`" in command or "$(" in command:
+        prefix = "command_injection_detected"
+    elif has_unquoted_shell_operator(command):
         return None
+    else:
+        prefix = extract_command_prefix(command)
 
     logger.info("Optimization: Fast prefix detection request")
     return _text_response(
