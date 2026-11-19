@@ -15,7 +15,7 @@ from free_claude_code.core.anthropic import (
     Usage,
 )
 
-from .command_utils import extract_command_prefix, extract_filepaths_from_command
+from .command_utils import extract_filepaths_from_command, extract_safe_command_prefix
 from .detection import (
     is_filepath_extraction_request,
     is_prefix_detection_request,
@@ -52,10 +52,14 @@ def try_prefix_detection(
     if not is_prefix_req:
         return None
 
+    prefix = extract_safe_command_prefix(command)
+    if prefix is None:
+        return None
+
     logger.info("Optimization: Fast prefix detection request")
     return _text_response(
         request_data,
-        extract_command_prefix(command),
+        prefix,
         input_tokens=100,
         output_tokens=5,
     )

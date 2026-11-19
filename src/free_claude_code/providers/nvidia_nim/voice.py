@@ -67,16 +67,66 @@ class NvidiaNimTranscriber:
         async with self._lock:
             if self._closed:
                 raise RuntimeError("NVIDIA NIM transcriber is closed.")
-            if self._key_pool_provider is not None:
-                self._key_pool = await self._key_pool_provider()
-            worker = asyncio.create_task(
-                asyncio.to_thread(self._transcribe_sync, file_path)
-            )
+            model_config = _NIM_ASR_MODEL_MAP.get(self._model)
+            if model_config is None:
+                raise ValueError(
+                    f"No NVIDIA NIM config found for model: {self._model}. "
+                    f"Supported models: {', '.join(_NIM_ASR_MODEL_MAP)}"
+                )
+            function_id, language_code = model_config
             try:
-                return await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                await _wait_for_thread_exit(worker)
-                raise
+                import riva.client
+            except ImportError as exc:
+                raise ImportError(
+                    "NVIDIA NIM transcription requires the voice extra. "
+                    "Install with: uv sync --extra voice"
+                ) from exc
+
+            last_key_error: Exception | None = None
+            while True:
+                if self._key_pool_provider is not None:
+                    self._key_pool = await self._key_pool_provider()
+                key_pool = self._key_pool
+                if key_pool is None:
+                    raise ValueError(
+                        "NVIDIA NIM transcription requires an API key "
+                        "(configure NVIDIA_NIM_API_KEYS or NVIDIA_NIM_API_KEY)."
+                    )
+                key = key_pool.get_next_key()
+                if key is None:
+                    break
+                worker = asyncio.create_task(
+                    asyncio.to_thread(
+                        _transcribe_with_riva,
+                        riva.client,
+                        file_path,
+                        function_id=function_id,
+                        language_code=language_code,
+                        api_key=key,
+                    )
+                )
+                try:
+                    transcript = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    await _wait_for_thread_exit(worker)
+                    raise
+                except Exception as error:
+                    if not _is_rotatable_key_error(error):
+                        raise
+                    last_key_error = error
+                    if _is_rate_limited_key_error(error):
+                        key_pool.mark_rate_limited(key)
+                    else:
+                        key_pool.mark_failed(key)
+                    continue
+                key_pool.mark_succeeded(key)
+                return transcript
+
+            if last_key_error is not None:
+                raise last_key_error
+            raise RuntimeError(
+                "No NVIDIA NIM transcription API key is currently available."
+            )
 
     async def close(self) -> None:
         """Close this stateless adapter to future work."""
@@ -86,58 +136,6 @@ class NvidiaNimTranscriber:
             self._keys = ()
             self._key_pool = None
             self._key_pool_provider = None
-
-    def _transcribe_sync(self, file_path: Path) -> str:
-        if self._key_pool is None:
-            raise ValueError(
-                "NVIDIA NIM transcription requires an API key "
-                "(configure NVIDIA_NIM_API_KEYS or NVIDIA_NIM_API_KEY)."
-            )
-        model_config = _NIM_ASR_MODEL_MAP.get(self._model)
-        if model_config is None:
-            raise ValueError(
-                f"No NVIDIA NIM config found for model: {self._model}. "
-                f"Supported models: {', '.join(_NIM_ASR_MODEL_MAP)}"
-            )
-        function_id, language_code = model_config
-        try:
-            import riva.client
-        except ImportError as exc:
-            raise ImportError(
-                "NVIDIA NIM transcription requires the voice extra. "
-                "Install with: uv sync --extra voice"
-            ) from exc
-
-        last_key_error: Exception | None = None
-        while True:
-            key = self._key_pool.get_next_key()
-            if key is None:
-                break
-            try:
-                transcript = _transcribe_with_riva(
-                    riva.client,
-                    file_path,
-                    function_id=function_id,
-                    language_code=language_code,
-                    api_key=key,
-                )
-            except Exception as error:
-                if not _is_rotatable_key_error(error):
-                    raise
-                last_key_error = error
-                if _is_rate_limited_key_error(error):
-                    self._key_pool.mark_rate_limited(key)
-                else:
-                    self._key_pool.mark_failed(key)
-                continue
-            self._key_pool.mark_succeeded(key)
-            return transcript
-
-        if last_key_error is not None:
-            raise last_key_error
-        raise RuntimeError(
-            "No NVIDIA NIM transcription API key is currently available."
-        )
 
 
 def _transcribe_with_riva(

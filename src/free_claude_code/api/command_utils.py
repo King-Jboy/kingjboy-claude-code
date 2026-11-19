@@ -22,6 +22,44 @@ def _strip_env_assignments(parts: list[str]) -> list[str]:
     return parts[cmd_start:]
 
 
+_SHELL_CONTROL_OPERATOR_CHARS = frozenset({";", "|", "&", ">", "<", "(", ")", "\n", "\r"})
+
+
+def has_unquoted_shell_operator(command: str) -> bool:
+    """Return True if ``command`` contains unquoted chaining, piping, or redirection.
+
+    Quote-aware inspection keeps harmless quoted arguments (e.g.
+    ``git commit -m "fix A && B"``) on the fast path while ensuring compound
+    commands, subshells, newlines, and redirections cannot bypass permission
+    checks. Unterminated quotes fail closed by returning True.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()\n\r")
+    lexer.whitespace = " \t"
+    lexer.whitespace_split = False
+    lexer.commenters = ""
+    try:
+        for token in lexer:
+            if token and all(ch in _SHELL_CONTROL_OPERATOR_CHARS for ch in token):
+                return True
+    except ValueError:
+        return True
+    return False
+
+
+def extract_safe_command_prefix(command: str) -> str | None:
+    """Extract a command prefix only when ``command`` is a single simple invocation.
+
+    Returns ``"command_injection_detected"`` for backtick/``$(`` substitutions,
+    ``None`` when unquoted shell operators, redirections, or newlines require
+    upstream model classification, or the parsed prefix for simple commands.
+    """
+    if "`" in command or "$(" in command:
+        return "command_injection_detected"
+    if has_unquoted_shell_operator(command):
+        return None
+    return extract_command_prefix(command)
+
+
 def extract_command_prefix(command: str) -> str:
     """Extract the command prefix for fast prefix detection.
 
@@ -71,10 +109,14 @@ def extract_command_prefix(command: str) -> str:
 
         if first_word in two_word_commands and len(cmd_parts) > 1:
             second_word = cmd_parts[1]
-            if not second_word.startswith("-"):
-                return f"{first_word} {second_word}"
-            return first_word
-        return first_word if not env_prefix else " ".join(env_prefix) + " " + first_word
+            prefix = (
+                f"{first_word} {second_word}"
+                if not second_word.startswith("-")
+                else first_word
+            )
+        else:
+            prefix = first_word
+        return prefix if not env_prefix else " ".join(env_prefix) + " " + prefix
 
     except ValueError:
         parts = command.split()

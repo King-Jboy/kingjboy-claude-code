@@ -388,11 +388,59 @@ class OpenAIChatProvider(BaseProvider):
 
     async def _list_models_payload(self) -> Any:
         """Fetch one OpenAI-compatible model-list payload with shared retries."""
-        payload = await self._admission.run_with_retry(
-            self._client.models.list,
+        if self._key_pool is None:
+            return await self._admission.run_with_retry(
+                self._client.models.list,
+                provider_failure_override=self._provider_failure_override,
+            )
+
+        async def _list_with_pool() -> Any:
+            assert self._key_pool is not None
+            last_error: Exception | None = None
+            for _ in self._config.api_keys:
+                key = self._key_pool.get_next_key()
+                if key is None:
+                    break
+                try:
+                    payload = await self._client_for_key(key).models.list()
+                except AuthenticationError as error:
+                    self._key_pool.mark_failed(key)
+                    last_error = error
+                except PermissionDeniedError as error:
+                    if not self._rotate_on_permission_denied():
+                        raise
+                    self._key_pool.mark_failed(key)
+                    last_error = error
+                except RateLimitError as error:
+                    self._key_pool.mark_rate_limited(key)
+                    last_error = error
+                else:
+                    self._key_pool.mark_succeeded(key)
+                    return payload
+            if last_error is not None:
+                raise last_error
+            if self._key_pool.all_keys_disabled():
+                raise ExecutionFailure(
+                    kind=FailureKind.AUTHENTICATION,
+                    status_code=401,
+                    message=(
+                        "Every API key in the configured pool was disabled after "
+                        "repeated authentication failures. Replace the keys and "
+                        "restart or re-apply the configuration."
+                    ),
+                    retryable=False,
+                )
+            raise ExecutionFailure(
+                kind=FailureKind.RATE_LIMIT,
+                status_code=429,
+                message="No API key in the configured pool is currently available.",
+                retryable=True,
+            )
+
+        return await self._admission.run_with_retry(
+            _list_with_pool,
             provider_failure_override=self._provider_failure_override,
         )
-        return payload
 
     def _build_request_body(
         self,
@@ -745,7 +793,10 @@ class OpenAIChatProvider(BaseProvider):
                     return task1.result()
                 tasks.clear()
                 if isinstance(exc, Exception) and _handle_key_error(key1, exc):
-                    return await self._open_chat_stream_sequential(create_body)
+                    return await self._open_chat_stream_sequential(
+                        create_body,
+                        prior_error=exc,
+                    )
                 if isinstance(exc, BaseException):
                     raise exc
 
@@ -764,7 +815,10 @@ class OpenAIChatProvider(BaseProvider):
                 except Exception as exc:
                     tasks.clear()
                     if _handle_key_error(key1, exc):
-                        return await self._open_chat_stream_sequential(create_body)
+                        return await self._open_chat_stream_sequential(
+                            create_body,
+                            prior_error=exc,
+                        )
                     raise
 
             used_keys.add(key2)

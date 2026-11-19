@@ -17,7 +17,7 @@ def apply_reasoning_details_replay(
 ) -> None:
     """Replay opaque reasoning details on their converted assistant messages."""
     assistant_details = _assistant_reasoning_details(request.messages)
-    if not assistant_details:
+    if not any(assistant_details):
         return
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -33,12 +33,13 @@ def apply_reasoning_details_replay(
                 or is_synthetic_openai_tool_turn_boundary(message)
             ):
                 continue
-            existing = message.get("reasoning_details")
-            if isinstance(existing, list):
-                existing.extend(details)
-            else:
-                message["reasoning_details"] = list(details)
             cursor = index + 1
+            if details:
+                existing = message.get("reasoning_details")
+                if isinstance(existing, list):
+                    existing.extend(details)
+                else:
+                    message["reasoning_details"] = list(details)
             break
 
 
@@ -100,14 +101,11 @@ def _reasoning_details(delta: Any) -> Sequence[Any]:
 def _assistant_reasoning_details(messages: Any) -> list[list[dict[str, Any]]]:
     if not _is_sequence(messages):
         return []
-    result: list[list[dict[str, Any]]] = []
-    for message in messages:
-        if _field(message, "role") != "assistant":
-            continue
-        details = _redacted_reasoning_details(_field(message, "content"))
-        if details:
-            result.append(details)
-    return result
+    return [
+        _redacted_reasoning_details(_field(message, "content"))
+        for message in messages
+        if _field(message, "role") == "assistant"
+    ]
 
 
 def _redacted_reasoning_details(content: Any) -> list[dict[str, Any]]:

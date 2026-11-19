@@ -146,11 +146,12 @@ class ApiKeyPool:
         with self._lock:
             now = time.monotonic()
             waits = [
-                state.limiter.next_available_in()
+                max(
+                    max(0.0, state.unavailable_until - now),
+                    state.limiter.next_available_in(),
+                )
                 for state in self._keys
-                if state.key not in excluded
-                and not state.failed
-                and now >= state.unavailable_until
+                if state.key not in excluded and not state.failed
             ]
             return min(waits) if waits else None
 

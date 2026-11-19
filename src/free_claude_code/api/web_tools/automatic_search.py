@@ -190,11 +190,14 @@ def _filter_results(
 
 
 def _hostname_is_allowed(url: str, domains: WebSearchDomainFilter) -> bool:
-    hostname = urlsplit(url).hostname
+    try:
+        hostname = urlsplit(url).hostname
+    except ValueError:
+        return False
     if hostname is None:
         return False
     try:
-        normalized = hostname.encode("idna").decode("ascii").lower()
+        normalized = hostname.rstrip(".").encode("idna").decode("ascii").lower()
     except UnicodeError:
         return False
     if domains.allowed and not any(

@@ -60,7 +60,8 @@ def apply_nim_request_options(
 
     if body.get("temperature") is None and nim.temperature is not None:
         body["temperature"] = nim.temperature
-    body["top_p"] = nim.top_p
+    if body.get("top_p") is None and nim.top_p is not None:
+        body["top_p"] = nim.top_p
 
     if "stop" not in body and nim.stop:
         body["stop"] = nim.stop
@@ -130,7 +131,7 @@ def apply_nim_request_options(
                     chat_template_kwargs["reasoning_budget"] = budget
             elif is_nim_hybrid_reasoning:
                 off_budget = 16
-                if isinstance(max_tokens, int) and max_tokens > 16:
+                if isinstance(max_tokens, int) and max_tokens > 0:
                     off_budget = min(off_budget, max(1, max_tokens // 2))
                 chat_template_kwargs["reasoning_budget"] = off_budget
 

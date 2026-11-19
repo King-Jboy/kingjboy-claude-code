@@ -27,8 +27,12 @@ def web_fetch_allowed_scheme_set(raw_schemes: str) -> frozenset[str]:
 
 
 def _port_for_url(parsed) -> int:
-    if parsed.port is not None:
-        return parsed.port
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise WebFetchEgressViolation(f"Invalid port in web_fetch URL: {exc}") from exc
+    if port is not None:
+        return port
     return 443 if (parsed.scheme or "").lower() == "https" else 80
 
 
@@ -44,8 +48,17 @@ def _stream_getaddrinfo_or_raise(host: str, port: int) -> list[tuple]:
 
 
 def _is_ip_global(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        return ip.ipv4_mapped.is_global
+    if ip.is_multicast:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return _is_ip_global(ip.ipv4_mapped)
+        if ip.sixtofour is not None and not _is_ip_global(ip.sixtofour):
+            return False
+        if ip.teredo is not None and not all(
+            _is_ip_global(addr) for addr in ip.teredo
+        ):
+            return False
     return ip.is_global
 
 
@@ -75,7 +88,7 @@ def get_validated_stream_addrinfos_for_egress(
     if policy.allow_private_network_targets:
         return _stream_getaddrinfo_or_raise(host, port)
 
-    host_lower = host.lower()
+    host_lower = host.rstrip(".").lower()
     if host_lower == "localhost" or host_lower.endswith(".localhost"):
         raise WebFetchEgressViolation("localhost targets are not allowed for web_fetch")
     if host_lower.endswith(".local"):
@@ -98,8 +111,10 @@ def get_validated_stream_addrinfos_for_egress(
         addr = sockaddr[0]
         try:
             resolved = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise WebFetchEgressViolation(
+                f"Host {host!r} resolved to an unparseable address ({addr!r})"
+            ) from exc
         if not _is_ip_global(resolved):
             raise WebFetchEgressViolation(
                 f"Host {host!r} resolves to a non-public address ({resolved})"

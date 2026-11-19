@@ -332,6 +332,7 @@ class OpenAIAuthManager:
         """Reload cross-process state, then force at most one token refresh."""
 
         async with self._state_lock:
+            self._ensure_open()
             current = self._credentials
             reloaded = await asyncio.to_thread(self._read_credentials)
             if reloaded is not None and (
@@ -469,17 +470,19 @@ class OpenAIAuthManager:
         if os.name != "nt":
             os.chmod(path.parent, 0o700)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        payload = json.dumps(
+            {"version": 1, "credentials": credentials.as_json()},
+            indent=2,
+        )
         try:
-            temporary.write_text(
-                json.dumps(
-                    {"version": 1, "credentials": credentials.as_json()},
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-            os.chmod(temporary, 0o600)
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            if os.name != "nt":
+                os.chmod(temporary, 0o600)
             os.replace(temporary, path)
-            os.chmod(path, 0o600)
+            if os.name != "nt":
+                os.chmod(path, 0o600)
         finally:
             temporary.unlink(missing_ok=True)
 

@@ -56,12 +56,17 @@ _BLOCKED_ENV_PREFIXES = (
     "CUSTOM_",
     "TOKENROUTER_",
     "NARAROUTE_",
+    "TELEGRAM_",
+    "DISCORD_",
 )
 _BLOCKED_ENV_KEYS = frozenset(
     {
         "OPENAI_API_KEY",
+        "OPENAI_PROXY",
         "AWS_BEARER_TOKEN_BEDROCK",
+        "BEDROCK_PROXY",
         "HUGGINGFACE_API_KEY",
+        "HUGGINGFACE_PROXY",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     }
 )

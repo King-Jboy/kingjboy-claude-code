@@ -130,14 +130,25 @@ class LMStudioProvider(OpenAIChatProvider):
         try:
             root = self._base_url
             root = root[: -len("/v1")] if root.endswith("/v1") else root
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            headers = (
+                {"Authorization": f"Bearer {self._api_key}"}
+                if self._api_key
+                else None
+            )
+            async with httpx.AsyncClient(
+                timeout=2.0,
+                proxy=self._config.proxy or None,
+                headers=headers,
+            ) as client:
                 response = await client.get(f"{root}/api/v0/models")
             response.raise_for_status()
             loaded = [
-                model.get("loaded_context_length")
+                length
                 for model in response.json().get("data", [])
                 if model.get("state") == "loaded"
-                and isinstance(model.get("loaded_context_length"), int)
+                and isinstance((length := model.get("loaded_context_length")), int)
+                and not isinstance(length, bool)
+                and length > 0
             ]
             # ponytail: single-model setups in practice; with several loaded
             # models the most generous ceiling still makes a valid backstop.

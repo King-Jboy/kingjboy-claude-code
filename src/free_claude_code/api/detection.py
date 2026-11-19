@@ -89,39 +89,9 @@ class _RequestInspectionView:
         return self._system_text_lower
 
 
-_last_inspection: (
-    tuple[
-        MessagesRequest,
-        object,
-        int,
-        int,
-        bool,
-        _RequestInspectionView,
-    ]
-    | None
-) = None
-
-
 def _inspect_request(request_data: MessagesRequest) -> _RequestInspectionView:
-    """Return a cached inspection view when inspecting the same request in sequence."""
-    global _last_inspection
-    extractor = extract_text_from_content
-    messages = getattr(request_data, "messages", ())
-    msg_len = len(messages) if messages is not None else 0
-    sys_id = id(getattr(request_data, "system", None))
-    has_tools = bool(getattr(request_data, "tools", None))
-    if (
-        _last_inspection is not None
-        and _last_inspection[0] is request_data
-        and _last_inspection[1] is extractor
-        and _last_inspection[2] == msg_len
-        and _last_inspection[3] == sys_id
-        and _last_inspection[4] == has_tools
-    ):
-        return _last_inspection[5]
-    view = _RequestInspectionView(request_data, extractor)
-    _last_inspection = (request_data, extractor, msg_len, sys_id, has_tools, view)
-    return view
+    """Return a per-call inspection view without retaining request references globally."""
+    return _RequestInspectionView(request_data, extract_text_from_content)
 
 
 def _single_user_turn(request_data: MessagesRequest) -> Message | None:
@@ -159,7 +129,10 @@ def is_title_generation_request(request_data: MessagesRequest) -> bool:
     """
     if getattr(request_data, "tools", None):
         return False
-    system_text = _inspect_request(request_data).system_text_lower
+    view = _inspect_request(request_data)
+    if view.sole_user_turn is None:
+        return False
+    system_text = view.system_text_lower
     if "title" not in system_text:
         return False
     return "sentence-case title" in system_text or (
@@ -178,6 +151,8 @@ def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, st
     Returns:
         Tuple of (is_prefix_request, command_string)
     """
+    if getattr(request_data, "tools", None):
+        return False, ""
     content = _inspect_request(request_data).sole_user_text
     if content is None:
         return False, ""
@@ -214,19 +189,16 @@ def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
 def is_suggestion_mode_request(request_data: MessagesRequest) -> bool:
     """Check if this is a suggestion mode request.
 
-    Suggestion mode requests contain "[SUGGESTION MODE:" in the user's message,
-    used for auto-suggesting what the user might type next.
+    Suggestion mode requests carry no tools and contain "[SUGGESTION MODE:"
+    in the latest user turn (never matching stale historical messages).
     """
-    view = _inspect_request(request_data)
-    if view.sole_user_turn is not None:
-        sole_text = view.sole_user_text
-        return sole_text is not None and "[SUGGESTION MODE:" in sole_text
-    for msg in request_data.messages:
-        if msg.role == "user":
-            text = extract_text_from_content(msg.content)
-            if "[SUGGESTION MODE:" in text:
-                return True
-    return False
+    if getattr(request_data, "tools", None):
+        return False
+    messages = request_data.messages
+    if not messages or messages[-1].role != "user":
+        return False
+    last_text = extract_text_from_content(messages[-1].content)
+    return "[SUGGESTION MODE:" in last_text
 
 
 def is_filepath_extraction_request(

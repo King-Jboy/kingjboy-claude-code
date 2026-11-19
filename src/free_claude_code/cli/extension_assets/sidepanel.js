@@ -69,6 +69,8 @@ const ui = {
 /** Conversation history in Messages API shape, replayed on every request. */
 let history = [];
 let busy = false;
+/** Monotonic counter bumped on Clear so an aborted in-flight turn never mutates fresh state. */
+let conversationEpoch = 0;
 /**
  * Aborts the in-flight turn. Null while idle. A stop cannot kill a native
  * shell command already running -- it takes effect the moment that returns.
@@ -215,7 +217,9 @@ async function connect(settings) {
   setNote("Reaching the proxy…");
   let response;
   try {
-    response = await fetch(`${settings.baseUrl}/v1/models`, { headers: authHeaders(settings) });
+    response = await fetch(`${settings.baseUrl}/v1/models?view=claude`, {
+      headers: authHeaders(settings),
+    });
   } catch {
     // A refused localhost connection is overwhelmingly "the server is not
     // running", which is a different fix from a wrong URL. Say both.
@@ -801,21 +805,24 @@ async function runTool(call, signal) {
   return outcome;
 }
 
-async function runConversation(settings, signal) {
+async function runConversation(settings, signal, epoch) {
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-    if (signal?.aborted) return;
+    if (signal?.aborted || epoch !== conversationEpoch) return;
     const response = await requestTurn(settings, signal);
+    if (epoch !== conversationEpoch) return;
 
     const turn = openAssistantTurn();
     const { content, stopReason, usage } = await streamAssistantTurn(
       response,
       (chunk) => {
+        if (epoch !== conversationEpoch) return;
         if (chunk.text !== undefined) turn.text += chunk.text;
         if (chunk.thinking !== undefined) turn.thinking += chunk.thinking;
         scheduleAssistantRender(turn);
       },
       signal,
     );
+    if (epoch !== conversationEpoch) return;
     renderAssistant(turn);
     if (usage.input) usageTotals.input += usage.input;
     if (usage.output) usageTotals.output += usage.output;
@@ -851,6 +858,7 @@ async function runConversation(settings, signal) {
     const results = [];
     const images = [];
     for (const call of toolCalls) {
+      if (epoch !== conversationEpoch) return;
       if (signal?.aborted) {
         // Every tool_use needs a tool_result, or replaying history fails.
         results.push({
@@ -862,9 +870,11 @@ async function runConversation(settings, signal) {
         continue;
       }
       const { content: text, is_error, image } = await runTool(call, signal);
+      if (epoch !== conversationEpoch) return;
       results.push({ type: "tool_result", tool_use_id: call.id, content: text, is_error });
       if (image) images.push(image);
     }
+    if (epoch !== conversationEpoch) return;
     // Every tool_result must satisfy its tool_use before any other block
     // appears: the proxy emits one provider tool message per result and only
     // then a user turn for the images, which is the one ordering both APIs
@@ -876,6 +886,7 @@ async function runConversation(settings, signal) {
     }
   }
 
+  if (epoch !== conversationEpoch) return;
   addTurn("error", `Stopped after ${MAX_TOOL_ROUNDS} tool rounds without a final answer.`);
 }
 
@@ -890,6 +901,7 @@ async function send() {
     return;
   }
 
+  const epoch = conversationEpoch;
   busy = true;
   stopController = new AbortController();
   ui.send.disabled = true;
@@ -903,12 +915,14 @@ async function send() {
   if (!pinnedTab) await pinActiveTab();
 
   try {
-    await runConversation(settings, stopController.signal);
+    await runConversation(settings, stopController.signal, epoch);
   } catch (error) {
-    if (stopController.signal.aborted) {
-      addTurn("note", "Stopped before a reply arrived.");
-    } else {
-      addTurn("error", error instanceof Error ? error.message : String(error));
+    if (epoch === conversationEpoch) {
+      if (stopController.signal.aborted) {
+        addTurn("note", "Stopped before a reply arrived.");
+      } else {
+        addTurn("error", error instanceof Error ? error.message : String(error));
+      }
     }
   } finally {
     busy = false;
@@ -916,7 +930,9 @@ async function send() {
     ui.send.disabled = false;
     ui.stop.hidden = true;
     ui.prompt.focus();
-    scheduleSave();
+    if (epoch === conversationEpoch) {
+      scheduleSave();
+    }
   }
 }
 
@@ -960,6 +976,8 @@ ui.prompt.addEventListener("keydown", (event) => {
 });
 
 ui.clear.addEventListener("click", () => {
+  conversationEpoch += 1;
+  stopController?.abort();
   showEmptyState();
   usageTotals = { input: 0, output: 0 };
   renderUsage();

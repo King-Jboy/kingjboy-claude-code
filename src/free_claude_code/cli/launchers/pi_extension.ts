@@ -111,7 +111,7 @@ async function fetchFccModels(baseUrl: string, apiKey: string): Promise<Provider
 	try {
 		let response: Response;
 		try {
-			response = await fetch(`${baseUrl}/v1/models`, {
+			response = await fetch(`${baseUrl}/v1/models?view=claude`, {
 				headers: { Authorization: `Bearer ${apiKey}` },
 				signal: controller.signal,
 			});

@@ -1,14 +1,23 @@
 """Provider configuration status for the Admin UI."""
 
+import os
 from collections.abc import Mapping
 from typing import Any
 
+from free_claude_code.config.api_key_pool import parse_api_key_pool
 from free_claude_code.config.provider_catalog import (
     PROVIDER_CATALOG,
     ProviderAuthKind,
 )
 
 from .manifest import FIELDS
+from .sources import configured_env_files, dotenv_values_from_file
+
+_POOL_ENV_BY_PROVIDER: dict[str, str] = {
+    "nvidia_nim": "NVIDIA_NIM_API_KEYS",
+    "open_router": "OPENROUTER_API_KEYS",
+    "custom": "CUSTOM_API_KEYS",
+}
 
 
 def provider_config_status(
@@ -48,7 +57,7 @@ def provider_config_status(
         missing_attrs = tuple(
             attr
             for attr in configuration_attrs
-            if not _value_for_settings_attr(state, attr).strip()
+            if not _attr_has_value(state, provider_id, descriptor.credential_attr, attr)
         )
         configured = not missing_attrs
         configuration = " + ".join(
@@ -78,6 +87,40 @@ def provider_config_status(
             }
         )
     return statuses
+
+
+def _attr_has_value(
+    state: Mapping[str, Mapping[str, Any]],
+    provider_id: str,
+    credential_attr: str | None,
+    settings_attr: str,
+) -> bool:
+    if _value_for_settings_attr(state, settings_attr).strip():
+        return True
+    if settings_attr == credential_attr:
+        pool_env = _POOL_ENV_BY_PROVIDER.get(provider_id)
+        if pool_env and _has_configured_key_pool(state, pool_env):
+            return True
+    return False
+
+
+def _has_configured_key_pool(
+    state: Mapping[str, Mapping[str, Any]], pool_env: str
+) -> bool:
+    raw = str(state.get(pool_env, {}).get("value", ""))
+    if not raw.strip():
+        raw = os.environ.get(pool_env, "")
+    if not raw.strip():
+        for _source, path in configured_env_files():
+            file_val = dotenv_values_from_file(path).get(pool_env, "")
+            if file_val.strip():
+                raw = file_val
+    if not raw.strip():
+        return False
+    try:
+        return bool(parse_api_key_pool(raw))
+    except ValueError:
+        return False
 
 
 def _value_for_settings_attr(

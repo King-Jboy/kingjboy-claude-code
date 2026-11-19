@@ -35,9 +35,11 @@ same way ``doctor`` checks a model still exists.
 """
 
 import argparse
+import os
 import re
 import sys
 import time
+from uuid import uuid4
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -711,7 +713,12 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 1
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render(rows), encoding="utf-8")
+    temp_path = output.with_suffix(f"{output.suffix}.tmp.{uuid4().hex}")
+    try:
+        temp_path.write_text(render(rows), encoding="utf-8")
+        os.replace(temp_path, output)
+    finally:
+        temp_path.unlink(missing_ok=True)
     resolved = sum(1 for row in rows if row.context)
     print(
         f"\nwrote {output} ({resolved} of {len(rows)} models resolved)",

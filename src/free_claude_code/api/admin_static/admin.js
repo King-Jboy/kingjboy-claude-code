@@ -195,7 +195,9 @@ function renderProviders(providerStatus) {
 
     const title = document.createElement("div");
     title.className = "provider-title";
-    title.innerHTML = `<strong>${provider.display_name || provider.provider_id}</strong>`;
+    const titleStrong = document.createElement("strong");
+    titleStrong.textContent = provider.display_name || provider.provider_id;
+    title.appendChild(titleStrong);
 
     const pill = document.createElement("span");
     pill.className = `status-pill ${statusClass(provider.status)}`;
@@ -586,12 +588,10 @@ function parsePinnedModelsDraft() {
   const input = byId("field-PINNED_MODELS");
   const raw = input ? input.value : state.fields.get("PINNED_MODELS")?.value || "";
   if (!raw || !raw.trim()) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
+  const collectRefs = (items) => {
     const seen = new Set();
     const refs = [];
-    parsed.forEach((item) => {
+    items.forEach((item) => {
       if (typeof item !== "string") return;
       const trimmed = item.trim();
       if (!trimmed || !trimmed.includes("/") || seen.has(trimmed)) return;
@@ -599,8 +599,14 @@ function parsePinnedModelsDraft() {
       refs.push(trimmed);
     });
     return refs;
+  };
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return collectRefs(parsed);
   } catch {
-    return Array.from(state.contextWindows.keys());
+    const fallbackRefs = collectRefs(raw.split(/[\n,]+/));
+    return fallbackRefs.length > 0 ? fallbackRefs : Array.from(state.contextWindows.keys());
   }
 }
 
@@ -626,7 +632,22 @@ function renderContextWindowsView() {
     const val = (state.draftContextWindows.get(ref) ?? state.contextWindows.get(ref) ?? "").trim();
     return Boolean(val);
   }).length;
-  summary.innerHTML = `<span><strong>${pinnedRefs.length}</strong> pinned model${pinnedRefs.length === 1 ? "" : "s"} (${configuredCount} configured, ${pinnedRefs.length - configuredCount} unset)</span><span>Managed file: <code>${contextPath}</code></span>`;
+  const countSpan = document.createElement("span");
+  const countStrong = document.createElement("strong");
+  countStrong.textContent = String(pinnedRefs.length);
+  countSpan.appendChild(countStrong);
+  countSpan.appendChild(
+    document.createTextNode(
+      ` pinned model${pinnedRefs.length === 1 ? "" : "s"} (${configuredCount} configured, ${pinnedRefs.length - configuredCount} unset)`
+    )
+  );
+  const pathSpan = document.createElement("span");
+  pathSpan.appendChild(document.createTextNode("Managed file: "));
+  const pathCode = document.createElement("code");
+  pathCode.textContent = contextPath;
+  pathSpan.appendChild(pathCode);
+  summary.appendChild(countSpan);
+  summary.appendChild(pathSpan);
   sectionEl.appendChild(summary);
 
   if (pinnedRefs.length === 0) {

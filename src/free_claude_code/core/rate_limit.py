@@ -1,6 +1,7 @@
 """Shared strict sliding-window rate limiting primitives."""
 
 import asyncio
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -28,6 +29,10 @@ class StrictSlidingWindowLimiter:
         self._rate_window = float(rate_window)
         self._times: deque[float] = deque()
         self._lock = asyncio.Lock()
+        self._state_lock = threading.Lock()
+        self._capacity_waiters: list[
+            tuple[asyncio.AbstractEventLoop, asyncio.Event]
+        ] = []
 
     async def acquire(self) -> None:
         await self._acquire(None)
@@ -54,7 +59,19 @@ class StrictSlidingWindowLimiter:
         """
         if rate_limit <= 0:
             raise ValueError("rate_limit must be > 0")
-        self._rate_limit = int(rate_limit)
+        new_limit = int(rate_limit)
+        waiters_to_wake: list[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = []
+        with self._state_lock:
+            increased = new_limit > self._rate_limit
+            self._rate_limit = new_limit
+            if increased and self._capacity_waiters:
+                waiters_to_wake = list(self._capacity_waiters)
+        for loop, waiter in waiters_to_wake:
+            if not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(waiter.set)
+                except RuntimeError:
+                    pass
 
     def recorded_times(self) -> tuple[float, ...]:
         """Return the acquisitions still inside the window, oldest first."""
@@ -93,9 +110,10 @@ class StrictSlidingWindowLimiter:
         """Return seconds until one acquisition frees up (0.0 when admissible now)."""
         now = time.monotonic()
         self._evict_expired(now)
-        if len(self._times) < self._rate_limit:
+        limit = self._rate_limit
+        if len(self._times) < limit:
             return 0.0
-        unlock_index = len(self._times) - self._rate_limit
+        unlock_index = len(self._times) - limit
         return max(0.0, (self._times[unlock_index] + self._rate_window) - now)
 
     def _evict_expired(self, now: float) -> None:
@@ -107,22 +125,37 @@ class StrictSlidingWindowLimiter:
     async def _acquire(self, allowed: Callable[[], bool] | None) -> bool:
         while True:
             wait_time = 0.0
+            waiter_entry: tuple[asyncio.AbstractEventLoop, asyncio.Event] | None = None
             async with self._lock:
                 now = time.monotonic()
                 self._evict_expired(now)
+                limit = self._rate_limit
 
-                if len(self._times) < self._rate_limit:
+                if len(self._times) < limit:
                     if allowed is not None and not allowed():
                         return False
                     self._times.append(time.monotonic())
                     return True
 
-                unlock_index = len(self._times) - self._rate_limit
+                unlock_index = len(self._times) - limit
                 oldest_blocking = self._times[unlock_index]
                 wait_time = max(0.0, (oldest_blocking + self._rate_window) - now)
+                if wait_time > 0:
+                    waiter_entry = (asyncio.get_running_loop(), asyncio.Event())
+                    with self._state_lock:
+                        self._capacity_waiters.append(waiter_entry)
 
-            if wait_time > 0:
-                await asyncio.sleep(wait_time)
+            if wait_time > 0 and waiter_entry is not None:
+                try:
+                    await asyncio.wait_for(waiter_entry[1].wait(), timeout=wait_time)
+                except TimeoutError:
+                    pass
+                finally:
+                    with self._state_lock:
+                        try:
+                            self._capacity_waiters.remove(waiter_entry)
+                        except ValueError:
+                            pass
             else:
                 await asyncio.sleep(0)
 

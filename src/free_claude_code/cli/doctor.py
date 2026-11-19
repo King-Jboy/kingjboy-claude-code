@@ -28,10 +28,17 @@ from free_claude_code.config.context_windows import (
     recorded_route_windows,
     resolve_client_context_window,
 )
+from free_claude_code.config.api_key_pool import parse_api_key_pool
 from free_claude_code.config.model_refs import parse_model_name, parse_provider_type
-from free_claude_code.config.paths import managed_env_path
-from free_claude_code.config.provider_catalog import PROVIDER_CATALOG
+from free_claude_code.config.paths import managed_env_path, openai_auth_path
+from free_claude_code.config.provider_catalog import PROVIDER_CATALOG, ProviderDescriptor
 from free_claude_code.config.settings import Settings
+
+_POOL_ATTR_BY_PROVIDER: dict[str, str] = {
+    "nvidia_nim": "nvidia_nim_api_keys",
+    "open_router": "open_router_api_keys",
+    "custom": "custom_api_keys",
+}
 
 MODEL_ROUTE_ATTRS = (
     ("MODEL", "model"),
@@ -137,6 +144,32 @@ def check_providers(settings: Settings) -> Iterator[Finding]:
             continue
         if status["status"] == "configured":
             yield Finding(Level.OK, env_name, model_ref)
+        elif status["kind"] == "local":
+            if status["status"] == "missing_url":
+                yield Finding(
+                    Level.FAIL,
+                    env_name,
+                    f"{model_ref} routes to {provider_id}, which has no base URL",
+                    f"Set the local URL for {status['display_name']} in the Admin UI.",
+                )
+            else:
+                yield Finding(
+                    Level.OK,
+                    env_name,
+                    f"{model_ref} (local: {status.get('base_url', '')})",
+                )
+        elif status["kind"] == "connected_account":
+            if status["status"] == "connected" or (
+                provider_id == "openai" and openai_auth_path().is_file()
+            ):
+                yield Finding(Level.OK, env_name, f"{model_ref} (connected account)")
+            else:
+                yield Finding(
+                    Level.FAIL,
+                    env_name,
+                    f"{model_ref} routes to {provider_id}, which is {status['label']!r}",
+                    f"Connect your {status['display_name']} account in the Admin UI.",
+                )
         else:
             credential_remedy = (
                 f"Set credentials for {status['display_name']} in the Admin UI."
@@ -150,6 +183,11 @@ def check_providers(settings: Settings) -> Iterator[Finding]:
                 credential_remedy = (
                     "Set OPENROUTER_API_KEY in Admin UI, or configure "
                     "OPENROUTER_API_KEYS in .env."
+                )
+            elif provider_id == "custom":
+                credential_remedy = (
+                    "Set CUSTOM_BASE_URL and CUSTOM_API_KEY in Admin UI, or "
+                    "configure CUSTOM_API_KEYS in .env."
                 )
             yield Finding(
                 Level.FAIL,
@@ -189,6 +227,13 @@ def check_context_window(settings: Settings) -> Iterator[Finding]:
             f"{detail} (from {CONTEXT_WINDOWS_FILENAME} for {resolved.model_ref})",
         )
         return
+    if resolved.source == "curated":
+        yield Finding(
+            Level.OK,
+            "context window",
+            f"{detail} (curated default for {resolved.model_ref})",
+        )
+        return
     if resolved.source == "default":
         yield Finding(
             Level.OK,
@@ -216,11 +261,19 @@ def check_models_still_exist(settings: Settings) -> Iterator[Finding]:
         seen.add(model_ref)
         provider_id = parse_provider_type(model_ref)
         descriptor = PROVIDER_CATALOG.get(provider_id)
-        if descriptor is None or not descriptor.default_base_url:
+        if descriptor is None:
             continue
+        base_url = _effective_base_url(descriptor, settings)
+        if not base_url:
+            continue
+        api_key = _effective_api_key(descriptor, settings)
         model_name = parse_model_name(model_ref)
         try:
-            advertised = _advertised_model_ids(descriptor.default_base_url)
+            advertised = _advertised_model_ids(
+                base_url,
+                api_key=api_key,
+                provider_id=provider_id,
+            )
         except Exception as error:
             yield Finding(
                 Level.WARN,
@@ -242,10 +295,60 @@ def check_models_still_exist(settings: Settings) -> Iterator[Finding]:
             )
 
 
-def _advertised_model_ids(base_url: str) -> frozenset[str]:
-    """Return model ids from an OpenAI-compatible ``/models`` endpoint."""
+def _effective_base_url(descriptor: ProviderDescriptor, settings: Settings) -> str:
+    if descriptor.base_url_attr:
+        configured = str(getattr(settings, descriptor.base_url_attr, "") or "").strip()
+        if configured:
+            return configured
+    return (descriptor.default_base_url or "").strip()
+
+
+def _effective_api_key(descriptor: ProviderDescriptor, settings: Settings) -> str:
+    pool_attr = _POOL_ATTR_BY_PROVIDER.get(descriptor.provider_id)
+    if pool_attr:
+        raw_pool = str(getattr(settings, pool_attr, "") or "").strip()
+        if raw_pool:
+            try:
+                keys = parse_api_key_pool(raw_pool)
+            except ValueError:
+                keys = ()
+            if keys:
+                return keys[0]
+    if descriptor.credential_attr:
+        key = str(getattr(settings, descriptor.credential_attr, "") or "").strip()
+        if key:
+            return key
+    return (descriptor.static_credential or "").strip()
+
+
+def _advertised_model_ids(
+    base_url: str,
+    *,
+    api_key: str = "",
+    provider_id: str = "",
+) -> frozenset[str]:
+    """Return model ids from an OpenAI-compatible ``/models`` (or Ollama) endpoint."""
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+    normalized = base_url.rstrip("/")
+    if provider_id == "ollama" and not normalized.endswith("/v1"):
+        response = httpx.get(
+            f"{normalized}/api/tags",
+            headers=headers,
+            timeout=NETWORK_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return frozenset()
+        return frozenset(
+            entry["name"]
+            for entry in payload.get("models", [])
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        )
     response = httpx.get(
-        f"{base_url.rstrip('/')}/models", timeout=NETWORK_TIMEOUT_SECONDS
+        f"{normalized}/models",
+        headers=headers,
+        timeout=NETWORK_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
     payload = response.json()

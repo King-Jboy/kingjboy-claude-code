@@ -122,7 +122,7 @@ def resolve_cwd(requested: str | None, root: Path) -> Path:
 
 
 def _clamp_timeout(requested: object) -> int:
-    if not isinstance(requested, int) or requested <= 0:
+    if isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0:
         return DEFAULT_TIMEOUT_SECONDS
     return min(requested, MAX_TIMEOUT_SECONDS)
 
@@ -174,7 +174,9 @@ def _read_bounded(stream: IO[Any], *, limit: int) -> tuple[bytes, bool]:
     return b"".join(parts), truncated
 
 
-def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+def _terminate_process_tree(
+    process: subprocess.Popen[bytes], *, force: bool = False
+) -> None:
     """Terminate the shell and its descendants after a bridge timeout."""
 
     if os.name == "nt":
@@ -185,7 +187,8 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
             check=False,
         )
         return
-    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    os.killpg(os.getpgid(process.pid), sig)
 
 
 def run_shell_command(command: str, *, cwd: Path, timeout: int) -> ShellResult:
@@ -233,7 +236,13 @@ def run_shell_command(command: str, *, cwd: Path, timeout: int) -> ShellResult:
         try:
             _terminate_process_tree(process)
             process.wait(timeout=5)
-        except OSError, subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired:
+            try:
+                _terminate_process_tree(process, force=True)
+                process.wait(timeout=2)
+            except OSError, subprocess.TimeoutExpired:
+                pass
+        except OSError:
             pass
         raise BridgeError(
             f"Command timed out after {timeout}s.", outcome="timeout"
@@ -257,6 +266,16 @@ def run_shell_command(command: str, *, cwd: Path, timeout: int) -> ShellResult:
     )
 
 
+def _escape_tsv_field(value: str) -> str:
+    """Escape tabs and newlines so one audit record stays strictly one TSV row."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\t", "\\t")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
+
+
 def audit(command: str, cwd: Path, outcome: str) -> None:
     """Append one command to the audit log, best effort."""
 
@@ -264,8 +283,10 @@ def audit(command: str, cwd: Path, outcome: str) -> None:
         path = bridge_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        safe_cwd = _escape_tsv_field(str(cwd))
+        safe_command = _escape_tsv_field(command)
         with path.open("a", encoding="utf-8") as log:
-            log.write(f"{stamp}\t{outcome}\t{cwd}\t{command}\n")
+            log.write(f"{stamp}\t{outcome}\t{safe_cwd}\t{safe_command}\n")
     except OSError:
         # An unwritable log must not stop a command the user approved, and
         # there is nowhere to report it: stdout is the protocol channel.
