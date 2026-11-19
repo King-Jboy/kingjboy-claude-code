@@ -138,7 +138,9 @@ def _pinned_fetch_targets(
         host_header = formatted_host
 
     headers = {**_WEB_TOOL_HTTP_HEADERS, "Host": host_header}
-    extensions = {"sni_hostname": original_host} if scheme == "https" and original_host else {}
+    extensions = (
+        {"sni_hostname": original_host} if scheme == "https" and original_host else {}
+    )
 
     seen: set[tuple[str, int]] = set()
     targets: list[tuple[str, dict[str, str], dict[str, str]]] = []

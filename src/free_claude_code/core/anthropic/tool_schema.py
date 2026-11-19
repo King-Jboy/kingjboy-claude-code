@@ -95,7 +95,7 @@ def compile_json_schema_validator(schema: Mapping[str, Any]) -> Any:
         cache_key = xxhash.xxh3_128_digest(
             orjson.dumps(plain_schema, option=orjson.OPT_SORT_KEYS)
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         cache_key = None
 
     if cache_key is not None:

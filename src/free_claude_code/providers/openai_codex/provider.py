@@ -344,8 +344,12 @@ class OpenAICodexProvider(BaseProvider):
 
         async def _get_input_tokens() -> int:
             nonlocal resolved_input_tokens
-            if resolved_input_tokens is None:
-                resolved_input_tokens = int(await input_tokens)  # type: ignore[misc]
+            if resolved_input_tokens is not None:
+                return resolved_input_tokens
+            if isinstance(input_tokens, int):
+                resolved_input_tokens = input_tokens
+            else:
+                resolved_input_tokens = int(await input_tokens)
             return resolved_input_tokens
 
         while retry_session.can_attempt:
