@@ -145,11 +145,24 @@ class StrictSlidingWindowLimiter:
                         self._capacity_waiters.append(waiter_entry)
 
             if wait_time > 0 and waiter_entry is not None:
+                sleep_task = asyncio.create_task(asyncio.sleep(wait_time))
+                wake_task = asyncio.create_task(waiter_entry[1].wait())
                 try:
-                    await asyncio.wait_for(waiter_entry[1].wait(), timeout=wait_time)
-                except TimeoutError:
-                    pass
+                    done, pending = await asyncio.wait(
+                        (sleep_task, wake_task),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    for task in done:
+                        if not task.cancelled():
+                            task.result()
                 finally:
+                    for task in (sleep_task, wake_task):
+                        if not task.done():
+                            task.cancel()
                     with (
                         self._state_lock,
                         contextlib.suppress(ValueError),

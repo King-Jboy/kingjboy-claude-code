@@ -59,7 +59,7 @@ jobs:
           - id: ty
             run: uv run ty check
           - id: pytest
-            run: uv run pytest -v --tb=short
+            run: uv run --extra messaging pytest -v --tb=short
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

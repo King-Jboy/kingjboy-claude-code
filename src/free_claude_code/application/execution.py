@@ -177,14 +177,22 @@ class ProviderExecutor:
                 )
                 loop = asyncio.get_running_loop()
                 scheduled_deadline = loop.time() + self._progress_timeout_seconds
-                reschedule_step = min(0.5, self._progress_timeout_seconds * 0.1)
                 progress_timeout = asyncio.timeout_at(scheduled_deadline)
                 try:
                     async with progress_timeout:
                         async for chunk in provider_stream:
                             if not chunk:
+                                if loop.time() >= scheduled_deadline:
+                                    raise self._progress_timeout_failure(
+                                        request_id=request_id,
+                                        provider_id=routed.resolved.provider_id,
+                                    )
                                 await asyncio.sleep(0)
                                 continue
+                            remaining_budget = max(
+                                0.0, scheduled_deadline - loop.time()
+                            )
+                            progress_timeout.reschedule(None)
                             yield chunk
                             stripped = chunk.strip()
                             if not (
@@ -192,20 +200,18 @@ class ProviderExecutor:
                                 or stripped.startswith("event: ping\n")
                                 or stripped == "event: ping"
                             ):
-                                target_deadline = (
+                                scheduled_deadline = (
                                     loop.time() + self._progress_timeout_seconds
                                 )
-                                if (
-                                    target_deadline - scheduled_deadline
-                                    >= reschedule_step
-                                ):
-                                    progress_timeout.reschedule(target_deadline)
-                                    scheduled_deadline = target_deadline
-                            elif loop.time() >= scheduled_deadline:
-                                raise self._progress_timeout_failure(
-                                    request_id=request_id,
-                                    provider_id=routed.resolved.provider_id,
-                                )
+                                progress_timeout.reschedule(scheduled_deadline)
+                            else:
+                                if remaining_budget <= 0.0:
+                                    raise self._progress_timeout_failure(
+                                        request_id=request_id,
+                                        provider_id=routed.resolved.provider_id,
+                                    )
+                                scheduled_deadline = loop.time() + remaining_budget
+                                progress_timeout.reschedule(scheduled_deadline)
                 except TimeoutError as exc:
                     if not progress_timeout.expired():
                         raise
