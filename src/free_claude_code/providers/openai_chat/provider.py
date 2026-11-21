@@ -158,21 +158,20 @@ _KEEPALIVE = object()
 _PREPARED_BODY_LIMIT = 16
 
 
-async def _chunks_with_keepalive(
+def _chunks_with_keepalive(
     stream: Any,
     *,
     quiet_after: float = UPSTREAM_QUIET_KEEPALIVE_SECONDS,
     interval: float = KEEPALIVE_INTERVAL_SECONDS,
 ) -> AsyncGenerator[Any]:
     """Yield upstream chunks, inserting ``_KEEPALIVE`` during long silences."""
-    async for item in iter_with_keepalive(
+    return iter_with_keepalive(
         stream,
         sentinel=_KEEPALIVE,
         quiet_after=quiet_after,
         interval=interval,
         pop_ready=getattr(stream, "pop_ready_nowait", None),
-    ):
-        yield item
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,6 +601,8 @@ class OpenAIChatProvider(BaseProvider):
         self,
         body: dict,
         retry_session: ProviderRetrySession,
+        *,
+        raw_chunks: bool = False,
     ) -> tuple[Any, dict, ProviderAttempt]:
         """Create a streaming chat completion with bounded request fallbacks."""
         self._last_activity_at = time.monotonic()
@@ -620,7 +621,11 @@ class OpenAIChatProvider(BaseProvider):
             retain_attempt = False
             try:
                 create_body = self._prepare_create_body(body)
-                stream = await self._open_chat_stream(create_body)
+                stream = (
+                    await self._open_chat_stream(create_body, raw_chunks=True)
+                    if raw_chunks
+                    else await self._open_chat_stream(create_body)
+                )
                 stream = self._normalize_stream(stream, body)
                 retain_attempt = True
                 return stream, body, attempt
@@ -651,22 +656,31 @@ class OpenAIChatProvider(BaseProvider):
 
         raise RuntimeError("provider retry session exhausted without a final error")
 
-    async def _open_chat_stream(self, create_body: dict[str, Any]) -> Any:
+    async def _open_chat_stream(
+        self, create_body: dict[str, Any], *, raw_chunks: bool = False
+    ) -> Any:
         """Open one upstream stream."""
         if self._key_pool is not None:
             if (
                 self._config.key_hedge_delay_seconds > 0.0
                 and len(self._config.api_keys) >= 2
             ):
-                return await self._open_chat_stream_hedged(create_body)
-            return await self._open_chat_stream_sequential(create_body)
-        return OpenAIStreamAdapter(await create_chat_stream(self._client, create_body))
+                return await self._open_chat_stream_hedged(
+                    create_body, raw_chunks=raw_chunks
+                )
+            return await self._open_chat_stream_sequential(
+                create_body, raw_chunks=raw_chunks
+            )
+        return OpenAIStreamAdapter(
+            await create_chat_stream(self._client, create_body, raw_chunks=raw_chunks)
+        )
 
     async def _open_chat_stream_sequential(
         self,
         create_body: dict[str, Any],
         *,
         prior_error: Exception | None = None,
+        raw_chunks: bool = False,
     ) -> Any:
         assert self._key_pool is not None
         last_error: Exception | None = None
@@ -685,7 +699,7 @@ class OpenAIChatProvider(BaseProvider):
                 break
             try:
                 stream = await create_chat_stream(
-                    self._client_for_key(key), create_body
+                    self._client_for_key(key), create_body, raw_chunks=raw_chunks
                 )
             except AuthenticationError as error:
                 self._key_pool.mark_failed(key)
@@ -724,7 +738,9 @@ class OpenAIChatProvider(BaseProvider):
             retryable=True,
         )
 
-    async def _open_chat_stream_hedged(self, create_body: dict[str, Any]) -> Any:
+    async def _open_chat_stream_hedged(
+        self, create_body: dict[str, Any], *, raw_chunks: bool = False
+    ) -> Any:
         key_pool = self._key_pool
         assert key_pool is not None
         hedge_delay = self._config.key_hedge_delay_seconds
@@ -735,7 +751,7 @@ class OpenAIChatProvider(BaseProvider):
             headers_event: asyncio.Event | None = None,
         ) -> OpenAIStreamAdapter[Any]:
             raw_stream = await create_chat_stream(
-                self._client_for_key(key), create_body
+                self._client_for_key(key), create_body, raw_chunks=raw_chunks
             )
             if headers_event is not None:
                 headers_event.set()
@@ -804,7 +820,9 @@ class OpenAIChatProvider(BaseProvider):
 
         key1 = key_pool.get_next_key()
         if key1 is None:
-            return await self._open_chat_stream_sequential(create_body)
+            return await self._open_chat_stream_sequential(
+                create_body, raw_chunks=raw_chunks
+            )
 
         tasks: dict[asyncio.Task[Any], str] = {}
         used_keys: set[str] = {key1}
@@ -1045,7 +1063,7 @@ class OpenAIChatProvider(BaseProvider):
         emitted_any = False
         try:
             stream, _, attempt = await self._create_stream(
-                passthrough_body, retry_session
+                passthrough_body, retry_session, raw_chunks=True
             )
             async with aclosing(_chunks_with_keepalive(stream)) as chunks:
                 async for chunk in chunks:
@@ -1059,6 +1077,7 @@ class OpenAIChatProvider(BaseProvider):
                         response_model=resolved_model,
                         completion_id=completion_id,
                         created=created_ts,
+                        inplace=isinstance(chunk, dict),
                     )
                     if payload is None:
                         continue
@@ -1184,18 +1203,18 @@ class _OpenAIChatStreamRunner:
         try:
             async with aclosing(self.run()) as events:
                 async for event in events:
-                    if "event: message_stop" in event:
-                        # Clients hang up as soon as this arrives, before the
-                        # stream ends; the answer was delivered in full.
-                        outcome = "completed"
-                    if "content_block_delta" in event:
+                    if first_answer is None and event.startswith(
+                        "event: content_block_delta"
+                    ):
                         now = loop.time()
                         if first_token is None:
                             first_token = now
-                        if first_answer is None and (
-                            '"text_delta"' in event or '"input_json_delta"' in event
-                        ):
+                        if '"text_delta"' in event or '"input_json_delta"' in event:
                             first_answer = now
+                    elif event.startswith("event: message_stop"):
+                        # Clients hang up as soon as this arrives, before the
+                        # stream ends; the answer was delivered in full.
+                        outcome = "completed"
                     yield event
             outcome = "completed"
         except Exception as error:
@@ -1231,12 +1250,19 @@ class _OpenAIChatStreamRunner:
         )
         self._retry_session = retry_session
 
-        def hold_event(event: str) -> Iterator[str]:
-            yield from recovery.push(event)
+        def hold_event(event: str) -> list[str] | tuple[str]:
+            if recovery.committed:
+                return (event,)
+            return recovery.push(event)
+
+        def _hold_events_uncommitted(events: Iterator[str]) -> Iterator[str]:
+            for event in events:
+                yield from recovery.push(event)
 
         def hold_events(events: Iterator[str]) -> Iterator[str]:
-            for event in events:
-                yield from hold_event(event)
+            if recovery.committed:
+                return events
+            return _hold_events_uncommitted(events)
 
         body = self._provider._stream_request_body(
             self._request,

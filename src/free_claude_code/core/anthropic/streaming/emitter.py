@@ -61,6 +61,8 @@ def anthropic_terminal_failure_frame(failure: ExecutionFailure) -> str:
 class AnthropicSseEmitter:
     """Serialize Anthropic SSE events and optionally log raw event bodies."""
 
+    __slots__ = ("_log_raw_events",)
+
     def __init__(self, *, log_raw_events: bool = False) -> None:
         self._log_raw_events = log_raw_events
 
@@ -68,4 +70,16 @@ class AnthropicSseEmitter:
         event = format_sse_event(event_type, data)
         if self._log_raw_events:
             logger.debug("SSE_EVENT: {} - {}", event_type, event.strip())
+        return event
+
+    def content_block_delta(
+        self, index: int, delta_type: str, field_name: str, content: str
+    ) -> str:
+        event = (
+            f'event: content_block_delta\ndata: {{"type":"content_block_delta",'
+            f'"index":{index},"delta":{{"type":"{delta_type}",'
+            f'"{field_name}":{fast_json_dumps(content)}}}}}\n\n'
+        )
+        if self._log_raw_events:
+            logger.debug("SSE_EVENT: content_block_delta - {}", event.strip())
         return event

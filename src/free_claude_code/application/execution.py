@@ -178,49 +178,89 @@ class ProviderExecutor:
                     reasoning=routed.reasoning,
                 )
                 loop = asyncio.get_running_loop()
-                scheduled_deadline = loop.time() + self._progress_timeout_seconds
-                progress_timeout = asyncio.timeout_at(scheduled_deadline)
+                current_task = asyncio.current_task()
+                timeout_s = self._progress_timeout_seconds
+                scheduled_deadline = loop.time() + timeout_s
+                in_yield = False
+                timed_out = False
+                watchdog: asyncio.TimerHandle | None = None
+
+                def _is_non_progress_chunk(text: str) -> bool:
+                    first = text[0]
+                    if first == ":":
+                        return True
+                    if first == "e":
+                        return text.startswith("event: ping\n") or text == "event: ping"
+                    if first <= " ":
+                        stripped = text.strip()
+                        return (
+                            stripped.startswith(":")
+                            or stripped.startswith("event: ping\n")
+                            or stripped == "event: ping"
+                        )
+                    return False
+
+                def _on_progress_watchdog() -> None:
+                    nonlocal watchdog, timed_out
+                    watchdog = None
+                    if in_yield:
+                        return
+                    now = loop.time()
+                    if now >= scheduled_deadline - 1e-6:
+                        timed_out = True
+                        if current_task is not None and not current_task.done():
+                            current_task.cancel()
+                        return
+                    watchdog = loop.call_at(scheduled_deadline, _on_progress_watchdog)
+
+                watchdog = loop.call_at(scheduled_deadline, _on_progress_watchdog)
                 try:
-                    async with progress_timeout:
-                        async for chunk in provider_stream:
-                            if not chunk:
-                                if loop.time() >= scheduled_deadline:
-                                    raise self._progress_timeout_failure(
-                                        request_id=request_id,
-                                        provider_id=routed.resolved.provider_id,
-                                    )
-                                await asyncio.sleep(0)
-                                continue
-                            remaining_budget = max(
-                                0.0, scheduled_deadline - loop.time()
-                            )
-                            progress_timeout.reschedule(None)
-                            yield chunk
-                            stripped = chunk.strip()
-                            if not (
-                                stripped.startswith(":")
-                                or stripped.startswith("event: ping\n")
-                                or stripped == "event: ping"
-                            ):
-                                scheduled_deadline = (
-                                    loop.time() + self._progress_timeout_seconds
+                    async for chunk in provider_stream:
+                        if not chunk:
+                            if loop.time() >= scheduled_deadline:
+                                raise self._progress_timeout_failure(
+                                    request_id=request_id,
+                                    provider_id=routed.resolved.provider_id,
                                 )
-                                progress_timeout.reschedule(scheduled_deadline)
-                            else:
-                                if remaining_budget <= 0.0:
-                                    raise self._progress_timeout_failure(
-                                        request_id=request_id,
-                                        provider_id=routed.resolved.provider_id,
-                                    )
-                                scheduled_deadline = loop.time() + remaining_budget
-                                progress_timeout.reschedule(scheduled_deadline)
-                except TimeoutError as exc:
-                    if not progress_timeout.expired():
+                            await asyncio.sleep(0)
+                            continue
+                        is_non_progress = _is_non_progress_chunk(chunk)
+                        remaining_budget = (
+                            max(0.0, scheduled_deadline - loop.time())
+                            if is_non_progress
+                            else timeout_s
+                        )
+                        in_yield = True
+                        try:
+                            yield chunk
+                        finally:
+                            in_yield = False
+                        if not is_non_progress:
+                            scheduled_deadline = loop.time() + timeout_s
+                        else:
+                            if remaining_budget <= 0.0:
+                                raise self._progress_timeout_failure(
+                                    request_id=request_id,
+                                    provider_id=routed.resolved.provider_id,
+                                )
+                            scheduled_deadline = loop.time() + remaining_budget
+                        if watchdog is None:
+                            watchdog = loop.call_at(
+                                scheduled_deadline, _on_progress_watchdog
+                            )
+                except asyncio.CancelledError as exc:
+                    if not timed_out:
+                        raise
+                    if current_task is not None and current_task.uncancel() > 0:
                         raise
                     raise self._progress_timeout_failure(
                         request_id=request_id,
                         provider_id=routed.resolved.provider_id,
                     ) from exc
+                finally:
+                    if watchdog is not None:
+                        watchdog.cancel()
+                        watchdog = None
             finally:
                 if token_count_task is not None:
                     if not token_count_task.done():

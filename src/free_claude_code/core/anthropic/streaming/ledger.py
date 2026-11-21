@@ -21,19 +21,27 @@ from .recovery import (
     parse_complete_tool_input,
 )
 
-try:
-    import tiktoken
+_ENCODER_UNSET: Any = object()
+ENCODER: Any = _ENCODER_UNSET
 
-    ENCODER = tiktoken.get_encoding("cl100k_base")
-except Exception:
-    ENCODER = None
+
+def _get_encoder() -> Any:
+    global ENCODER
+    if ENCODER is _ENCODER_UNSET:
+        try:
+            import tiktoken
+
+            ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            ENCODER = None
+    return ENCODER
 
 
 def _safe_usage_int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-@dataclass
+@dataclass(slots=True)
 class ToolBlockState:
     """State for one streamed tool call."""
 
@@ -47,7 +55,7 @@ class ToolBlockState:
     pre_start_args: str = ""
 
 
-@dataclass
+@dataclass(slots=True)
 class StreamBlockState:
     """Tracked downstream Anthropic content block."""
 
@@ -65,7 +73,7 @@ class StreamBlockState:
         return "".join(self.parts)
 
 
-@dataclass
+@dataclass(slots=True)
 class StreamBlockLedger:
     """Allocate and track Anthropic content block indexes."""
 
@@ -273,16 +281,33 @@ class AnthropicStreamLedger:
         )
 
     def content_block_delta(self, index: int, delta_type: str, content: str) -> str:
-        delta: dict[str, Any] = {"type": delta_type}
+        state = self._content_blocks.get(index)
+        if delta_type == "text_delta":
+            if state is not None and state.block_type == "text":
+                state.parts.append(content)
+                self._text_parts.append(content)
+            return self._emitter.content_block_delta(index, delta_type, "text", content)
         if delta_type == "thinking_delta":
-            delta["thinking"] = content
-        elif delta_type == "signature_delta":
-            delta["signature"] = content
-        elif delta_type == "text_delta":
-            delta["text"] = content
-        elif delta_type == "input_json_delta":
-            delta["partial_json"] = content
+            if state is not None and state.block_type == "thinking":
+                state.parts.append(content)
+                self._thinking_parts.append(content)
+            return self._emitter.content_block_delta(
+                index, delta_type, "thinking", content
+            )
+        if delta_type == "input_json_delta":
+            if state is not None and state.block_type == "tool_use":
+                state.parts.append(content)
+            return self._emitter.content_block_delta(
+                index, delta_type, "partial_json", content
+            )
+        if delta_type == "signature_delta":
+            if state is not None and state.block_type == "thinking":
+                state.signature += content
+            return self._emitter.content_block_delta(
+                index, delta_type, "signature", content
+            )
 
+        delta: dict[str, Any] = {"type": delta_type}
         self._record_block_delta(index, delta)
         return self._emitter.event(
             "content_block_delta",
@@ -456,14 +481,15 @@ class AnthropicStreamLedger:
     def estimate_output_tokens(self) -> int:
         accumulated_text = self.accumulated_text
         accumulated_reasoning = self.accumulated_reasoning
-        if ENCODER:
-            text_tokens = len(ENCODER.encode(accumulated_text))
-            reasoning_tokens = len(ENCODER.encode(accumulated_reasoning))
+        encoder = _get_encoder()
+        if encoder:
+            text_tokens = len(encoder.encode(accumulated_text))
+            reasoning_tokens = len(encoder.encode(accumulated_reasoning))
             tool_tokens = 0
             tool_count = 0
             for name, content in self._iter_tool_token_payloads():
-                tool_tokens += len(ENCODER.encode(name))
-                tool_tokens += len(ENCODER.encode(content))
+                tool_tokens += len(encoder.encode(name))
+                tool_tokens += len(encoder.encode(content))
                 tool_tokens += 15
                 tool_count += 1
 

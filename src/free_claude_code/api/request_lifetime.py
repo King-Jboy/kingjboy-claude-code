@@ -4,7 +4,7 @@ import asyncio
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-_INFERENCE_PATHS = frozenset({"/v1/messages", "/v1/responses"})
+_INFERENCE_PATHS = frozenset({"/v1/messages", "/v1/responses", "/v1/chat/completions"})
 
 
 class InferenceRequestLifetimeMiddleware:

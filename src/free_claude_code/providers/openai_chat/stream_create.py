@@ -183,15 +183,18 @@ class _FastChunk:
         return self.model_extra.get(name)
 
 
-def _decode_sse_json(raw: bytes) -> Any:
+def _decode_sse_json(raw: bytes | memoryview) -> Any:
     try:
         return orjson.loads(raw)
     except orjson.JSONDecodeError:
-        return json.loads(raw.decode("utf-8", errors="replace"))
+        raw_bytes = raw if isinstance(raw, bytes) else bytes(raw)
+        return json.loads(raw_bytes.decode("utf-8", errors="replace"))
 
 
 class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
     """Zero-Pydantic orjson SSE stream plugged into AsyncOpenAI.post()."""
+
+    _raw_chunks: bool = False
 
     def __init__(
         self,
@@ -218,7 +221,7 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
 
     def pop_ready_nowait(self) -> tuple[bool, Any]:
         """Synchronously parse and pop one already-buffered SSE chunk if available."""
-        if self._done:
+        if self._done or self._pos >= len(self._buf):
             return False, None
         return self._consume_buffered_event()
 
@@ -259,7 +262,7 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
                 body=payload,
             )
         if isinstance(payload, dict):
-            return True, _FastChunk(payload)
+            return True, payload if self._raw_chunks else _FastChunk(payload)
         return False, None
 
     def _consume_line(self, line: bytes) -> tuple[bool, Any]:
@@ -284,21 +287,90 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
             self._event_name = line[6:].strip().decode("utf-8", errors="replace")
         return False, None
 
+    def _compact_buffer(self) -> None:
+        buf = self._buf
+        if self._pos >= len(buf):
+            buf.clear()
+            self._pos = 0
+        elif self._pos >= _BUF_COMPACT_THRESHOLD:
+            del buf[: self._pos]
+            self._pos = 0
+
+    def _dispatch_fast_payload(self, payload: Any) -> tuple[bool, Any]:
+        if (
+            isinstance(payload, dict)
+            and payload.get("error") is not None
+            and not payload.get("choices")
+        ):
+            err = payload.get("error")
+            if isinstance(err, dict):
+                message = err.get("message") or str(err)
+            else:
+                message = str(err) if err else "An error occurred during streaming"
+            raise APIError(
+                message=str(message),
+                request=self.response.request,
+                body=payload,
+            )
+        if isinstance(payload, dict):
+            return True, payload if self._raw_chunks else _FastChunk(payload)
+        return False, None
+
     def _consume_buffered_event(self) -> tuple[bool, Any]:
         buf = self._buf
         while not self._done:
-            nl = buf.find(b"\n", self._pos)
+            pos = self._pos
+            buf_len = len(buf)
+            if (
+                not self._data_lines
+                and not self._event_name
+                and pos + 5 <= buf_len
+                and buf[pos] == 100
+                and buf[pos : pos + 5] == b"data:"
+            ):
+                nl = buf.find(b"\n", pos + 5)
+                if nl == -1:
+                    break
+                next_pos = nl + 1
+                frame_end = -1
+                if next_pos < buf_len and buf[next_pos] == 10:
+                    frame_end = next_pos + 1
+                elif (
+                    next_pos + 1 < buf_len
+                    and buf[next_pos] == 13
+                    and buf[next_pos + 1] == 10
+                ):
+                    frame_end = next_pos + 2
+                if frame_end != -1:
+                    end = nl - 1 if nl > pos + 5 and buf[nl - 1] == 13 else nl
+                    start = pos + 5
+                    while start < end and buf[start] in (32, 9):
+                        start += 1
+                    while end > start and buf[end - 1] in (32, 9):
+                        end -= 1
+                    self._pos = frame_end
+                    if start == end:
+                        self._compact_buffer()
+                        continue
+                    if end - start == 6 and buf[start:end] == b"[DONE]":
+                        self._done = True
+                        self._compact_buffer()
+                        return False, None
+                    with memoryview(buf) as view, view[start:end] as payload_view:
+                        payload = _decode_sse_json(payload_view)
+                    self._compact_buffer()
+                    has_event, chunk = self._dispatch_fast_payload(payload)
+                    if has_event:
+                        return True, chunk
+                    continue
+
+            nl = buf.find(b"\n", pos)
             if nl == -1:
                 break
-            end = nl - 1 if nl > self._pos and buf[nl - 1] == 13 else nl
-            line = bytes(buf[self._pos : end])
+            end = nl - 1 if nl > pos and buf[nl - 1] == 13 else nl
+            line = bytes(buf[pos:end])
             self._pos = nl + 1
-            if self._pos >= len(buf):
-                buf.clear()
-                self._pos = 0
-            elif self._pos >= _BUF_COMPACT_THRESHOLD:
-                del buf[: self._pos]
-                self._pos = 0
+            self._compact_buffer()
             has_event, chunk = self._consume_line(line)
             if has_event:
                 return True, chunk
@@ -328,7 +400,7 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
                     break
                 if raw:
                     self._buf.extend(raw)
-                while not self._done:
+                while not self._done and self._pos < len(self._buf):
                     has_event, chunk = self._consume_buffered_event()
                     if not has_event:
                         break
@@ -351,12 +423,17 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
             await self.response.aclose()
 
 
-async def create_chat_stream(client: Any, body: Mapping[str, Any]) -> Any:
+async def create_chat_stream(
+    client: Any,
+    body: Mapping[str, Any],
+    *,
+    raw_chunks: bool = False,
+) -> Any:
     """Open one streaming chat completion with the same wire request as create()."""
     content = _encoded_body(client, body)
     if content is None:
         return await client.chat.completions.create(**body, stream=True)
-    return await client.post(
+    stream = await client.post(
         "/chat/completions",
         cast_to=ChatCompletion,
         content=content,
@@ -364,6 +441,9 @@ async def create_chat_stream(client: Any, body: Mapping[str, Any]) -> Any:
         stream=True,
         stream_cls=FastOrjsonChatStream[ChatCompletionChunk],
     )
+    if raw_chunks and isinstance(stream, FastOrjsonChatStream):
+        stream._raw_chunks = True
+    return stream
 
 
 def _encoded_body(client: Any, body: Mapping[str, Any]) -> bytes | None:

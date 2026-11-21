@@ -1,6 +1,12 @@
 """FastAPI route handlers."""
 
+from collections.abc import Callable, Coroutine
+from contextlib import suppress
+from typing import Any
+
+import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.routing import APIRoute
 from loguru import logger
 
 from free_claude_code.application.errors import ApplicationError
@@ -39,7 +45,29 @@ from .request_errors import ordinary_application_error_response
 from .request_ids import get_request_id
 from .response_streams import bind_response_lifetime
 
-router = APIRouter()
+
+class _OrjsonAPIRoute(APIRoute):
+    """APIRoute subclass pre-parsing JSON request bodies with orjson."""
+
+    def get_route_handler(
+        self,
+    ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        original_route_handler = super().get_route_handler()
+
+        async def orjson_route_handler(request: Request) -> Response:
+            if request.method in ("POST", "PUT", "PATCH") and not hasattr(
+                request, "_json"
+            ):
+                body = await request.body()
+                if body:
+                    with suppress(orjson.JSONDecodeError):
+                        request._json = orjson.loads(body)
+            return await original_route_handler(request)
+
+        return orjson_route_handler
+
+
+router = APIRouter(route_class=_OrjsonAPIRoute)
 
 
 def _provider_resolver(lease: RequestRuntimeLease) -> ProviderResolver:

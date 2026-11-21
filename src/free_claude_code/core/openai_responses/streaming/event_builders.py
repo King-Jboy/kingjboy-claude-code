@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from free_claude_code.core.json_utils import fast_json_dumps
+
 from ..events import format_response_sse_event
 
 
@@ -96,16 +98,10 @@ def content_part_added(
 def output_text_delta(
     item_id: str, output_index: int, text: str, *, sequence_number: int = 0
 ) -> str:
-    return format_response_sse_event(
-        "response.output_text.delta",
-        {
-            "type": "response.output_text.delta",
-            "sequence_number": sequence_number,
-            "item_id": item_id,
-            "output_index": output_index,
-            "content_index": 0,
-            "delta": text,
-        },
+    return (
+        f'event: response.output_text.delta\ndata: {{"type":"response.output_text.delta",'
+        f'"sequence_number":{sequence_number},"item_id":{fast_json_dumps(item_id)},'
+        f'"output_index":{output_index},"content_index":0,"delta":{fast_json_dumps(text)}}}\n\n'
     )
 
 
@@ -144,16 +140,10 @@ def content_part_done(
 def reasoning_text_delta(
     item_id: str, output_index: int, text: str, *, sequence_number: int = 0
 ) -> str:
-    return format_response_sse_event(
-        "response.reasoning_text.delta",
-        {
-            "type": "response.reasoning_text.delta",
-            "sequence_number": sequence_number,
-            "item_id": item_id,
-            "output_index": output_index,
-            "content_index": 0,
-            "delta": text,
-        },
+    return (
+        f'event: response.reasoning_text.delta\ndata: {{"type":"response.reasoning_text.delta",'
+        f'"sequence_number":{sequence_number},"item_id":{fast_json_dumps(item_id)},'
+        f'"output_index":{output_index},"content_index":0,"delta":{fast_json_dumps(text)}}}\n\n'
     )
 
 
@@ -176,15 +166,10 @@ def reasoning_text_done(
 def function_call_arguments_delta(
     item_id: str, output_index: int, arguments: str, *, sequence_number: int = 0
 ) -> str:
-    return format_response_sse_event(
-        "response.function_call_arguments.delta",
-        {
-            "type": "response.function_call_arguments.delta",
-            "sequence_number": sequence_number,
-            "item_id": item_id,
-            "output_index": output_index,
-            "delta": arguments,
-        },
+    return (
+        f'event: response.function_call_arguments.delta\ndata: {{"type":"response.function_call_arguments.delta",'
+        f'"sequence_number":{sequence_number},"item_id":{fast_json_dumps(item_id)},'
+        f'"output_index":{output_index},"delta":{fast_json_dumps(arguments)}}}\n\n'
     )
 
 
@@ -206,15 +191,10 @@ def function_call_arguments_done(
 def custom_tool_call_input_delta(
     item_id: str, output_index: int, input_text: str, *, sequence_number: int = 0
 ) -> str:
-    return format_response_sse_event(
-        "response.custom_tool_call_input.delta",
-        {
-            "type": "response.custom_tool_call_input.delta",
-            "sequence_number": sequence_number,
-            "item_id": item_id,
-            "output_index": output_index,
-            "delta": input_text,
-        },
+    return (
+        f'event: response.custom_tool_call_input.delta\ndata: {{"type":"response.custom_tool_call_input.delta",'
+        f'"sequence_number":{sequence_number},"item_id":{fast_json_dumps(item_id)},'
+        f'"output_index":{output_index},"delta":{fast_json_dumps(input_text)}}}\n\n'
     )
 
 

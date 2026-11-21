@@ -7,13 +7,15 @@ from typing import Any
 DOCUMENT_OMITTED_NOTICE = "[document omitted: this model cannot read documents]"
 
 
+_MISSING: Any = object()
+
+
 def get_block_attr(block: Any, attr: str, default: Any = None) -> Any:
     """Get an attribute from a Pydantic model, lightweight object, or dict."""
-    if hasattr(block, attr):
-        return getattr(block, attr)
     if isinstance(block, dict):
         return block.get(attr, default)
-    return default
+    val = getattr(block, attr, _MISSING)
+    return default if val is _MISSING else val
 
 
 def get_block_type(block: Any) -> str | None:

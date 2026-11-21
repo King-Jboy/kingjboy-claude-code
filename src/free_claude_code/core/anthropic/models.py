@@ -1,8 +1,15 @@
 """Pydantic models for the Anthropic Messages protocol."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Tag,
+    field_validator,
+)
 
 _KNOWN_CONTENT_BLOCK_TYPES = frozenset(
     {
@@ -168,30 +175,41 @@ class SystemContent(_AnthropicBlockBase):
     text: str
 
 
+def _content_block_discriminator(value: Any) -> str:
+    """Route Anthropic content blocks in O(1) by ``type`` instead of 17-way trial."""
+    block_type = (
+        value.get("type") if isinstance(value, dict) else getattr(value, "type", None)
+    )
+    if isinstance(block_type, str) and block_type in _KNOWN_CONTENT_BLOCK_TYPES:
+        return block_type
+    return "generic"
+
+
+type ContentBlock = Annotated[
+    Annotated[ContentBlockText, Tag("text")]
+    | Annotated[ContentBlockImage, Tag("image")]
+    | Annotated[ContentBlockDocument, Tag("document")]
+    | Annotated[ContentBlockToolUse, Tag("tool_use")]
+    | Annotated[ContentBlockToolResult, Tag("tool_result")]
+    | Annotated[ContentBlockThinking, Tag("thinking")]
+    | Annotated[ContentBlockRedactedThinking, Tag("redacted_thinking")]
+    | Annotated[ContentBlockServerToolUse, Tag("server_tool_use")]
+    | Annotated[ContentBlockWebSearchToolResult, Tag("web_search_tool_result")]
+    | Annotated[ContentBlockWebFetchToolResult, Tag("web_fetch_tool_result")]
+    | Annotated[ContentBlockToolReference, Tag("tool_reference")]
+    | Annotated[ContentBlockToolAddition, Tag("tool_addition")]
+    | Annotated[ContentBlockToolDefinition, Tag("tool_definition")]
+    | Annotated[ContentBlockToolSearchToolResult, Tag("tool_search_tool_result")]
+    | Annotated[ContentBlockMcpToolUse, Tag("mcp_tool_use")]
+    | Annotated[ContentBlockMcpToolResult, Tag("mcp_tool_result")]
+    | Annotated[ContentBlockGeneric, Tag("generic")],
+    Discriminator(_content_block_discriminator),
+]
+
+
 class Message(BaseModel):
     role: Literal["user", "assistant", "system"]
-    content: (
-        str
-        | list[
-            ContentBlockText
-            | ContentBlockImage
-            | ContentBlockDocument
-            | ContentBlockToolUse
-            | ContentBlockToolResult
-            | ContentBlockThinking
-            | ContentBlockRedactedThinking
-            | ContentBlockServerToolUse
-            | ContentBlockWebSearchToolResult
-            | ContentBlockWebFetchToolResult
-            | ContentBlockToolReference
-            | ContentBlockToolAddition
-            | ContentBlockToolDefinition
-            | ContentBlockToolSearchToolResult
-            | ContentBlockMcpToolUse
-            | ContentBlockMcpToolResult
-            | ContentBlockGeneric
-        ]
-    )
+    content: str | list[ContentBlock]
     reasoning_content: str | None = None
 
 

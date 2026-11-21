@@ -8,6 +8,25 @@ from free_claude_code.providers.http import maybe_await_aclose
 
 def _chunk_has_meaningful_delta(chunk: object) -> bool:
     """Return whether an upstream SSE chunk carries actual token or finish progress."""
+    if isinstance(chunk, dict):
+        choices = chunk.get("choices")
+        if not choices or not isinstance(choices, list):
+            return False
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            return False
+        if choice.get("finish_reason"):
+            return True
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            return False
+        return bool(
+            delta.get("content")
+            or delta.get("reasoning_content")
+            or delta.get("reasoning")
+            or delta.get("tool_calls")
+            or delta.get("reasoning_details")
+        )
     choices = getattr(chunk, "choices", None)
     if not choices:
         return False

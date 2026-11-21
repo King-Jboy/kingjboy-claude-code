@@ -4,15 +4,42 @@ import uuid
 
 from fastapi import Request, Response
 from loguru import logger
-from starlette.datastructures import Headers, MutableHeaders
+from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-
-from free_claude_code.core.trace import extract_claude_session_id_from_headers
 
 REQUEST_ID_HEADER = "request-id"
 OPENAI_REQUEST_ID_HEADER = "x-request-id"
 _REQUEST_ID_STATE_ATTRIBUTE = "fcc_request_id"
-_OPENAI_REQUEST_ID_PATHS = frozenset({"/v1/responses", "/v1/models"})
+_OPENAI_REQUEST_ID_PATHS = frozenset(
+    {"/v1/responses", "/v1/chat/completions", "/v1/models"}
+)
+_CLAUDE_SESSION_ID_HEADER_PRIORITY: tuple[bytes, ...] = (
+    b"anthropic-session-id",
+    b"x-anthropic-session-id",
+    b"claude-session-id",
+    b"x-claude-session-id",
+)
+_CLAUDE_SESSION_ID_HEADER_SET = frozenset(_CLAUDE_SESSION_ID_HEADER_PRIORITY)
+
+
+def _extract_claude_session_id_from_scope(scope: Scope) -> str | None:
+    raw_headers = scope.get("headers")
+    if not raw_headers:
+        return None
+    matched: dict[bytes, bytes] | None = None
+    for name, value in raw_headers:
+        lower_name = name.lower()
+        if lower_name in _CLAUDE_SESSION_ID_HEADER_SET and value:
+            if matched is None:
+                matched = {}
+            matched[lower_name] = value
+    if not matched:
+        return None
+    for key in _CLAUDE_SESSION_ID_HEADER_PRIORITY:
+        raw_val = matched.get(key)
+        if raw_val:
+            return raw_val.decode("latin-1")
+    return None
 
 
 class RequestCorrelationMiddleware:
@@ -36,8 +63,7 @@ class RequestCorrelationMiddleware:
         state[_REQUEST_ID_STATE_ATTRIBUTE] = request_id
         method = scope.get("method", "")
         path = scope.get("path", "")
-        request_headers = Headers(scope=scope)
-        claude_sid = extract_claude_session_id_from_headers(request_headers)
+        claude_sid = _extract_claude_session_id_from_scope(scope)
 
         async def send_with_correlation(message: Message) -> None:
             if message["type"] == "http.response.start":

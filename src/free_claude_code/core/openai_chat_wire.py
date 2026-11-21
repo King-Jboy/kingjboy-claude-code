@@ -139,18 +139,22 @@ def serialize_upstream_chat_chunk(
     response_model: str,
     completion_id: str,
     created: int,
+    inplace: bool = False,
 ) -> dict[str, Any] | None:
     """Extract a JSON-ready OpenAI ChatCompletionChunk dict from an upstream chunk."""
     raw: dict[str, Any] | None = None
-    extra = getattr(chunk, "model_extra", None)
-    if isinstance(extra, dict) and ("choices" in extra or "usage" in extra):
-        raw = dict(extra)
-    elif hasattr(chunk, "model_dump"):
-        dumped = chunk.model_dump(exclude_none=True)
-        if isinstance(dumped, dict):
-            raw = dumped
-    elif isinstance(chunk, Mapping):
-        raw = dict(chunk)
+    if isinstance(chunk, dict):
+        raw = chunk if inplace else dict(chunk)
+    else:
+        extra = getattr(chunk, "model_extra", None)
+        if isinstance(extra, dict) and ("choices" in extra or "usage" in extra):
+            raw = dict(extra)
+        elif hasattr(chunk, "model_dump"):
+            dumped = chunk.model_dump(exclude_none=True)
+            if isinstance(dumped, dict):
+                raw = dumped
+        elif isinstance(chunk, Mapping):
+            raw = dict(chunk)
 
     if raw is None:
         return None

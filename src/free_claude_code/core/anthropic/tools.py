@@ -39,6 +39,11 @@ class _FunctionTagState(Enum):
     FINISHED = 4
 
 
+_TERMINAL_FUNCTION_TAG_STATES = frozenset(
+    (_FunctionTagState.DISABLED, _FunctionTagState.FINISHED)
+)
+
+
 class FunctionTagToolParser:
     """Parse an exact terminal function-tag envelope into tool use."""
 
@@ -69,7 +74,7 @@ class FunctionTagToolParser:
         """Hold a possible reserved response and return text safe to expose."""
         if not text:
             return ""
-        if self._state in {_FunctionTagState.DISABLED, _FunctionTagState.FINISHED}:
+        if self._state in _TERMINAL_FUNCTION_TAG_STATES:
             return text
 
         if self._state is _FunctionTagState.CANDIDATE:
@@ -79,7 +84,10 @@ class FunctionTagToolParser:
                 return self.disable()
             return ""
 
-        candidate = "".join((self._marker_tail, text))
+        if not self._marker_tail and "<" not in text:
+            return text
+
+        candidate = self._marker_tail + text if self._marker_tail else text
         marker_index = candidate.find(_FUNCTION_TAG_BLOCK_START)
         if marker_index >= 0:
             visible = candidate[:marker_index]
@@ -101,7 +109,7 @@ class FunctionTagToolParser:
 
     def disable(self) -> str:
         """Disable textual recovery and release any held candidate unchanged."""
-        if self._state in {_FunctionTagState.DISABLED, _FunctionTagState.FINISHED}:
+        if self._state in _TERMINAL_FUNCTION_TAG_STATES:
             return ""
         self._state = _FunctionTagState.DISABLED
         text = "".join((self._marker_tail, *self._parts))
@@ -112,7 +120,7 @@ class FunctionTagToolParser:
 
     def finish(self) -> tuple[str, tuple[dict[str, Any], ...]]:
         """Finalize one response atomically as visible text or validated tools."""
-        if self._state in {_FunctionTagState.DISABLED, _FunctionTagState.FINISHED}:
+        if self._state in _TERMINAL_FUNCTION_TAG_STATES:
             return "", ()
         if self._state is _FunctionTagState.SEARCHING:
             self._state = _FunctionTagState.FINISHED
@@ -356,6 +364,14 @@ class HeuristicToolParser:
 
     def feed(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         """Feed text and return safe text plus detected tool calls."""
+        if (
+            not self._buffer
+            and self._state == ParserState.TEXT
+            and "<" not in text
+            and "●" not in text
+            and "{" not in text
+        ):
+            return text, []
         self._buffer += text
         self._buffer = self._strip_control_tokens(self._buffer)
         self._buffer, detected_tools = self._extract_web_tool_json_calls()

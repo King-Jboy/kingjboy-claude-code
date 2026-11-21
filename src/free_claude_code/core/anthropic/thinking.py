@@ -12,7 +12,7 @@ class ContentType(Enum):
     THINKING = "thinking"
 
 
-@dataclass
+@dataclass(slots=True)
 class ContentChunk:
     """A chunk of parsed content."""
 
@@ -42,6 +42,21 @@ class ThinkTagParser:
 
     def feed(self, content: str) -> Iterator[ContentChunk]:
         """Feed content and yield parsed chunks."""
+        if not self._buffer and "<" not in content:
+            if self._in_think_tag:
+                if content:
+                    self._has_emitted_content = True
+                    yield ContentChunk(ContentType.THINKING, content)
+                return
+            if self._has_emitted_content:
+                if content:
+                    yield ContentChunk(ContentType.TEXT, content)
+                return
+            if content and not content.isspace():
+                self._has_emitted_content = True
+                yield ContentChunk(ContentType.TEXT, content)
+                return
+
         self._buffer += content
 
         while self._buffer:

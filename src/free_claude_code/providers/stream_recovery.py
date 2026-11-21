@@ -18,7 +18,7 @@ from free_claude_code.core.failures import ExecutionFailure
 
 from .failure_policy import RetryableProviderProtocolError, retryable_transient_status
 
-EARLY_HOLDBACK_SECONDS = 0.02
+EARLY_HOLDBACK_SECONDS = 0.005
 RECOVERY_BUFFER_MAX_BYTES = 65_536
 
 
@@ -316,6 +316,12 @@ async def _discard_pending_task(task: asyncio.Task[object]) -> None:
         await task
 
 
+_WATCHDOG_FIRED = object()
+_DONE_SENTINEL = object()
+_ERROR_SENTINEL = object()
+_ITEM_SENTINEL = object()
+
+
 async def iter_with_keepalive[ItemT, SentinelT](
     source: AsyncIterator[ItemT],
     *,
@@ -323,112 +329,182 @@ async def iter_with_keepalive[ItemT, SentinelT](
     quiet_after: float,
     interval: float,
     pop_ready: Callable[[], tuple[bool, ItemT]] | None = None,
-) -> AsyncIterator[ItemT | SentinelT]:
-    """Yield items from ``source``, emitting ``sentinel`` during quiet periods."""
+) -> AsyncGenerator[ItemT | SentinelT]:
+    """Yield items from ``source``, emitting ``sentinel`` during quiet periods.
+
+    Uses a single lazy watchdog timer (rescheduled only when silence actually
+    reaches the deadline) and a 1-slot handoff so normal token streaming pays
+    zero per-token timer allocations, zero heap cancellations, and zero
+    extra event-loop ticks when buffered items are ready.
+    """
     iterator = aiter(source)
     loop = asyncio.get_running_loop()
 
     pull_waiter: asyncio.Future[None] | None = None
-    result_waiter: asyncio.Future[object] | None = None
-    done_sentinel = object()
+    consumer_waiter: asyncio.Future[object] | None = None
+    pending_kind: object = None
+    pending_payload: object = None
+    reader_done = False
 
     async def _reader() -> None:
-        nonlocal pull_waiter, result_waiter
+        nonlocal pull_waiter, consumer_waiter, pending_kind, pending_payload
+        nonlocal reader_done
         while True:
-            waiter: asyncio.Future[None] = loop.create_future()
-            pull_waiter = waiter
-            await waiter
-            pull_waiter = None
-            target = result_waiter
             try:
                 item = await anext(iterator)
             except StopAsyncIteration:
-                if target is not None and not target.done():
-                    target.set_result(done_sentinel)
+                reader_done = True
+                waiter = consumer_waiter
+                if waiter is not None and not waiter.done():
+                    consumer_waiter = None
+                    waiter.set_result(_DONE_SENTINEL)
+                else:
+                    pending_kind = _DONE_SENTINEL
                 return
             except asyncio.CancelledError:
-                if target is not None and not target.done():
-                    target.cancel()
+                reader_done = True
+                waiter = consumer_waiter
+                if waiter is not None and not waiter.done():
+                    consumer_waiter = None
+                    waiter.cancel()
                 raise
             except BaseException as exc:
-                if target is not None and not target.done():
-                    target.set_exception(exc)
+                reader_done = True
+                waiter = consumer_waiter
+                if waiter is not None and not waiter.done():
+                    consumer_waiter = None
+                    waiter.set_exception(exc)
+                else:
+                    pending_kind = _ERROR_SENTINEL
+                    pending_payload = exc
                 return
+
+            next_pull: asyncio.Future[None] = loop.create_future()
+            pull_waiter = next_pull
+            waiter = consumer_waiter
+            if waiter is not None and not waiter.done():
+                consumer_waiter = None
+                waiter.set_result(item)
             else:
-                if target is not None and not target.done():
-                    target.set_result(item)
+                pending_kind = _ITEM_SENTINEL
+                pending_payload = item
+            await next_pull
 
     reader_task: asyncio.Task[None] | None = None
+    watchdog_handle: asyncio.TimerHandle | None = None
+    deadline = 0.0
     quiet = 0.0
+
+    def _on_watchdog() -> None:
+        nonlocal watchdog_handle
+        watchdog_handle = None
+        now = loop.time()
+        waiter = consumer_waiter
+        if waiter is None or waiter.done():
+            return
+        if now >= deadline - 1e-6:
+            waiter.set_result(_WATCHDOG_FIRED)
+            return
+        watchdog_handle = loop.call_at(deadline, _on_watchdog)
+
+    def _ensure_watchdog(target_deadline: float) -> None:
+        nonlocal watchdog_handle, deadline
+        deadline = target_deadline
+        if watchdog_handle is None:
+            watchdog_handle = loop.call_at(deadline, _on_watchdog)
+
     try:
         while True:
-            if pop_ready is not None:
+            if (
+                pop_ready is not None
+                and pending_kind is None
+                and (pull_waiter is not None or reader_task is None)
+            ):
                 has_ready, ready_item = pop_ready()
                 if has_ready:
                     quiet = 0.0
                     yield ready_item
                     continue
 
+            if pending_kind is not None:
+                kind = pending_kind
+                payload = pending_payload
+                pending_kind = None
+                pending_payload = None
+                if kind is _DONE_SENTINEL:
+                    return
+                if kind is _ERROR_SENTINEL:
+                    assert isinstance(payload, BaseException)
+                    raise payload
+                quiet = 0.0
+                yield cast(ItemT, payload)
+                continue
+
+            if reader_done:
+                return
+
             if reader_task is None:
                 reader_task = asyncio.create_task(_reader())
+            elif pull_waiter is not None:
+                w = pull_waiter
+                pull_waiter = None
+                if not w.done():
+                    w.set_result(None)
 
-            while pull_waiter is None:
-                if reader_task.done():
-                    return
-                await asyncio.sleep(0)
+            while True:
+                if pending_kind is not None:
+                    kind = pending_kind
+                    payload = pending_payload
+                    pending_kind = None
+                    pending_payload = None
+                    if kind is _DONE_SENTINEL:
+                        return
+                    if kind is _ERROR_SENTINEL:
+                        assert isinstance(payload, BaseException)
+                        raise payload
+                    quiet = 0.0
+                    yield cast(ItemT, payload)
+                    break
 
-            res_fut: asyncio.Future[object] = loop.create_future()
-            result_waiter = res_fut
-            waiter = pull_waiter
-            pull_waiter = None
-            if not waiter.done():
-                waiter.set_result(None)
-
-            while not res_fut.done():
                 step = _keepalive_wait_step(quiet, quiet_after, interval)
                 if step <= 0.0:
                     yield sentinel
+                    quiet = max(quiet, quiet_after)
                     step = interval
-                    if res_fut.done():
-                        break
-                timeout_fut: asyncio.Future[None] = loop.create_future()
+                    if pending_kind is not None:
+                        continue
 
-                def _wake_on_done(
-                    _fut: asyncio.Future[object],
-                    tf: asyncio.Future[None] = timeout_fut,
-                ) -> None:
-                    if not tf.done():
-                        tf.set_result(None)
-
-                res_fut.add_done_callback(_wake_on_done)
-                timer = loop.call_later(
-                    step,
-                    lambda tf=timeout_fut: None if tf.done() else tf.set_result(None),
-                )
+                wait_started = loop.time()
+                _ensure_watchdog(wait_started + step)
+                wait_fut: asyncio.Future[object] = loop.create_future()
+                consumer_waiter = wait_fut
                 try:
-                    await timeout_fut
+                    outcome = await wait_fut
                 finally:
-                    timer.cancel()
-                    res_fut.remove_done_callback(_wake_on_done)
+                    if consumer_waiter is wait_fut:
+                        consumer_waiter = None
 
-                if not res_fut.done():
-                    quiet += step
+                if outcome is _WATCHDOG_FIRED:
+                    quiet += max(step, loop.time() - wait_started)
                     if quiet >= quiet_after:
                         yield sentinel
+                    continue
 
-            result_waiter = None
-            item = res_fut.result()
-            if item is done_sentinel:
-                return
-            quiet = 0.0
-            yield cast(ItemT, item)
+                if outcome is _DONE_SENTINEL:
+                    return
+                quiet = 0.0
+                yield cast(ItemT, outcome)
+                break
     finally:
+        if watchdog_handle is not None:
+            watchdog_handle.cancel()
+            watchdog_handle = None
         if pull_waiter is not None and not pull_waiter.done():
             pull_waiter.cancel()
         if reader_task is not None:
             await _discard_pending_task(reader_task)
-        if result_waiter is not None:
-            if not result_waiter.done():
-                result_waiter.cancel()
-            elif not result_waiter.cancelled():
-                result_waiter.exception()
+        if consumer_waiter is not None:
+            if not consumer_waiter.done():
+                consumer_waiter.cancel()
+            elif not consumer_waiter.cancelled():
+                consumer_waiter.exception()

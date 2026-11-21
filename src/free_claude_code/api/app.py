@@ -75,7 +75,9 @@ def create_app(services: ApiServices) -> FastAPI:
         return ordinary_application_error_response(
             exc,
             wire_api=(
-                "responses" if request.url.path == "/v1/responses" else "messages"
+                "responses"
+                if request.url.path in ("/v1/responses", "/v1/chat/completions")
+                else "messages"
             ),
             request_id=get_request_id(request),
         )
@@ -103,7 +105,7 @@ def create_app(services: ApiServices) -> FastAPI:
                     type(exc).__name__,
                 )
             message = safe_exception_message(exc)
-            if request.url.path == "/v1/responses":
+            if request.url.path in ("/v1/responses", "/v1/chat/completions"):
                 content = openai_error_payload(message=message, error_type="api_error")
             else:
                 content = anthropic_error_payload(

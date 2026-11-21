@@ -475,3 +475,62 @@ def test_chat_completions_non_streaming_propagates_mid_stream_error() -> None:
         assert res.status_code == 502
         body = res.json()
         assert "upstream broke mid-stream" in body["error"]["message"]
+
+
+def test_chat_completions_sets_openai_request_id_and_tracks_inference_lifetime() -> (
+    None
+):
+    from free_claude_code.api.request_lifetime import _INFERENCE_PATHS
+    from free_claude_code.core.anthropic.models import (
+        ContentBlockGeneric,
+        ContentBlockText,
+        MessagesRequest,
+    )
+
+    assert "/v1/chat/completions" in _INFERENCE_PATHS
+
+    # Verify tagged ContentBlock discriminator routes known and unknown block types.
+    req = MessagesRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {"type": "future_custom_block", "payload": 42},
+                    ],
+                }
+            ],
+        }
+    )
+    assert isinstance(req.messages[0].content, list)
+    assert isinstance(req.messages[0].content[0], ContentBlockText)
+    assert isinstance(req.messages[0].content[1], ContentBlockGeneric)
+    assert req.messages[0].content[1].type == "future_custom_block"
+
+    anthropic_chunks = [
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_hdr","model":"claude-sonnet-4-5","usage":{"input_tokens":3}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]
+    provider = _AnthropicOnlyFakeProvider(anthropic_chunks)
+    app = create_test_app()
+    with (
+        patch("free_claude_code.api.routes.resolve_provider", return_value=provider),
+        TestClient(app) as client,
+    ):
+        res = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "claude-sonnet-4-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
+        )
+        assert res.status_code == 200
+        assert res.headers.get("request-id")
+        assert res.headers.get("x-request-id") == res.headers.get("request-id")

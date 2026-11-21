@@ -214,3 +214,42 @@ async def test_fast_stream_translates_mid_stream_httpx2_transport_errors() -> No
             assert seen == 1
         finally:
             await client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_chat_stream_raw_chunks_yields_dicts_zero_copy() -> None:
+    """raw_chunks=True yields parsed dicts directly across LF and CRLF frames."""
+    payload = (
+        b'data: {"id":"c1","object":"chat.completion.chunk","created":1,'
+        b'"model":"m","choices":[{"index":0,"delta":{"content":"a"},'
+        b'"finish_reason":null}]}\n\n'
+        b'data: {"id":"c1","object":"chat.completion.chunk","created":1,'
+        b'"model":"m","choices":[{"index":0,"delta":{"content":"b"},'
+        b'"finish_reason":"stop"}]}\r\n\r\n'
+        b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=payload,
+            request=request,
+        )
+
+    client = AsyncOpenAI(
+        api_key="test-key",
+        base_url="https://api.example.test/v1",
+        max_retries=0,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    try:
+        stream = await create_chat_stream(client, BODY, raw_chunks=True)
+        chunks = [chunk async for chunk in stream]
+        assert len(chunks) == 2
+        assert all(type(chunk) is dict for chunk in chunks)
+        assert chunks[0]["choices"][0]["delta"]["content"] == "a"
+        assert chunks[1]["choices"][0]["delta"]["content"] == "b"
+        assert chunks[1]["choices"][0]["finish_reason"] == "stop"
+    finally:
+        await client.close()

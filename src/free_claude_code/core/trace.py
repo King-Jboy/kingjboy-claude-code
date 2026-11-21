@@ -107,13 +107,25 @@ class LazyTraceValue:
         return self._factory()
 
 
+_DEBUG_LEVEL_NO = 10
+
+
+def _debug_trace_enabled() -> bool:
+    """Return True only when at least one Loguru sink accepts DEBUG records."""
+    core = getattr(logger, "_core", None)
+    if core is None:
+        return True
+    return core.min_level <= _DEBUG_LEVEL_NO
+
+
 def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
     """Emit one structured DEBUG trace row merged into JSON by the log sink.
 
-    Loguru runs patchers only for records that pass its level filter, so the
-    sanitized copy and any ``LazyTraceValue`` payloads are never built while
-    DEBUG is off.
+    Fast-paths out before allocating a patcher closure or cloning the logger
+    whenever no sink accepts DEBUG records.
     """
+    if not _debug_trace_enabled():
+        return
 
     def attach_payload(record: Any) -> None:
         payload: dict[str, Any] = {"stage": stage, "event": event, "source": source}
@@ -124,6 +136,9 @@ def trace_event(*, stage: str, event: str, source: str, **fields: Any) -> None:
         record["extra"][TRACE_PAYLOAD_BINDING] = sanitize_trace_value(payload)
 
     logger.patch(attach_payload).debug("TRACE {}", event)
+
+
+_DEFAULT_TRACE_EVENT = trace_event
 
 
 async def close_stream_input(
@@ -176,6 +191,19 @@ async def traced_async_stream(
     extra: Mapping[str, Any] | None = None,
 ) -> AsyncGenerator[str]:
     """Emit TRACE rows when a text stream completes, fails, cancels, or periodically."""
+    if not _debug_trace_enabled() and trace_event is _DEFAULT_TRACE_EVENT:
+        try:
+            async for chunk in agen:
+                yield chunk
+        finally:
+            await close_stream_input(
+                agen,
+                owner="traced_async_stream",
+                source=source,
+                preserved_error=sys.exception(),
+            )
+        return
+
     common = dict(extra or {})
     count = 0
     nbytes = 0
