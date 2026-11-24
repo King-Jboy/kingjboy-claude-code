@@ -357,7 +357,7 @@ class MessagingWorkflow:
         """Finish every owned task and durable write before releasing delivery."""
         await self.stop_all_tasks()
         await self._tree_queue.wait_idle()
-        self.session_store.flush_pending_save()
+        await asyncio.to_thread(self.session_store.flush_pending_save)
 
     async def handle_message(self, incoming: IncomingMessage) -> None:
         """Handle one platform message."""
@@ -582,7 +582,7 @@ class MessagingWorkflow:
             except Exception as exc:
                 failures.append(exc)
             try:
-                self.session_store.clear_scope(clear_scope)
+                await asyncio.to_thread(self.session_store.clear_scope, clear_scope)
             except Exception as exc:
                 failures.append(exc)
                 logger.warning(

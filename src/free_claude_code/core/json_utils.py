@@ -11,9 +11,9 @@ def fast_json_dumps(
     obj: Any, *, ensure_ascii: bool = False, indent: int | None = None
 ) -> str:
     """Serialize an object to a JSON string with Rust-level performance."""
-    option = 0
-    if indent == 2:
-        option |= orjson.OPT_INDENT_2
+    if ensure_ascii or indent not in (None, 2):
+        return json.dumps(obj, ensure_ascii=ensure_ascii, indent=indent, default=str)
+    option = orjson.OPT_INDENT_2 if indent == 2 else 0
     try:
         return orjson.dumps(obj, option=option).decode("utf-8")
     except TypeError, ValueError, orjson.JSONEncodeError:

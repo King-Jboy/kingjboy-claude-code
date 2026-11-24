@@ -21,6 +21,7 @@ from free_claude_code.api.request_errors import (
 from free_claude_code.api.request_ids import new_request_id
 from free_claude_code.api.response_streams import (
     EmptyStreamError,
+    FastJSONResponse,
     anthropic_sse_streaming_response,
     terminal_execution_error_response,
     trace_terminal_execution_error,
@@ -240,7 +241,7 @@ class MessagesHandler:
                             request_id=request_id,
                         ),
                     )
-                return JSONResponse(content=message)
+                return FastJSONResponse(content=message)
             finally:
                 # The aggregation owns the body only while it runs. Every exit
                 # from this branch - a complete reply, an in-band stream error,

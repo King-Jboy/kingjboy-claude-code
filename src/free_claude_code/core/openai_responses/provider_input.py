@@ -39,11 +39,13 @@ def build_responses_provider_request(
     request: MessagesRequest,
     *,
     reasoning: ReasoningPolicy,
+    tool_names: OpenAIToolNameCodec | None = None,
 ) -> dict[str, Any]:
     """Build a stateless Responses request without silently dropping fields."""
 
     _validate_supported_request(request)
-    tool_names = OpenAIToolNameCodec.from_request(request)
+    if tool_names is None:
+        tool_names = OpenAIToolNameCodec.from_request(request)
     instructions = _system_text(request)
     input_items: list[dict[str, Any]] = []
     for message in request.messages:

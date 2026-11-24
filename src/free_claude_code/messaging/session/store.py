@@ -172,7 +172,7 @@ class SessionStore:
         with self._lock:
             self._conversation = self._conversation.without_scope(scope)
             self._managed_messages.clear_chat(scope.platform, scope.chat_id)
-            self._write_current_state()
+        self._write_current_state()
 
     def _write_current_state(self) -> None:
         self._set_dirty(True)

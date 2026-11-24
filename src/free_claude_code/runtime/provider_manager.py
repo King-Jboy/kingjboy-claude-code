@@ -110,8 +110,9 @@ class ProviderRuntimeManager:
         self._model_catalog_publisher = model_catalog_publisher
         self._replace_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
+        initial_connected = connected_provider_ids()
         self._model_cache = ProviderModelCache(
-            model_cache_provider_ids_for_settings(settings, connected_provider_ids())
+            model_cache_provider_ids_for_settings(settings, initial_connected)
         )
         self._refresh_task: asyncio.Task[None] | None = None
         self._next_generation_id = 2
@@ -123,6 +124,10 @@ class ProviderRuntimeManager:
             generation_id=1,
             settings=settings,
             runtime=runtime_factory(settings),
+        )
+        self._last_cache_scope_key: tuple[int, tuple[str, ...]] = (
+            1,
+            initial_connected,
         )
         self._trace_published(self._current, previous=None, reason="startup")
 
@@ -254,11 +259,14 @@ class ProviderRuntimeManager:
     def _synchronize_model_cache_scope(self) -> None:
         """Drop metadata whose settings or connected account is no longer usable."""
 
+        connected = self._connected_provider_ids()
+        scope_key = (self._current.generation_id, connected)
+        if scope_key == self._last_cache_scope_key:
+            return
         self._model_cache.set_available_providers(
-            model_cache_provider_ids_for_settings(
-                self._current.settings, self._connected_provider_ids()
-            )
+            model_cache_provider_ids_for_settings(self._current.settings, connected)
         )
+        self._last_cache_scope_key = scope_key
 
     async def replace(
         self,
@@ -307,11 +315,11 @@ class ProviderRuntimeManager:
                 runtime=candidate_runtime,
             )
             self._current = candidate
+            connected = self._connected_provider_ids()
             self._model_cache.set_available_providers(
-                model_cache_provider_ids_for_settings(
-                    settings, self._connected_provider_ids()
-                )
+                model_cache_provider_ids_for_settings(settings, connected)
             )
+            self._last_cache_scope_key = (candidate.generation_id, connected)
             self._publish_model_catalog()
             previous.retired = True
             self._retired[previous.generation_id] = previous
@@ -321,9 +329,10 @@ class ProviderRuntimeManager:
             self._refresh_task = asyncio.create_task(
                 self._refresh_generation_in_background(candidate, only_missing=False)
             )
-            if previous.active_leases == 0:
-                await self._close_generation(previous, forced=False)
-            return candidate.generation_id
+            should_close_previous = previous.active_leases == 0
+        if should_close_previous:
+            await self._close_generation(previous, forced=False)
+        return candidate.generation_id
 
     async def close(self) -> None:
         """Reject new leases, drain existing work, and close every generation."""

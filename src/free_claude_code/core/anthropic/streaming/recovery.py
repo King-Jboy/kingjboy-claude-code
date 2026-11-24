@@ -97,6 +97,31 @@ def accept_tool_json_repair(
     return None
 
 
+def _longest_suffix_prefix_overlap(existing: str, candidate: str) -> int:
+    """Return length of longest suffix of ``existing`` matching prefix of ``candidate`` in O(N)."""
+    max_len = min(len(existing), len(candidate))
+    if max_len == 0:
+        return 0
+    pattern = candidate[:max_len]
+    tail = existing[-max_len:]
+    # KMP prefix function over pattern, then stream tail against pattern.
+    prefix = [0] * max_len
+    k = 0
+    for i in range(1, max_len):
+        while k > 0 and pattern[k] != pattern[i]:
+            k = prefix[k - 1]
+        if pattern[k] == pattern[i]:
+            k += 1
+        prefix[i] = k
+    matched = 0
+    for ch in tail:
+        while matched > 0 and pattern[matched] != ch:
+            matched = prefix[matched - 1]
+        if pattern[matched] == ch:
+            matched += 1
+    return matched
+
+
 def continuation_suffix(existing: str, candidate: str) -> str | None:
     existing = existing or ""
     candidate = candidate or ""
@@ -107,10 +132,9 @@ def continuation_suffix(existing: str, candidate: str) -> str | None:
     if candidate.startswith(existing):
         return candidate[len(existing) :]
 
-    max_overlap = min(len(existing), len(candidate))
-    for size in range(max_overlap, 0, -1):
-        if existing.endswith(candidate[:size]):
-            return candidate[size:]
+    overlap = _longest_suffix_prefix_overlap(existing, candidate)
+    if overlap > 0:
+        return candidate[overlap:]
 
     if len(candidate) < max(200, len(existing) // 2):
         return candidate
@@ -136,8 +160,8 @@ def make_response_recovery_body(
     partial_thinking: str = "",
 ) -> dict[str, Any]:
     """Build a continuation request that retains the original tool contract."""
-    recovery = deepcopy(body)
-    messages = _copied_messages(recovery)
+    recovery = dict(body)
+    messages = _copied_messages(body)
     if partial_text:
         messages.append({"role": "assistant", "content": partial_text})
     prompt = _RECOVERY_USER_PREFIX
@@ -156,10 +180,11 @@ def make_tool_repair_body(
     input_schema: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Build a text-only request asking for a JSON suffix."""
-    recovery = deepcopy(body)
+    recovery = dict(body)
     recovery.pop("tools", None)
     recovery.pop("tool_choice", None)
-    messages = _copied_messages(recovery)
+    recovery.pop("parallel_tool_calls", None)
+    messages = _copied_messages(body)
     messages.append(
         {
             "role": "user",
@@ -174,7 +199,7 @@ def make_tool_repair_body(
 
 def _copied_messages(body: dict[str, Any]) -> list[Any]:
     messages = body.get("messages")
-    return deepcopy(messages) if isinstance(messages, list) else []
+    return list(messages) if isinstance(messages, list) else []
 
 
 def _repair_suffix_candidates(prefix: str, candidate: str) -> list[str]:

@@ -157,7 +157,7 @@ def _append_input_item(
             kind="custom" if item_type == "custom_tool_call" else "function",
         ):
             # Full calls replay by call_id; incompatible item IDs are optional.
-            del item["id"]
+            item = {k: v for k, v in item.items() if k != "id"}
         namespace = optional_str(item.get("namespace"))
         field_name = f"{item_type}.name"
         try:

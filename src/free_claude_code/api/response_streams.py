@@ -9,6 +9,7 @@ from collections.abc import (
 )
 from typing import Any, Literal
 
+import orjson
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.responses import ContentStream
@@ -26,6 +27,17 @@ from free_claude_code.core.failures import find_execution_failure
 from free_claude_code.core.trace import close_stream_input, trace_event
 
 TERMINAL_EXECUTION_ERROR_HEADERS = {"x-should-retry": "false"}
+
+
+class FastJSONResponse(JSONResponse):
+    """JSONResponse backed by orjson without FastAPI's deprecated ORJSONResponse."""
+
+    def render(self, content: Any) -> bytes:
+        try:
+            return orjson.dumps(content)
+        except TypeError:
+            return super().render(content)
+
 
 PreStartErrorResponse = Callable[[BaseException], Response]
 TerminalFrameEmitter = Callable[[BaseException], str]
@@ -119,6 +131,7 @@ class ManagedStreamingResponse(StreamingResponse):
 async def _wait_for_cleanup(task: asyncio.Task[None]) -> None:
     """Wait through repeated caller cancellation, then restore cancellation."""
     current = asyncio.current_task()
+    base_cancelling = current.cancelling() if current is not None else 0
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -126,7 +139,7 @@ async def _wait_for_cleanup(task: asyncio.Task[None]) -> None:
         except asyncio.CancelledError as exc:
             cancellation = cancellation or exc
             if current is not None:
-                while current.cancelling():
+                while current.cancelling() > base_cancelling:
                     current.uncancel()
 
     # Ordinary defensive failures are trace-only; cancellation remains control flow.
@@ -181,7 +194,7 @@ def terminal_execution_error_response(
     *, status_code: int, content: dict[str, Any]
 ) -> JSONResponse:
     """Return a final provider-execution error without enabling client retries."""
-    return JSONResponse(
+    return FastJSONResponse(
         status_code=status_code,
         content=content,
         headers=dict(TERMINAL_EXECUTION_ERROR_HEADERS),

@@ -3,7 +3,7 @@
 import json
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -47,8 +47,13 @@ _TERMINAL_FUNCTION_TAG_STATES = frozenset(
 class FunctionTagToolParser:
     """Parse an exact terminal function-tag envelope into tool use."""
 
-    def __init__(self, request: MessagesRequest):
-        self._tool_names = OpenAIToolNameCodec.from_request(request)
+    def __init__(
+        self,
+        request: MessagesRequest,
+        *,
+        tool_names: OpenAIToolNameCodec | None = None,
+    ):
+        self._tool_names = tool_names or OpenAIToolNameCodec.from_request(request)
         self._schemas: dict[str, dict[str, Any]] = {}
         for tool in request.tools or ():
             if tool.name:
@@ -290,39 +295,75 @@ class HeuristicToolParser:
     _PARAM_PATTERN = re.compile(
         r"<parameter=([^>]+)>(.*?)(?:</parameter>|$)", re.DOTALL
     )
-    _WEB_TOOL_JSON_PATTERN = re.compile(
-        r"(?is)\b(?:use\s+)?(?P<tool>WebFetch|WebSearch)\b.*?(?P<json>\{.*?\})"
+    _WEB_TOOL_HEAD_PATTERN = re.compile(
+        r"(?is)\b(?:use\s+)?(?P<tool>WebFetch|WebSearch)\b"
     )
+    _DEFAULT_WEB_TOOLS: frozenset[str] = frozenset({"WebFetch", "WebSearch"})
+    _JSON_DECODER = json.JSONDecoder()
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        allowed_web_tools: Collection[str] | None = None,
+    ):
         self._state = ParserState.TEXT
         self._buffer = ""
         self._current_tool_id = None
         self._current_function_name = None
         self._current_parameters = {}
+        self._allowed_web_tools: frozenset[str] = (
+            self._DEFAULT_WEB_TOOLS
+            if allowed_web_tools is None
+            else frozenset(allowed_web_tools) & self._DEFAULT_WEB_TOOLS
+        )
 
     def _extract_web_tool_json_calls(self) -> tuple[str, list[dict[str, Any]]]:
+        if not self._allowed_web_tools or "{" not in self._buffer:
+            return self._buffer, []
+
         detected_tools: list[dict[str, Any]] = []
         # Only the matched call spans are consumed; surrounding prose stays text.
         kept_text: list[str] = []
         kept_from = 0
+        search_pos = 0
+        buf = self._buffer
+        buf_len = len(buf)
 
-        for match in self._WEB_TOOL_JSON_PATTERN.finditer(self._buffer):
+        while search_pos < buf_len:
+            match = self._WEB_TOOL_HEAD_PATTERN.search(buf, search_pos)
+            if match is None:
+                break
+            raw_tool_name = match.group("tool")
+            tool_name = (
+                "WebFetch" if raw_tool_name.lower() == "webfetch" else "WebSearch"
+            )
+            if tool_name not in self._allowed_web_tools:
+                search_pos = match.end()
+                continue
+
+            brace_idx = buf.find("{", match.end())
+            if brace_idx == -1:
+                break
+
             try:
-                tool_input = json.loads(match.group("json"))
+                tool_input, json_end = self._JSON_DECODER.raw_decode(buf, brace_idx)
             except json.JSONDecodeError:
+                search_pos = match.end()
                 continue
             if not isinstance(tool_input, dict):
+                search_pos = json_end
                 continue
 
-            tool_name = match.group("tool")
             if tool_name == "WebFetch" and "url" not in tool_input:
+                search_pos = json_end
                 continue
             if tool_name == "WebSearch" and "query" not in tool_input:
+                search_pos = json_end
                 continue
 
-            kept_text.append(self._buffer[kept_from : match.start()])
-            kept_from = match.end()
+            kept_text.append(buf[kept_from : match.start()])
+            kept_from = json_end
+            search_pos = json_end
             detected_tools.append(
                 {
                     "type": "tool_use",
@@ -337,9 +378,9 @@ class HeuristicToolParser:
             )
 
         if not detected_tools:
-            return self._buffer, []
+            return buf, []
 
-        kept_text.append(self._buffer[kept_from:])
+        kept_text.append(buf[kept_from:])
         remaining = "".join(kept_text)
         return (remaining if remaining.strip() else ""), detected_tools
 
@@ -437,7 +478,9 @@ class HeuristicToolParser:
                         filtered_output_parts.append(self._buffer[:idx])
                         self._buffer = self._buffer[idx:]
                     finished_tool_call = True
-                elif len(self._buffer) > 0 and not self._buffer.strip().startswith("<"):
+                elif (stripped := self._buffer.strip()) and not stripped.startswith(
+                    "<"
+                ):
                     if "<parameter=" not in self._buffer:
                         filtered_output_parts.append(self._buffer)
                         self._buffer = ""

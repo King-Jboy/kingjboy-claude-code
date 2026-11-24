@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import suppress
 from typing import Any
@@ -133,6 +134,15 @@ class OpenAICodexProvider(BaseProvider):
             http2=use_http2,
         )
         self._owns_client = client is None
+        self._prepared_requests: OrderedDict[
+            int,
+            tuple[
+                MessagesRequest,
+                ReasoningPolicy,
+                dict[str, Any],
+                OpenAIToolNameCodec,
+            ],
+        ] = OrderedDict()
         self._last_activity_at = time.monotonic()
         self._keepalive_task: asyncio.Task[None] | None = None
         if self._owns_client:
@@ -150,7 +160,11 @@ class OpenAICodexProvider(BaseProvider):
     ) -> None:
         """Validate and adapt the private Codex request before upstream I/O."""
 
-        self._build_body(request, reasoning=reasoning)
+        tool_names = OpenAIToolNameCodec.from_request(request)
+        body = self._build_body(request, reasoning=reasoning, tool_names=tool_names)
+        self._prepared_requests[id(request)] = (request, reasoning, body, tool_names)
+        while len(self._prepared_requests) > 16:
+            self._prepared_requests.popitem(last=False)
 
     async def _prewarm_and_keepalive(self) -> None:
         """Keep the upstream TLS socket warm across idle gaps."""
@@ -213,8 +227,12 @@ class OpenAICodexProvider(BaseProvider):
         """Stream Responses output in Anthropic Messages format."""
 
         self._last_activity_at = time.monotonic()
-        tool_names = OpenAIToolNameCodec.from_request(request)
-        body = self._build_body(request, reasoning=reasoning)
+        prepared = self._prepared_requests.pop(id(request), None)
+        if prepared is not None and prepared[0] is request and prepared[1] == reasoning:
+            body, tool_names = prepared[2], prepared[3]
+        else:
+            tool_names = OpenAIToolNameCodec.from_request(request)
+            body = self._build_body(request, reasoning=reasoning, tool_names=tool_names)
         return self._run_stream(
             body,
             input_tokens=input_tokens,
@@ -228,9 +246,14 @@ class OpenAICodexProvider(BaseProvider):
         request: MessagesRequest,
         *,
         reasoning: ReasoningPolicy,
+        tool_names: OpenAIToolNameCodec | None = None,
     ) -> dict[str, Any]:
         try:
-            body = build_responses_provider_request(request, reasoning=reasoning)
+            body = build_responses_provider_request(
+                request,
+                reasoning=reasoning,
+                tool_names=tool_names,
+            )
         except ResponsesConversionError as exc:
             raise InvalidRequestError(str(exc)) from exc
         # The private Codex backend rejects these public Responses fields.
@@ -479,7 +502,8 @@ class OpenAICodexProvider(BaseProvider):
                 if should_early_retry:
                     if decision.committed:
                         message_started_committed = True
-                        recovery.flush()
+                        for event in recovery.flush():
+                            yield event
                     else:
                         recovery.discard()
                     trace_event(
@@ -642,7 +666,10 @@ def _effective_error(error: Exception) -> Exception:
         code = (error.code or "").lower()
         if is_context_window_error_code(code):
             return context_window_exceeded_provider_failure(message)
-        if "rate" in code or "429" in code:
+        if any(
+            marker in code
+            for marker in ("rate_limit", "ratelimit", "too_many_requests", "429")
+        ):
             return ExecutionFailure(FailureKind.RATE_LIMIT, 429, message, True)
         if any(marker in code for marker in ("overload", "capacity", "529")):
             return ExecutionFailure(FailureKind.OVERLOADED, 529, message, True)

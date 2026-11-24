@@ -29,13 +29,16 @@ def _clone_strip_extra_body(
     body: dict[str, Any],
     strip: Callable[[dict[str, Any]], bool],
 ) -> dict[str, Any] | None:
-    cloned_body = deepcopy(body)
-    extra_body = cloned_body.get("extra_body")
-    if not isinstance(extra_body, dict):
+    raw_extra = body.get("extra_body")
+    if not isinstance(raw_extra, dict):
         return None
+    extra_body = dict(raw_extra)
     if not strip(extra_body):
         return None
-    if not extra_body:
+    cloned_body = dict(body)
+    if extra_body:
+        cloned_body["extra_body"] = extra_body
+    else:
         cloned_body.pop("extra_body", None)
     return cloned_body
 
@@ -43,10 +46,15 @@ def _clone_strip_extra_body(
 def _strip_reasoning_budget_fields(extra_body: dict[str, Any]) -> bool:
     removed = extra_body.pop("reasoning_budget", None) is not None
     chat_template_kwargs = extra_body.get("chat_template_kwargs")
-    if (
-        isinstance(chat_template_kwargs, dict)
-        and chat_template_kwargs.pop("reasoning_budget", None) is not None
+    if isinstance(chat_template_kwargs, dict) and (
+        "reasoning_budget" in chat_template_kwargs
     ):
+        updated_kwargs = dict(chat_template_kwargs)
+        updated_kwargs.pop("reasoning_budget", None)
+        if updated_kwargs:
+            extra_body["chat_template_kwargs"] = updated_kwargs
+        else:
+            extra_body.pop("chat_template_kwargs", None)
         removed = True
     return removed
 

@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import SimpleNamespace
@@ -206,7 +206,13 @@ def normalize_nim_native_tool_stream(
     body: Mapping[str, Any],
 ) -> AsyncIterator[Any]:
     """Convert leaked MiniMax-M3 markup into ordinary OpenAI tool-call chunks."""
-    schemas = _openai_tool_schemas(body)
+    schemas: dict[str, dict[str, Any]] | None = None
+
+    def _get_schemas() -> dict[str, dict[str, Any]]:
+        nonlocal schemas
+        if schemas is None:
+            schemas = _openai_tool_schemas(body)
+        return schemas
 
     async def _iter() -> AsyncIterator[Any]:
         content_framer = _MiniMaxM3ToolFramer()
@@ -249,11 +255,19 @@ def normalize_nim_native_tool_stream(
                         reasoning_framer,
                         content=safe_content,
                         reasoning_content=safe_reasoning,
-                        schemas=schemas,
+                        schemas=_get_schemas,
                         structured_tool_calls_seen=structured_tool_calls_seen,
                     )
                 )
                 finalized = True
+
+            if (
+                not generated_calls
+                and safe_content is content
+                and safe_reasoning is reasoning
+            ):
+                yield chunk
+                continue
 
             normalized = _normalized_chunks(
                 chunk,
@@ -273,7 +287,7 @@ def normalize_nim_native_tool_stream(
                 reasoning_framer,
                 content=None,
                 reasoning_content=None,
-                schemas=schemas,
+                schemas=_get_schemas,
                 structured_tool_calls_seen=structured_tool_calls_seen,
             )
             if content or reasoning or generated_calls:
@@ -357,7 +371,7 @@ def _finish_native_tool_framers(
     *,
     content: Any,
     reasoning_content: Any,
-    schemas: Mapping[str, dict[str, Any]],
+    schemas: Callable[[], Mapping[str, dict[str, Any]]],
     structured_tool_calls_seen: bool,
 ) -> tuple[Any, Any, tuple[_NativeToolCall, ...]]:
     require_complete = not structured_tool_calls_seen
@@ -381,7 +395,7 @@ def _finish_native_tool_framers(
         raise NimNativeToolProtocolError(
             "NVIDIA NIM returned native MiniMax tool calls in multiple output fields."
         )
-    generated_calls = _parse_tool_block(blocks[0], schemas) if blocks else ()
+    generated_calls = _parse_tool_block(blocks[0], schemas()) if blocks else ()
     return content, reasoning_content, generated_calls
 
 

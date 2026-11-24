@@ -202,7 +202,9 @@ def build_provider_config(
         else settings.http_read_timeout
     )
     key_rate_limit: int | None = None
-    if pool_settings := _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id):
+    if api_keys and (
+        pool_settings := _POOL_SETTINGS_BY_PROVIDER.get(descriptor.provider_id)
+    ):
         key_rate_limit = int(
             numeric_setting(settings, pool_settings[1], pool_settings[2])
         )

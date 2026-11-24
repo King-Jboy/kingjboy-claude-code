@@ -292,8 +292,17 @@ class OpenAIChatProvider(BaseProvider):
         # Bodies converted by preflight_stream, keyed by the request object, so
         # the stream that follows reuses the conversion instead of repeating it.
         self._prepared_bodies: OrderedDict[
-            int, tuple[MessagesRequest, ReasoningPolicy, dict[str, Any]]
+            int,
+            tuple[
+                MessagesRequest,
+                ReasoningPolicy,
+                dict[str, Any],
+                OpenAIToolNameCodec,
+            ],
         ] = OrderedDict()
+        self._pending_tool_names: tuple[MessagesRequest, OpenAIToolNameCodec] | None = (
+            None
+        )
         self._admission = admission
         self._default_headers = default_headers
         self._client = self._build_client(api_key_provider or self._api_key)
@@ -393,6 +402,9 @@ class OpenAIChatProvider(BaseProvider):
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
+        key_pool = getattr(self, "_key_pool", None)
+        if key_pool is not None:
+            key_pool.close()
         key_clients = getattr(self, "_key_clients", None)
         if key_clients is not None:
             key_clients.clear()
@@ -471,11 +483,16 @@ class OpenAIChatProvider(BaseProvider):
         reasoning: ReasoningPolicy = DEFAULT_REASONING_POLICY,
     ) -> dict[str, Any]:
         """Build a provider request from the immutable profile."""
+        pending = getattr(self, "_pending_tool_names", None)
+        tool_names = (
+            pending[1] if pending is not None and pending[0] is request else None
+        )
         body = build_openai_chat_request_body(
             request,
             reasoning=reasoning,
             policy=self._profile.request_policy,
             postprocessors=self._profile.request_postprocessors,
+            tool_names=tool_names,
         )
         return self._finalize_chat_body(body, reasoning=reasoning)
 
@@ -512,23 +529,47 @@ class OpenAIChatProvider(BaseProvider):
         reasoning: ReasoningPolicy = DEFAULT_REASONING_POLICY,
     ) -> None:
         """Validate OpenAI-chat request conversion before streaming."""
-        body = self._build_request_body(request, reasoning=reasoning)
+        tool_names = OpenAIToolNameCodec.from_request(request)
+        self._pending_tool_names = (request, tool_names)
+        try:
+            body = self._build_request_body(request, reasoning=reasoning)
+        finally:
+            self._pending_tool_names = None
         # The entry holds the request, so its id cannot be reused while cached.
-        self._prepared_bodies[id(request)] = (request, reasoning, body)
+        self._prepared_bodies[id(request)] = (request, reasoning, body, tool_names)
         while len(self._prepared_bodies) > _PREPARED_BODY_LIMIT:
             self._prepared_bodies.popitem(last=False)
+
+    def _peek_prepared_tool_names(
+        self,
+        request: MessagesRequest,
+        *,
+        reasoning: ReasoningPolicy,
+    ) -> OpenAIToolNameCodec | None:
+        """Return the preflighted tool-name codec when available for this request."""
+        prepared = self._prepared_bodies.get(id(request))
+        if prepared is not None and prepared[1] == reasoning:
+            return prepared[3]
+        return None
 
     def _stream_request_body(
         self,
         request: MessagesRequest,
         *,
         reasoning: ReasoningPolicy,
+        tool_names: OpenAIToolNameCodec | None = None,
     ) -> dict[str, Any]:
         """Return the preflighted body for this request, or convert it now."""
         prepared = self._prepared_bodies.pop(id(request), None)
         if prepared is not None and prepared[1] == reasoning:
             return prepared[2]
-        return self._build_request_body(request, reasoning=reasoning)
+        if tool_names is not None:
+            self._pending_tool_names = (request, tool_names)
+        try:
+            return self._build_request_body(request, reasoning=reasoning)
+        finally:
+            if tool_names is not None:
+                self._pending_tool_names = None
 
     def _handle_extra_reasoning(
         self, delta: Any, ledger: AnthropicStreamLedger, *, output_reasoning: bool
@@ -1182,7 +1223,12 @@ class _OpenAIChatStreamRunner:
             request.model if response_model is None else response_model
         )
         self._reasoning = reasoning
-        self._tool_names = OpenAIToolNameCodec.from_request(request)
+        self._tool_names = provider._peek_prepared_tool_names(
+            request, reasoning=reasoning
+        ) or OpenAIToolNameCodec.from_request(request)
+        self._allowed_heuristic_web_tools: frozenset[str] = frozenset(
+            tool.name for tool in (request.tools or ()) if tool.name
+        )
         self._message_id = f"msg_{uuid.uuid4()}"
         self._tool_calls = OpenAIToolCallAssembler(
             reserved_tool_ids=_reserved_anthropic_tool_ids(request),
@@ -1267,6 +1313,7 @@ class _OpenAIChatStreamRunner:
         body = self._provider._stream_request_body(
             self._request,
             reasoning=self._reasoning,
+            tool_names=self._tool_names,
         )
         request_stream_usage(body)
         self._downstream_model = body.get("model")
@@ -1289,8 +1336,13 @@ class _OpenAIChatStreamRunner:
         )
 
         think_parser = ThinkTagParser()
-        function_tag_parser = FunctionTagToolParser(self._request)
-        heuristic_parser = HeuristicToolParser()
+        function_tag_parser = FunctionTagToolParser(
+            self._request,
+            tool_names=self._tool_names,
+        )
+        heuristic_parser = HeuristicToolParser(
+            allowed_web_tools=self._allowed_heuristic_web_tools,
+        )
         finish_reason = None
         usage_info = None
         tool_argument_aliases: dict[str, dict[str, str]] = {}
@@ -1591,8 +1643,13 @@ class _OpenAIChatStreamRunner:
                         ledger = self._new_ledger()
                         recovery = RecoveryController()
                     think_parser = ThinkTagParser()
-                    function_tag_parser = FunctionTagToolParser(self._request)
-                    heuristic_parser = HeuristicToolParser()
+                    function_tag_parser = FunctionTagToolParser(
+                        self._request,
+                        tool_names=self._tool_names,
+                    )
+                    heuristic_parser = HeuristicToolParser(
+                        allowed_web_tools=self._allowed_heuristic_web_tools,
+                    )
                     finish_reason = None
                     usage_info = None
                     tool_argument_aliases = {}
@@ -1661,8 +1718,13 @@ class _OpenAIChatStreamRunner:
                     # A keepalive already delivered message_start; do not repeat it.
                     ledger.message_started = decision.committed
                     think_parser = ThinkTagParser()
-                    function_tag_parser = FunctionTagToolParser(self._request)
-                    heuristic_parser = HeuristicToolParser()
+                    function_tag_parser = FunctionTagToolParser(
+                        self._request,
+                        tool_names=self._tool_names,
+                    )
+                    heuristic_parser = HeuristicToolParser(
+                        allowed_web_tools=self._allowed_heuristic_web_tools,
+                    )
                     finish_reason = None
                     usage_info = None
                     tool_argument_aliases = {}
@@ -1900,8 +1962,13 @@ class _OpenAIChatStreamRunner:
                 tool_calls = OpenAIToolCallCollector()
                 terminal_seen = False
                 recovery_think_parser = ThinkTagParser()
-                recovery_function_tag_parser = FunctionTagToolParser(self._request)
-                recovery_heuristic_parser = HeuristicToolParser()
+                recovery_function_tag_parser = FunctionTagToolParser(
+                    self._request,
+                    tool_names=self._tool_names,
+                )
+                recovery_heuristic_parser = HeuristicToolParser(
+                    allowed_web_tools=self._allowed_heuristic_web_tools,
+                )
 
                 for_parts = (
                     recovery_function_tag_parser,

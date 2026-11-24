@@ -13,6 +13,7 @@ heuristic recovery on top.
 
 import asyncio
 import time
+from contextlib import suppress
 
 import httpx
 from loguru import logger
@@ -76,6 +77,7 @@ class LMStudioProvider(OpenAIChatProvider):
         )
         self._loaded_context_cache: tuple[float, int | None] = (0.0, None)
         self._context_refresh: asyncio.Task[None] | None = None
+        self._context_client: httpx.AsyncClient | None = None
 
     def preflight_stream(
         self,
@@ -125,20 +127,24 @@ class LMStudioProvider(OpenAIChatProvider):
         value = await self._fetch_loaded_context()
         self._loaded_context_cache = (time.monotonic(), value)
 
+    def _get_context_client(self) -> httpx.AsyncClient:
+        if self._context_client is None:
+            headers = (
+                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+            )
+            self._context_client = httpx.AsyncClient(
+                timeout=2.0,
+                proxy=self._config.proxy or None,
+                headers=headers,
+            )
+        return self._context_client
+
     async def _fetch_loaded_context(self) -> int | None:
         value: int | None = None
         try:
             root = self._base_url
             root = root[: -len("/v1")] if root.endswith("/v1") else root
-            headers = (
-                {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            )
-            async with httpx.AsyncClient(
-                timeout=2.0,
-                proxy=self._config.proxy or None,
-                headers=headers,
-            ) as client:
-                response = await client.get(f"{root}/api/v0/models")
+            response = await self._get_context_client().get(f"{root}/api/v0/models")
             response.raise_for_status()
             loaded = [
                 length
@@ -160,5 +166,13 @@ class LMStudioProvider(OpenAIChatProvider):
 
     async def cleanup(self) -> None:
         if self._context_refresh is not None:
-            self._context_refresh.cancel()
+            task = self._context_refresh
+            self._context_refresh = None
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+        if self._context_client is not None:
+            client = self._context_client
+            self._context_client = None
+            await client.aclose()
         await super().cleanup()

@@ -188,6 +188,7 @@ def _get_pooled_search_client() -> httpx.AsyncClient:
         client = _REAL_ASYNC_CLIENT(
             timeout=_REQUEST_TIMEOUT_S,
             follow_redirects=True,
+            trust_env=False,
             headers=_WEB_TOOL_HTTP_HEADERS,
             limits=httpx.Limits(
                 max_keepalive_connections=16,
@@ -197,6 +198,14 @@ def _get_pooled_search_client() -> httpx.AsyncClient:
         )
         _SEARCH_CLIENTS[loop] = client
     return client
+
+
+async def aclose_web_tool_clients() -> None:
+    """Close any pooled web-tool HTTP client owned by the current event loop."""
+    loop = asyncio.get_running_loop()
+    client = _SEARCH_CLIENTS.pop(loop, None)
+    if client is not None and not client.is_closed:
+        await client.aclose()
 
 
 async def _run_web_search(query: str) -> list[dict[str, str]]:

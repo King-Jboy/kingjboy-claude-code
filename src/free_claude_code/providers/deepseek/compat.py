@@ -89,8 +89,7 @@ def build_deepseek_request_body(
     output_config = request_data.output_config
     context_management = request_data.context_management
 
-    has_tool_history = _has_tool_history_models(messages)
-    has_replayable_tool_thinking = _all_tool_calls_have_replayable_thinking_models(
+    has_tool_history, has_replayable_tool_thinking = _analyze_tool_history_models(
         messages
     )
     unsafe_tool_followup = has_tool_history and not has_replayable_tool_thinking
@@ -245,7 +244,7 @@ def _strip_unsupported_attachment_blocks_models(
                 message_dropped_attachment = True
                 message_changed = True
                 continue
-            if btype == "tool_result":
+            if btype in _USER_TOOL_RESULT_TYPES:
                 inner = get_block_attr(block, "content")
                 if isinstance(inner, list):
                     filtered_inner: list[Any] = []
@@ -330,12 +329,12 @@ def _walk_block_list_for_unsupported(
             raise InvalidRequestError(
                 f"DeepSeek native does not support {btype!r} blocks ({where})."
             )
-        if btype == "tool_result":
+        if btype in _USER_TOOL_RESULT_TYPES:
             inner = get_block_attr(block, "content")
             if inner is not None:
                 _walk_block_list_for_unsupported(
                     inner,
-                    where=f"{where} (tool_result content)",
+                    where=f"{where} ({btype} content)",
                     allow_attachments=allow_attachments,
                 )
 
@@ -420,6 +419,38 @@ def _assistant_has_tool_use_model(message: Message) -> bool:
     return isinstance(content, list) and any(
         get_block_type(block) in _ASSISTANT_TOOL_USE_TYPES for block in content
     )
+
+
+def _analyze_tool_history_models(messages: list[Message]) -> tuple[bool, bool]:
+    has_tool_history = False
+    found_tool_call = False
+    all_tool_calls_replayable = True
+    for message in messages:
+        content = message.content
+        if not isinstance(content, list):
+            continue
+        role = message.role
+        if role == "assistant":
+            has_thinking = isinstance(message.reasoning_content, str)
+            saw_tool_use = False
+            for block in content:
+                btype = get_block_type(block)
+                if btype == "thinking" and isinstance(
+                    get_block_attr(block, "thinking"), str
+                ):
+                    has_thinking = True
+                elif btype in _ASSISTANT_TOOL_USE_TYPES:
+                    has_tool_history = True
+                    found_tool_call = True
+                    if not saw_tool_use and not has_thinking:
+                        all_tool_calls_replayable = False
+                    saw_tool_use = True
+        elif role == "user":
+            if not has_tool_history and any(
+                get_block_type(block) in _USER_TOOL_RESULT_TYPES for block in content
+            ):
+                has_tool_history = True
+    return has_tool_history, (found_tool_call and all_tool_calls_replayable)
 
 
 def _has_tool_history_models(messages: list[Message]) -> bool:

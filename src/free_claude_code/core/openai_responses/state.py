@@ -28,6 +28,7 @@ class ResponsesStore:
         self._path = path
         self._lock = threading.RLock()
         self._records: dict[str, dict[str, Any]] = {}
+        self._record_bytes: dict[str, bytes] = {}
         self._loaded = path is None
 
     def resolve(self, request: OpenAIResponsesRequest) -> OpenAIResponsesRequest:
@@ -72,17 +73,21 @@ class ResponsesStore:
             "instructions": request.instructions,
         }
         # Reject non-JSON state before mutating the in-memory continuation chain.
-        _encode_json_bytes(record)
+        encoded_record = _encode_json_bytes(record)
         with self._lock:
             self._load_locked()
             self._records.pop(response_id, None)
+            self._record_bytes.pop(response_id, None)
             self._records[response_id] = record
+            self._record_bytes[response_id] = encoded_record
             self._evict_oldest_locked()
             self._persist_locked()
 
     def _evict_oldest_locked(self) -> None:
         while len(self._records) > MAX_STORED_RESPONSES:
-            del self._records[next(iter(self._records))]
+            oldest_id = next(iter(self._records))
+            del self._records[oldest_id]
+            self._record_bytes.pop(oldest_id, None)
 
     def _load_locked(self) -> None:
         if self._loaded:
@@ -107,13 +112,21 @@ class ResponsesStore:
             for response_id, record in records.items()
             if isinstance(response_id, str) and _valid_record(record)
         }
+        self._record_bytes = {}
         self._evict_oldest_locked()
 
     def _persist_locked(self) -> None:
         if self._path is None:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        payload = _encode_json_bytes({"records": self._records})
+        entry_parts: list[bytes] = []
+        for response_id, record in self._records.items():
+            encoded = self._record_bytes.get(response_id)
+            if encoded is None:
+                encoded = _encode_json_bytes(record)
+                self._record_bytes[response_id] = encoded
+            entry_parts.append(_encode_json_bytes(response_id) + b":" + encoded)
+        payload = b'{"records":{' + b",".join(entry_parts) + b"}}"
         fd, temporary_name = tempfile.mkstemp(
             dir=self._path.parent,
             prefix=f".{self._path.name}.",

@@ -22,12 +22,26 @@ _sink_id: int | None = None
 
 _THIRD_PARTY_LOGGERS = (
     "httpx",
+    "httpx2",
     "httpcore",
     "httpcore.http11",
     "httpcore.connection",
+    "httpcore2",
+    "h2",
+    "hpack",
+    "openai",
+    "anyio",
     "telegram",
     "telegram.ext",
 )
+
+
+def _stdlib_level(level: str) -> int:
+    normalized = str(level).strip().upper()
+    if normalized == "TRACE":
+        return logging.DEBUG
+    return logging.getLevelNamesMapping().get(normalized, logging.INFO)
+
 
 # Loguru ``logger.bind()`` key used by structured TRACE payloads; ``core/trace.py``
 # uses the identical string constant ``TRACE_PAYLOAD_BINDING``.
@@ -195,13 +209,14 @@ def configure_logging(
 
         intercept = InterceptHandler()
         logging.root.handlers = [intercept]
-        logging.root.setLevel(logging.DEBUG)
+        logging.root.setLevel(_stdlib_level(level))
 
         _set_third_party_levels(verbose_third_party)
     elif log_path != _current_path or level != _current_level:
         if _sink_id is not None:
             logger.remove(_sink_id)
         _sink_id = _add_file_sink(log_path, level)
+        logging.root.setLevel(_stdlib_level(level))
         if verbose_third_party != _current_verbose:
             _set_third_party_levels(verbose_third_party)
     else:

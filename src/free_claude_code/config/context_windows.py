@@ -27,6 +27,7 @@ _PROVIDER_HEADING = re.compile(r"^##\s+(?P<provider>\S+)")
 _TABLE_ROW = re.compile(
     r"^\|\s*`(?P<model>[^`]+)`\s*\|\s*(?P<context>[^|]+?)\s*\|\s*(?P<source>[^|]+?)\s*\|$"
 )
+_CONTEXT_ENTRIES_CACHE: dict[tuple[Path, int, int], dict[str, ContextWindowEntry]] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +70,18 @@ def load_context_window_entries(
     """Parse ``context.md`` into ``{provider/model: ContextWindowEntry}``."""
     target = path or context_windows_path()
     try:
-        text = target.read_text(encoding="utf-8")
+        resolved = target.resolve()
+        stat = resolved.stat()
+    except OSError:
+        return {}
+
+    cache_key = (resolved, stat.st_mtime_ns, stat.st_size)
+    cached = _CONTEXT_ENTRIES_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    try:
+        text = resolved.read_text(encoding="utf-8")
     except OSError:
         return {}
 
@@ -96,7 +108,10 @@ def load_context_window_entries(
             source=source,
         )
         entries[entry.model_ref] = entry
-    return entries
+    if len(_CONTEXT_ENTRIES_CACHE) >= 32:
+        _CONTEXT_ENTRIES_CACHE.clear()
+    _CONTEXT_ENTRIES_CACHE[cache_key] = entries
+    return dict(entries)
 
 
 def load_context_windows(path: Path | None = None) -> dict[str, int]:

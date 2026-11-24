@@ -17,6 +17,7 @@ from loguru import logger
 import free_claude_code.cli.managed as cli_managed
 import free_claude_code.messaging.session as messaging_session
 import free_claude_code.messaging.workflow as messaging_workflow_module
+from free_claude_code.api.web_tools.outbound import aclose_web_tool_clients
 from free_claude_code.application.connected_accounts import (
     ConnectedAccountLoginMode,
     ConnectedAccountPort,
@@ -591,6 +592,11 @@ class ApplicationRuntime:
             if not self._provider_manager_closed:
                 return False
         if self._connected_accounts_closed:
+            await best_effort(
+                "web_tool_clients.close",
+                aclose_web_tool_clients(),
+                log_verbose_errors=verbose,
+            )
             return True
         results = await asyncio.gather(
             *(
@@ -602,7 +608,12 @@ class ApplicationRuntime:
                 for provider_id, manager in self._connected_accounts.items()
             )
         )
-        self._connected_accounts_closed = all(results)
+        web_tools_closed = await best_effort(
+            "web_tool_clients.close",
+            aclose_web_tool_clients(),
+            log_verbose_errors=verbose,
+        )
+        self._connected_accounts_closed = all(results) and web_tools_closed
         return self._connected_accounts_closed
 
     def _connected_account(self, provider_id: str) -> ConnectedAccountPort:

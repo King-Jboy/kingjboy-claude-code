@@ -448,8 +448,8 @@ def prepare_history(
     structured_details: bool = True,
 ) -> JsonObject:
     """Project a fresh wire copy. The caller's native transcript stays intact."""
-    result = deepcopy(dict(body))
     if destination.protocol == "responses":
+        result = dict(body)
         items = result.get("input")
         if isinstance(items, dict):
             items = [items]
@@ -462,7 +462,7 @@ def prepare_history(
                 continue
             record = _record(item, "encrypted_content")
             if record is not None and destination.accepts(record.origin):
-                projected.append(record.native)
+                projected.append(deepcopy(record.native))
                 if not readable_reasoning(record.native):
                     projected.extend(
                         _context_item(text) for text, _ in readable_reasoning(item)
@@ -477,6 +477,7 @@ def prepare_history(
                 projected.append(_context_item(text))
         result["input"] = projected
         return result
+    result = deepcopy(dict(body))
     messages = result.get("messages")
     if not isinstance(messages, list):
         return result

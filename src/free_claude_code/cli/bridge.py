@@ -21,6 +21,7 @@ Every accepted command is appended to ~/.fcc/logs/bridge.log.
 """
 
 import codecs
+import contextlib
 import json
 import os
 import shutil
@@ -35,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, BinaryIO
 
-from free_claude_code.config.paths import bridge_log_path
+from free_claude_code.config.paths import bridge_log_path, managed_env_path
 from free_claude_code.config.settings import Settings
 
 HOST_NAME = "com.free_claude_code.bridge"
@@ -429,6 +430,15 @@ def run(argv: Sequence[str] | None = None) -> int:
     channel = sys.stdout.buffer
     sys.stdout = sys.stderr
 
+    def _env_signature(path: Path) -> tuple[int, int] | None:
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    env_path = managed_env_path()
+    last_env_sig = _env_signature(env_path)
     settings = Settings()
     while True:
         try:
@@ -439,4 +449,9 @@ def run(argv: Sequence[str] | None = None) -> int:
 
         if request is None:
             return 0
+        current_env_sig = _env_signature(env_path)
+        if current_env_sig != last_env_sig:
+            last_env_sig = current_env_sig
+            with contextlib.suppress(Exception):
+                settings = Settings()
         write_message(channel, handle(request, settings))

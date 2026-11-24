@@ -11,6 +11,7 @@ from free_claude_code.api.request_errors import (
 )
 from free_claude_code.api.request_ids import new_request_id
 from free_claude_code.api.response_streams import (
+    FastJSONResponse,
     openai_chat_sse_streaming_response,
     terminal_execution_error_response,
     trace_terminal_execution_error,
@@ -157,7 +158,7 @@ class ChatCompletionsHandler:
                 model=resolved.original_model,
                 completion_id=completion_id,
             )
-            return JSONResponse(content=completion)
+            return FastJSONResponse(content=completion)
         except ApplicationError:
             raise
         except ExecutionFailure as exc:
@@ -172,7 +173,7 @@ class ChatCompletionsHandler:
                 context="CREATE_CHAT_COMPLETION_ERROR",
                 request_id=request_id,
             )
-            return JSONResponse(
+            return FastJSONResponse(
                 status_code=http_status_for_unexpected_api_exception(exc),
                 content=openai_error_payload(
                     message=safe_exception_message(exc),

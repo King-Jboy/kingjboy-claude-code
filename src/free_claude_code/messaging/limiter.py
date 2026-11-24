@@ -1,6 +1,7 @@
 """Runtime-owned queued delivery for one messaging platform."""
 
 import asyncio
+import math
 import re
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -16,6 +17,22 @@ from free_claude_code.core.rate_limit import (
 from .safe_diagnostics import format_exception_for_log
 
 _RETRY_AFTER_TEXT = re.compile(r"retry (?:after|in) (\d+(?:\.\d+)?)", re.IGNORECASE)
+_RATE_LIMIT_ERROR_HINTS = (
+    "flood",
+    "rate limit",
+    "ratelimit",
+    "too many requests",
+    "retry after",
+    "retry in",
+    "429",
+)
+_MAX_PLATFORM_RETRY_DELAY_SECONDS = 300.0
+
+
+def _clamp_retry_delay(seconds: float) -> float | None:
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
+    return min(seconds, _MAX_PLATFORM_RETRY_DELAY_SECONDS)
 
 
 def _platform_retry_delay(error: BaseException) -> float | None:
@@ -28,11 +45,19 @@ def _platform_retry_delay(error: BaseException) -> float | None:
     for attribute in ("retry_after", "seconds"):
         value = getattr(error, attribute, None)
         if isinstance(value, timedelta):
-            return value.total_seconds()
+            return _clamp_retry_delay(value.total_seconds())
         if isinstance(value, int | float) and not isinstance(value, bool):
-            return float(value)
-    match = _RETRY_AFTER_TEXT.search(str(error))
-    return float(match.group(1)) if match else None
+            return _clamp_retry_delay(float(value))
+    message = str(error)
+    lower_message = message.lower()
+    error_type = type(error).__name__.lower()
+    if any(
+        hint in lower_message or hint in error_type for hint in _RATE_LIMIT_ERROR_HINTS
+    ):
+        match = _RETRY_AFTER_TEXT.search(message)
+        if match:
+            return _clamp_retry_delay(float(match.group(1)))
+    return None
 
 
 class MessagingRateLimiter:
@@ -64,7 +89,8 @@ class MessagingRateLimiter:
         self._fire_and_forget_generations: dict[str, int] = {}
         self._active_futures: list[asyncio.Future[Any]] = []
         self._closed = False
-        self._paused_until = 0
+        self._paused_until = 0.0
+        self._next_task_seq = 0
 
         logger.info(
             f"MessagingRateLimiter initialized ({rate_limit} req / {rate_window}s with Task Compaction)"
@@ -98,7 +124,7 @@ class MessagingRateLimiter:
                     self._active_futures = futures
 
                 # Check for manual pause (FloodWait)
-                now = asyncio.get_event_loop().time()
+                now = asyncio.get_running_loop().time()
                 if self._paused_until > now:
                     wait_time = self._paused_until - now
                     logger.warning(
@@ -139,7 +165,7 @@ class MessagingRateLimiter:
                                 wait_secs,
                             )
                             self._paused_until = (
-                                asyncio.get_event_loop().time() + wait_secs
+                                asyncio.get_running_loop().time() + wait_secs
                             )
                         else:
                             logger.error(
@@ -279,7 +305,8 @@ class MessagingRateLimiter:
         self._require_running()
         if dedup_key is None:
             # Unique key to avoid deduplication
-            dedup_key = f"task_{id(func)}_{asyncio.get_running_loop().time()}"
+            self._next_task_seq += 1
+            dedup_key = f"task_{self._next_task_seq}"
 
         future = asyncio.get_running_loop().create_future()
         try:
@@ -299,7 +326,8 @@ class MessagingRateLimiter:
         """Enqueue a task without waiting for the result."""
         self._require_running()
         if dedup_key is None:
-            dedup_key = f"task_{id(func)}_{asyncio.get_running_loop().time()}"
+            self._next_task_seq += 1
+            dedup_key = f"task_{self._next_task_seq}"
 
         generation = self._fire_and_forget_generations.get(dedup_key, 0) + 1
         self._fire_and_forget_generations[dedup_key] = generation

@@ -48,12 +48,18 @@ class _ToolState:
 @dataclass(slots=True)
 class _ReasoningState:
     block_index: int | None = None
-    parts: dict[tuple[str, int], str] = field(default_factory=dict)
+    parts: dict[tuple[str, int], list[str]] = field(default_factory=dict)
     stopped: bool = False
+
+    def part_text(self, key: tuple[str, int]) -> str:
+        chunks = self.parts.get(key)
+        return "".join(chunks) if chunks else ""
 
     def text(self, field_name: str) -> str:
         return "".join(
-            text for (name, _), text in sorted(self.parts.items()) if name == field_name
+            "".join(chunks)
+            for (name, _), chunks in sorted(self.parts.items())
+            if name == field_name
         )
 
 
@@ -160,7 +166,7 @@ class ResponsesProviderStream:
         field_name = "summary" if summary else "content"
         key = (field_name, _integer(data.get(field_name + "_index")) or 0)
         events = self._ensure_reasoning_started(state, completed=False)
-        state.parts[key] = state.parts.get(key, "") + delta
+        state.parts.setdefault(key, []).append(delta)
         assert state.block_index is not None
         events.append(
             self.ledger.content_block_delta(state.block_index, "thinking_delta", delta)
@@ -197,8 +203,8 @@ class ResponsesProviderStream:
             alternate = state.text("summary" if field_name == "content" else "content")
             for index, text in text_parts:
                 key = (field_name, index)
-                previous = state.parts.get(key, "")
-                state.parts[key] = text
+                previous = state.part_text(key)
+                state.parts[key] = [text] if text else []
                 if not text or full_text == alternate:
                     continue
                 remaining = text.removeprefix(previous)
@@ -231,6 +237,10 @@ class ResponsesProviderStream:
                 for state in self._reasoning.values():
                     if state.block_index == thinking_index:
                         state.stopped = True
+            for state in self._reasoning.values():
+                if state.block_index is not None and not state.stopped:
+                    events.append(self.ledger.content_block_stop(state.block_index))
+                    state.stopped = True
             events.append(self.ledger.start_text_block())
         events.append(self.ledger.emit_text_delta(delta))
         self.generated_output = True

@@ -1,8 +1,8 @@
 """Implementations for installed Free Claude Code commands."""
 
+import contextlib
 import errno
 import os
-import shutil
 import sys
 import threading
 import time
@@ -260,8 +260,22 @@ def _migrate_legacy_env_if_missing() -> Path | None:
     for legacy_env in legacy_env_paths():
         if not legacy_env.is_file():
             continue
-        env_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(legacy_env, env_file)
+        env_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            with contextlib.suppress(OSError):
+                env_file.parent.chmod(0o700)
+        data = legacy_env.read_bytes()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        fd = os.open(env_file, flags, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+        except BaseException:
+            env_file.unlink(missing_ok=True)
+            raise
+        if os.name != "nt":
+            with contextlib.suppress(OSError):
+                env_file.chmod(0o600)
         return legacy_env
 
     return None

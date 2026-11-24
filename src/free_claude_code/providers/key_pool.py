@@ -1,5 +1,7 @@
 """Credential rotation for the NIM and OpenRouter OpenAI-compatible paths."""
 
+import asyncio
+import contextlib
 import threading
 import time
 from collections.abc import Callable
@@ -59,6 +61,10 @@ class ApiKeyPool:
             for index, key in enumerate(unique_keys)
         )
         self._by_key = {state.key: state for state in self._keys}
+        self._cooldown_timer: (
+            tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None
+        ) = None
+        self._cooldown_timer_deadline: float = 0.0
 
     def active_key_count(self, now: float | None = None) -> int:
         """Return how many credentials are currently eligible for traffic."""
@@ -111,9 +117,67 @@ class ApiKeyPool:
         """Return the aggregate RPM capacity of currently eligible keys."""
         return max(1, self.active_key_count(now)) * self._rate_limit
 
+    def close(self) -> None:
+        """Cancel any scheduled cooldown wakeup timer."""
+        with self._lock:
+            self._cancel_cooldown_timer()
+
+    def sync_capacity(self) -> None:
+        """Re-publish current eligible key capacity to the admission limiter."""
+        with self._lock:
+            self._notify_capacity(time.monotonic())
+
     def _notify_capacity(self, now: float | None = None) -> None:
+        check_now = time.monotonic() if now is None else now
         if self._on_capacity_change is not None:
-            self._on_capacity_change(self.active_rate_limit(now))
+            self._on_capacity_change(self.active_rate_limit(check_now))
+        self._schedule_next_cooldown_wakeup(check_now)
+
+    def _schedule_next_cooldown_wakeup(self, now: float) -> None:
+        if self._on_capacity_change is None:
+            return
+        next_deadline = min(
+            (
+                state.unavailable_until
+                for state in self._keys
+                if not state.failed and state.unavailable_until > now
+            ),
+            default=0.0,
+        )
+        if next_deadline <= 0.0:
+            self._cancel_cooldown_timer()
+            return
+        if (
+            self._cooldown_timer is not None
+            and not self._cooldown_timer[1].cancelled()
+            and self._cooldown_timer_deadline <= next_deadline
+        ):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._cancel_cooldown_timer()
+        delay = max(0.0, next_deadline - now) + 0.005
+        handle = loop.call_later(delay, self._on_cooldown_timer)
+        self._cooldown_timer = (loop, handle)
+        self._cooldown_timer_deadline = next_deadline
+
+    def _cancel_cooldown_timer(self) -> None:
+        if self._cooldown_timer is None:
+            return
+        loop, handle = self._cooldown_timer
+        self._cooldown_timer = None
+        self._cooldown_timer_deadline = 0.0
+        if not loop.is_closed():
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(handle.cancel)
+
+    def _on_cooldown_timer(self) -> None:
+        with self._lock:
+            self._cooldown_timer = None
+            self._cooldown_timer_deadline = 0.0
+            self._notify_capacity(time.monotonic())
 
     def has_eligible_key(
         self, *, exclude: str | set[str] | frozenset[str] | None = None

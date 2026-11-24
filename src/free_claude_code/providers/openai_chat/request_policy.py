@@ -46,6 +46,7 @@ def build_openai_chat_request_body(
     reasoning: ReasoningPolicy,
     policy: OpenAIChatRequestPolicy,
     postprocessors: Iterable[OpenAIChatPostprocessor] = (),
+    tool_names: OpenAIToolNameCodec | None = None,
 ) -> dict[str, Any]:
     """Build an OpenAI-compatible chat request body from an Anthropic request."""
     logger.debug(
@@ -81,7 +82,12 @@ def build_openai_chat_request_body(
     for postprocess in postprocessors:
         postprocess(body, request_data, reasoning)
 
-    _encode_openai_tool_names(body, OpenAIToolNameCodec.from_request(request_data))
+    _encode_openai_tool_names(
+        body,
+        tool_names
+        if tool_names is not None
+        else OpenAIToolNameCodec.from_request(request_data),
+    )
 
     logger.debug(
         "{}_REQUEST: conversion done model={} msgs={} tools={}",

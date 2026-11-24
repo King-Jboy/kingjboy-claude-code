@@ -288,16 +288,18 @@ class OpenAIAuthManager:
             await self._close_detached_login(*login)
             async with self._state_lock:
                 credentials = self._credentials
-                if credentials is not None:
-                    with suppress(httpx.HTTPError):
-                        await self._client.post(
-                            OPENAI_REVOKE_URL,
-                            json={
-                                "client_id": OPENAI_OAUTH_CLIENT_ID,
-                                "token": credentials.refresh_token,
-                                "token_type_hint": "refresh_token",
-                            },
-                        )
+            if credentials is not None:
+                with suppress(httpx.HTTPError):
+                    await self._client.post(
+                        OPENAI_REVOKE_URL,
+                        json={
+                            "client_id": OPENAI_OAUTH_CLIENT_ID,
+                            "token": credentials.refresh_token,
+                            "token_type_hint": "refresh_token",
+                        },
+                    )
+            async with self._state_lock:
+                self._ensure_open()
                 await self._delete_credentials()
                 self._credentials = None
                 self._revision += 1
@@ -334,7 +336,14 @@ class OpenAIAuthManager:
         async with self._state_lock:
             self._ensure_open()
             current = self._credentials
-            reloaded = await asyncio.to_thread(self._read_credentials)
+            try:
+                reloaded = await asyncio.to_thread(self._read_credentials)
+            except ValueError as exc:
+                self._credentials = None
+                self._last_error = (
+                    "OpenAI credentials are unreadable. Reconnect the account in Admin."
+                )
+                raise OpenAIReconnectRequired(self._last_error) from exc
             if reloaded is not None and (
                 current is None or reloaded.access_token != current.access_token
             ):
@@ -421,13 +430,19 @@ class OpenAIAuthManager:
                 "Timed out waiting for another FCC process to refresh OpenAI."
             )
         try:
-            reloaded = await asyncio.to_thread(self._read_credentials)
-            if reloaded is not None and (
-                reloaded != current
-                and reloaded.expires_at > int(time.time()) + REFRESH_EARLY_SECONDS
-            ):
+            try:
+                reloaded = await asyncio.to_thread(self._read_credentials)
+            except ValueError as exc:
+                self._credentials = None
+                self._last_error = (
+                    "OpenAI credentials are unreadable. Reconnect the account in Admin."
+                )
+                raise OpenAIReconnectRequired(self._last_error) from exc
+            if reloaded is not None and reloaded != current:
                 self._credentials = reloaded
-                return reloaded
+                current = reloaded
+                if reloaded.expires_at > int(time.time()) + REFRESH_EARLY_SECONDS:
+                    return reloaded
             response = await self._client.post(
                 OPENAI_TOKEN_URL,
                 json={
@@ -452,7 +467,7 @@ class OpenAIAuthManager:
             self._revision += 1
             return refreshed
         finally:
-            await asyncio.to_thread(file_lock.release)
+            await asyncio.shield(asyncio.to_thread(file_lock.release))
 
     async def _write_credentials(self, credentials: _Credentials) -> None:
         file_lock = InterprocessFileLock(self._lock_path)
@@ -462,7 +477,7 @@ class OpenAIAuthManager:
         try:
             await asyncio.to_thread(self._write_credentials_unlocked, credentials)
         finally:
-            await asyncio.to_thread(file_lock.release)
+            await asyncio.shield(asyncio.to_thread(file_lock.release))
 
     def _write_credentials_unlocked(self, credentials: _Credentials) -> None:
         path = self._credential_path

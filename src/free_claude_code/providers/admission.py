@@ -3,6 +3,7 @@
 import asyncio
 import random
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
@@ -111,6 +112,43 @@ class _RecoveryEpisode:
     waiters: set[ProviderRetrySession] = field(default_factory=set)
     probe_active: bool = False
     terminal_until: float | None = None
+
+
+class _ConcurrencyBulkhead:
+    """Async concurrency limiter supporting safe non-blocking try_acquire()."""
+
+    def __init__(self, limit: int) -> None:
+        self._available = limit
+        self._waiters: deque[asyncio.Future[None]] = deque()
+
+    def try_acquire(self) -> bool:
+        if self._available <= 0:
+            return False
+        self._available -= 1
+        return True
+
+    async def acquire(self) -> None:
+        while self._available <= 0:
+            fut = asyncio.get_running_loop().create_future()
+            self._waiters.append(fut)
+            try:
+                await fut
+            except BaseException:
+                if fut.done() and not fut.cancelled():
+                    self._wake_next()
+                raise
+        self._available -= 1
+
+    def release(self) -> None:
+        self._available += 1
+        self._wake_next()
+
+    def _wake_next(self) -> None:
+        while self._waiters:
+            fut = self._waiters.popleft()
+            if not fut.done():
+                fut.set_result(None)
+                return
 
 
 class ProviderAttempt:
@@ -275,7 +313,7 @@ class ProviderAdmissionController:
         self._proactive_limiter = StrictSlidingWindowLimiter(
             rate_limit, float(rate_window)
         )
-        self._concurrency_sem = asyncio.Semaphore(max_concurrency)
+        self._concurrency_bulkhead = _ConcurrencyBulkhead(max_concurrency)
         self._condition = asyncio.Condition()
         self._episodes: dict[str | None, _RecoveryEpisode] = {}
         self._next_generation = 1
@@ -319,16 +357,16 @@ class ProviderAdmissionController:
 
     def try_acquire_hedge_slot(self) -> bool:
         """Acquire a non-blocking rate and concurrency slot for a speculative hedge."""
-        if self._concurrency_sem.locked():
+        if not self._concurrency_bulkhead.try_acquire():
             return False
         if not self._proactive_limiter.try_acquire():
+            self._concurrency_bulkhead.release()
             return False
-        self._concurrency_sem._value -= 1
         return True
 
     def release_hedge_slot(self) -> None:
         """Release the extra concurrency slot held while two hedged opens race."""
-        self._concurrency_sem.release()
+        self._concurrency_bulkhead.release()
 
     def release_unsent_hedge_slot(self) -> None:
         """Return a hedge slot that reserved a rate token and then found no key."""
@@ -363,10 +401,10 @@ class ProviderAdmissionController:
                 if not admitted:
                     await self._abandon_probe_permit(session, permit)
                     continue
-                await self._concurrency_sem.acquire()
+                await self._concurrency_bulkhead.acquire()
                 slot_acquired = True
                 if not self._permit_is_current(session, permit):
-                    self._concurrency_sem.release()
+                    self._concurrency_bulkhead.release()
                     slot_acquired = False
                     await self._abandon_probe_permit(session, permit)
                     continue
@@ -374,7 +412,7 @@ class ProviderAdmissionController:
                 return ProviderAttempt(self, session, permit)
             except BaseException:
                 if slot_acquired:
-                    self._concurrency_sem.release()
+                    self._concurrency_bulkhead.release()
                 await self._abandon_probe_permit(session, permit)
                 raise
 
@@ -805,6 +843,16 @@ class ProviderAdmissionController:
         )
         self._next_generation += 1
         model_key = leader.model if leader is not None else scope_model
+        now = time.monotonic()
+        expired_keys = [
+            key
+            for key, existing in self._episodes.items()
+            if key != model_key
+            and existing.terminal_until is not None
+            and now >= existing.terminal_until
+        ]
+        for key in expired_keys:
+            self._episodes.pop(key, None)
         self._episodes[model_key] = episode
         trace_event(
             stage="provider",
@@ -884,7 +932,7 @@ class ProviderAdmissionController:
             self._condition.notify_all()
 
     def _release_concurrency(self) -> None:
-        self._concurrency_sem.release()
+        self._concurrency_bulkhead.release()
 
     def _retry_delay(self, error: Exception, attempt: int) -> float:
         exponent = max(0, attempt - 1)

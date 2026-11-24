@@ -5,7 +5,6 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from loguru import logger
 
 from free_claude_code.application.errors import ApplicationError
@@ -31,13 +30,18 @@ from .request_ids import (
     get_request_id,
 )
 from .request_lifetime import InferenceRequestLifetimeMiddleware
+from .response_streams import FastJSONResponse
 from .routes import router
 from .validation_log import summarize_request_validation_body
 
 
 def create_app(services: ApiServices) -> FastAPI:
     """Create the HTTP adapter around explicitly supplied runtime services."""
-    app = FastAPI(title="Claude Code Proxy", version=package_version())
+    app = FastAPI(
+        title="Claude Code Proxy",
+        version=package_version(),
+        default_response_class=FastJSONResponse,
+    )
     app.state.services = services
     app.add_middleware(AdminNoStoreMiddleware)
     app.add_middleware(InferenceRequestLifetimeMiddleware)
@@ -113,7 +117,7 @@ def create_app(services: ApiServices) -> FastAPI:
                     message=message,
                     request_id=request_id,
                 )
-            response = JSONResponse(status_code=500, content=content)
+            response = FastJSONResponse(status_code=500, content=content)
         attach_admin_no_store(response, path=request.url.path)
         attach_request_id_headers(
             response,

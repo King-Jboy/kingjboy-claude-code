@@ -13,6 +13,7 @@ from free_claude_code.api.request_errors import (
 )
 from free_claude_code.api.request_ids import new_request_id
 from free_claude_code.api.response_streams import (
+    FastJSONResponse,
     openai_responses_sse_streaming_response,
     terminal_execution_error_response,
     trace_terminal_execution_error,
@@ -138,7 +139,7 @@ class ResponsesHandler:
                 exc,
                 context="CREATE_RESPONSE_ERROR",
             )
-            return JSONResponse(
+            return FastJSONResponse(
                 status_code=http_status_for_unexpected_api_exception(exc),
                 content=self._responses_adapter.error_payload(
                     message=safe_exception_message(exc),

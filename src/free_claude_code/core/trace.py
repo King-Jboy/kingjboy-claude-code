@@ -179,7 +179,33 @@ def extract_claude_session_id_from_headers(headers: Mapping[str, str]) -> str | 
     return None
 
 
-async def traced_async_stream(
+def traced_async_stream(
+    agen: AsyncIterator[str],
+    *,
+    stage: str,
+    source: str,
+    complete_event: str,
+    interrupted_event: str,
+    chunk_event: str | None = None,
+    chunk_interval: int = 250,
+    extra: Mapping[str, Any] | None = None,
+) -> AsyncIterator[str]:
+    """Emit TRACE rows when a text stream completes, fails, cancels, or periodically."""
+    if not _debug_trace_enabled() and trace_event is _DEFAULT_TRACE_EVENT:
+        return agen
+    return _traced_async_stream_impl(
+        agen,
+        stage=stage,
+        source=source,
+        complete_event=complete_event,
+        interrupted_event=interrupted_event,
+        chunk_event=chunk_event,
+        chunk_interval=chunk_interval,
+        extra=extra,
+    )
+
+
+async def _traced_async_stream_impl(
     agen: AsyncIterator[str],
     *,
     stage: str,
@@ -190,20 +216,6 @@ async def traced_async_stream(
     chunk_interval: int = 250,
     extra: Mapping[str, Any] | None = None,
 ) -> AsyncGenerator[str]:
-    """Emit TRACE rows when a text stream completes, fails, cancels, or periodically."""
-    if not _debug_trace_enabled() and trace_event is _DEFAULT_TRACE_EVENT:
-        try:
-            async for chunk in agen:
-                yield chunk
-        finally:
-            await close_stream_input(
-                agen,
-                owner="traced_async_stream",
-                source=source,
-                preserved_error=sys.exception(),
-            )
-        return
-
     common = dict(extra or {})
     count = 0
     nbytes = 0
