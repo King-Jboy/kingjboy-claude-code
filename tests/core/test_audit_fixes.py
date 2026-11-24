@@ -1,7 +1,5 @@
 """Regression tests for concurrency, persistence, parser, and hot-path fixes."""
 
-from __future__ import annotations
-
 import asyncio
 import time
 from collections.abc import AsyncIterator

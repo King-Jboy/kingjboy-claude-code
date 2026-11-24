@@ -9,7 +9,7 @@ INFO log level excludes these detailed request traces.
 import asyncio
 import sys
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 
@@ -189,10 +189,10 @@ def traced_async_stream(
     chunk_event: str | None = None,
     chunk_interval: int = 250,
     extra: Mapping[str, Any] | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str]:
     """Emit TRACE rows when a text stream completes, fails, cancels, or periodically."""
     if not _debug_trace_enabled() and trace_event is _DEFAULT_TRACE_EVENT:
-        return agen
+        return cast(AsyncGenerator[str], agen)
     return _traced_async_stream_impl(
         agen,
         stage=stage,
