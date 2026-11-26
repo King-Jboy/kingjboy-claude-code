@@ -75,7 +75,7 @@ class LMStudioProvider(OpenAIChatProvider):
             profile=_PROFILE,
             admission=admission,
         )
-        self._loaded_context_cache: tuple[float, int | None] = (0.0, None)
+        self._loaded_context_cache: tuple[float | None, int | None] = (None, None)
         self._context_refresh: asyncio.Task[None] | None = None
         self._context_client: httpx.AsyncClient | None = None
 
@@ -116,7 +116,9 @@ class LMStudioProvider(OpenAIChatProvider):
         refreshed in the background and this call never waits on the network.
         """
         cached_at, cached_value = self._loaded_context_cache
-        stale = time.monotonic() - cached_at >= self._CONTEXT_CACHE_TTL_S
+        stale = cached_at is None or (
+            time.monotonic() - cached_at >= self._CONTEXT_CACHE_TTL_S
+        )
         if stale and (self._context_refresh is None or self._context_refresh.done()):
             self._context_refresh = asyncio.get_running_loop().create_task(
                 self._refresh_loaded_context()

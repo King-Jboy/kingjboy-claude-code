@@ -310,9 +310,11 @@ def _keepalive_wait_step(quiet: float, quiet_after: float, interval: float) -> f
 async def _discard_pending_task(task: asyncio.Task[object]) -> None:
     """Cancel and drain a task the caller stopped awaiting."""
     if task.done():
+        if not task.cancelled():
+            task.exception()
         return
     task.cancel()
-    with suppress(asyncio.CancelledError):
+    with suppress(asyncio.CancelledError, Exception):
         await task
 
 
@@ -392,12 +394,14 @@ async def iter_with_keepalive[ItemT, SentinelT](
 
     reader_task: asyncio.Task[None] | None = None
     watchdog_handle: asyncio.TimerHandle | None = None
+    watchdog_scheduled_at = 0.0
     deadline = 0.0
     quiet = 0.0
 
     def _on_watchdog() -> None:
-        nonlocal watchdog_handle
+        nonlocal watchdog_handle, watchdog_scheduled_at
         watchdog_handle = None
+        watchdog_scheduled_at = 0.0
         now = loop.time()
         waiter = consumer_waiter
         if waiter is None or waiter.done():
@@ -405,12 +409,21 @@ async def iter_with_keepalive[ItemT, SentinelT](
         if now >= deadline - 1e-6:
             waiter.set_result(_WATCHDOG_FIRED)
             return
+        watchdog_scheduled_at = deadline
         watchdog_handle = loop.call_at(deadline, _on_watchdog)
 
     def _ensure_watchdog(target_deadline: float) -> None:
-        nonlocal watchdog_handle, deadline
+        nonlocal watchdog_handle, watchdog_scheduled_at, deadline
         deadline = target_deadline
+        if (
+            watchdog_handle is not None
+            and target_deadline < watchdog_scheduled_at - 1e-6
+        ):
+            watchdog_handle.cancel()
+            watchdog_handle = None
+            watchdog_scheduled_at = 0.0
         if watchdog_handle is None:
+            watchdog_scheduled_at = deadline
             watchdog_handle = loop.call_at(deadline, _on_watchdog)
 
     try:

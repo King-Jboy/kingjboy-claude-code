@@ -53,15 +53,25 @@ class ResponsesOutputLedger:
         usage = data.get("usage")
         if not isinstance(usage, dict):
             return
-        if isinstance(usage.get("input_tokens"), int):
-            self._input_tokens = usage["input_tokens"]
-        if isinstance(usage.get("output_tokens"), int):
-            self._output_tokens = usage["output_tokens"]
+        input_tokens = usage.get("input_tokens")
+        if isinstance(input_tokens, int) and not isinstance(input_tokens, bool):
+            self._input_tokens = input_tokens
+        output_tokens = usage.get("output_tokens")
+        if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
+            self._output_tokens = output_tokens
         cache_read = usage.get("cache_read_input_tokens")
-        if isinstance(cache_read, int) and cache_read >= 0:
+        if (
+            isinstance(cache_read, int)
+            and not isinstance(cache_read, bool)
+            and cache_read >= 0
+        ):
             self._cached_tokens = cache_read
         cache_creation = usage.get("cache_creation_input_tokens")
-        if isinstance(cache_creation, int) and cache_creation >= 0:
+        if (
+            isinstance(cache_creation, int)
+            and not isinstance(cache_creation, bool)
+            and cache_creation >= 0
+        ):
             self._cache_creation_tokens = cache_creation
 
     def add_reasoning_text(self, text: str) -> None:

@@ -24,6 +24,15 @@ from free_claude_code.core.anthropic.streaming import (
 from free_claude_code.core.async_iterators import try_close_async_iterator
 from free_claude_code.core.diagnostics import safe_exception_message
 from free_claude_code.core.failures import find_execution_failure
+from free_claude_code.core.openai_chat_wire import (
+    OPENAI_CHAT_SSE_DONE,
+    format_chat_completion_sse_chunk,
+    format_chat_completion_sse_error,
+)
+from free_claude_code.core.openai_responses import (
+    openai_error_payload,
+    openai_error_type_for_failure,
+)
 from free_claude_code.core.trace import close_stream_input, trace_event
 
 TERMINAL_EXECUTION_ERROR_HEADERS = {"x-should-retry": "false"}
@@ -411,17 +420,62 @@ async def openai_responses_sse_streaming_response(
     )
 
 
+def _openai_chat_terminal_frame(exc: BaseException) -> str:
+    failure = find_execution_failure(exc)
+    if failure is not None:
+        return format_chat_completion_sse_error(failure) + OPENAI_CHAT_SSE_DONE
+    return (
+        format_chat_completion_sse_chunk(
+            openai_error_payload(
+                message=safe_exception_message(exc),
+                error_type="api_error",
+            )
+        )
+        + OPENAI_CHAT_SSE_DONE
+    )
+
+
+def _trace_openai_chat_terminal_failure(
+    exc: BaseException,
+    *,
+    request_id: str,
+) -> None:
+    failure = find_execution_failure(exc)
+    trace_terminal_execution_error(
+        wire_api="chat_completions",
+        request_id=request_id,
+        status_code=failure.status_code if failure is not None else 500,
+        error_type=(
+            openai_error_type_for_failure(failure)
+            if failure is not None
+            else "api_error"
+        ),
+        error=exc,
+    )
+
+
 async def openai_chat_sse_streaming_response(
     body: AsyncIterator[str],
     *,
     headers: Mapping[str, str],
     pre_start_error_response: PreStartErrorResponse,
+    request_id: str | None = None,
 ) -> Response:
     """Return a streaming response for OpenAI Chat Completions SSE."""
+    observer: TerminalFailureObserver | None = (
+        (
+            lambda exc: _trace_openai_chat_terminal_failure(
+                exc,
+                request_id=request_id,
+            )
+        )
+        if request_id is not None
+        else None
+    )
     return await _first_chunk_streaming_response(
         body,
         headers=headers,
         pre_start_error_response=pre_start_error_response,
-        terminal_frame=None,
-        terminal_failure_observer=None,
+        terminal_frame=_openai_chat_terminal_frame,
+        terminal_failure_observer=observer,
     )

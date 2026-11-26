@@ -124,3 +124,18 @@ def test_output_token_estimate_uses_encoder_when_available() -> None:
 
     with patch("free_claude_code.core.anthropic.streaming.ledger.ENCODER", Encoder()):
         assert ledger.estimate_output_tokens() == 8
+
+
+def test_output_token_estimate_allows_special_token_literals() -> None:
+    ledger = AnthropicStreamLedger("msg_special", "model")
+    ledger.start_thinking_block()
+    ledger.emit_thinking_delta("<|endoftext|>")
+    ledger.stop_thinking_block()
+    ledger.start_text_block()
+    ledger.emit_text_delta("literal <|fim_prefix|> token")
+    ledger.stop_text_block()
+    ledger.start_tool_block(0, "toolu_1", "Read")
+    ledger.emit_tool_delta(0, '{"text":"<|endoftext|>"}')
+
+    estimate = ledger.estimate_output_tokens()
+    assert estimate > 0

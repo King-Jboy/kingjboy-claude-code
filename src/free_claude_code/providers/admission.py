@@ -10,6 +10,7 @@ from typing import TypeVar
 
 from loguru import logger
 
+from free_claude_code.core.async_tasks import wait_owned
 from free_claude_code.core.rate_limit import StrictSlidingWindowLimiter
 from free_claude_code.core.trace import trace_event
 from free_claude_code.providers.failure_policy import (
@@ -413,7 +414,10 @@ class ProviderAdmissionController:
             except BaseException:
                 if slot_acquired:
                     self._concurrency_bulkhead.release()
-                await self._abandon_probe_permit(session, permit)
+                if permit.probe:
+                    await wait_owned(
+                        asyncio.create_task(self._abandon_probe_permit(session, permit))
+                    )
                 raise
 
     async def run_with_retry(
@@ -455,7 +459,9 @@ class ProviderAdmissionController:
             # lock acquisition itself is not). Left alone, a cancelled leader
             # strands the episode headless and every later caller parks on a
             # condition nothing will ever notify.
-            await self._abandon_orphaned_leadership(session)
+            await wait_owned(
+                asyncio.create_task(self._abandon_orphaned_leadership(session))
+            )
             raise
 
     async def _wait_for_gate_loop(self, session: ProviderRetrySession) -> _GatePermit:
@@ -533,7 +539,11 @@ class ProviderAdmissionController:
                         episode.probe_active = True
                         return self._probe_permit(session, episode)
             except asyncio.CancelledError:
-                await self._abandon_waiting_leader(session, claimed_generation)
+                await wait_owned(
+                    asyncio.create_task(
+                        self._abandon_waiting_leader(session, claimed_generation)
+                    )
+                )
                 raise
 
     def _probe_permit(

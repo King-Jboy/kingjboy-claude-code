@@ -42,15 +42,16 @@ async def _finish_transition[T](awaitable: Coroutine[Any, Any, T]) -> T:
     """Deliver a transition result even if its caller is cancelled mid-commit."""
     task = asyncio.create_task(awaitable)
     current = asyncio.current_task()
-    while True:
+    while not task.done():
         try:
-            return await asyncio.shield(task)
+            await asyncio.shield(task)
         except asyncio.CancelledError:
-            if task.done():
-                return task.result()
-            if current is not None:
+            if current is not None and current.cancelling():
                 while current.cancelling():
                     current.uncancel()
+        except Exception:
+            break
+    return task.result()
 
 
 async def _drain_cancelled_tasks(tasks: list[asyncio.Task[None]]) -> None:

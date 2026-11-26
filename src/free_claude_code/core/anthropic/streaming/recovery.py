@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import jsonschema_rs
+import orjson
 from loguru import logger
+
+from free_claude_code.core.json_utils import fast_json_dumps
 
 from ..models import MessagesRequest
 from ..tool_schema import compile_json_schema_validator
@@ -72,9 +75,12 @@ def parse_complete_tool_input(
     raw_json: str, tool_name: str, schemas: dict[str, ToolSchema]
 ) -> dict[str, Any] | None:
     try:
-        parsed = json.loads(raw_json)
-    except json.JSONDecodeError:
-        return None
+        parsed = orjson.loads(raw_json)
+    except orjson.JSONDecodeError, ValueError:
+        try:
+            parsed = json.loads(raw_json)
+        except json.JSONDecodeError, ValueError:
+            return None
     if not isinstance(parsed, dict):
         return None
     if not validate_tool_input(tool_name, parsed, schemas):
@@ -223,7 +229,7 @@ def _repair_suffix_candidates(prefix: str, candidate: str) -> list[str]:
 def _tool_repair_prompt(
     *, tool_name: str, prefix: str, input_schema: dict[str, Any] | None
 ) -> str:
-    schema_text = json.dumps(input_schema or {"type": "object"}, separators=(",", ":"))
+    schema_text = fast_json_dumps(input_schema or {"type": "object"})
     return (
         "A streamed tool call was interrupted while writing JSON arguments.\n"
         f"Tool name: {tool_name}\n"

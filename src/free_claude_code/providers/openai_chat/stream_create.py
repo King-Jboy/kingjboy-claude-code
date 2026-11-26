@@ -423,6 +423,9 @@ class FastOrjsonChatStream[ResponseT](AsyncStream[ResponseT]):
             await self.response.aclose()
 
 
+_FAST_CHAT_STREAM_CLS = FastOrjsonChatStream[ChatCompletionChunk]
+
+
 async def create_chat_stream(
     client: Any,
     body: Mapping[str, Any],
@@ -439,7 +442,7 @@ async def create_chat_stream(
         content=content,
         options={"security": {"bearer_auth": True}},
         stream=True,
-        stream_cls=FastOrjsonChatStream[ChatCompletionChunk],
+        stream_cls=_FAST_CHAT_STREAM_CLS,
     )
     if raw_chunks and isinstance(stream, FastOrjsonChatStream):
         stream._raw_chunks = True

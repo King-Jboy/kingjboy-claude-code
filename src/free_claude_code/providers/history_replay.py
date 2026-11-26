@@ -41,15 +41,71 @@ def validate_history(body: Mapping[str, Any]) -> None:
         raise InvalidRequestError(str(error)) from error
 
 
+def _iter_block_replay_values(block: Any) -> Iterator[str]:
+    if isinstance(block, Mapping):
+        for key in ("encrypted_content", "signature", "data"):
+            value = block.get(key)
+            if isinstance(value, str) and is_replay(value):
+                yield value
+        return
+    extra = getattr(block, "model_extra", None)
+    for key in ("encrypted_content", "signature", "data"):
+        value = getattr(block, key, None)
+        if value is None and isinstance(extra, Mapping):
+            value = extra.get(key)
+        if isinstance(value, str) and is_replay(value):
+            yield value
+
+
 def normalize_messages_history(request: MessagesRequest) -> MessagesRequest:
     """Resolve persisted associations before any lossy protocol conversion."""
-    validate_history(request.model_dump(mode="json"))
-    messages = []
+    extra = getattr(request, "model_extra", None)
+    if isinstance(extra, Mapping) and "input" in extra:
+        validate_history({"input": extra["input"]})
+
+    messages: list[Message] | None = None
     try:
-        for message in request.messages:
-            if message.role != "assistant" or isinstance(message.content, str):
-                messages.append(message)
+        for index, message in enumerate(request.messages):
+            if message.role != "assistant":
+                if messages is not None:
+                    messages.append(message)
                 continue
+
+            msg_extra = getattr(message, "model_extra", None)
+            if isinstance(msg_extra, Mapping):
+                details = msg_extra.get("reasoning_details")
+                if isinstance(details, list):
+                    for detail in details:
+                        if isinstance(detail, Mapping):
+                            for value in _iter_block_replay_values(detail):
+                                decode_replay(value)
+
+            if isinstance(message.content, str):
+                if messages is not None:
+                    messages.append(message)
+                continue
+
+            has_associated = False
+            for block in message.content:
+                block_type = (
+                    block.get("type")
+                    if isinstance(block, Mapping)
+                    else getattr(block, "type", None)
+                )
+                if block_type not in {"thinking", "redacted_thinking"}:
+                    continue
+                for value in _iter_block_replay_values(block):
+                    decode_replay(value)
+                    if value.startswith("fcc:history:v2:"):
+                        has_associated = True
+
+            if not has_associated:
+                if messages is not None:
+                    messages.append(message)
+                continue
+
+            if messages is None:
+                messages = list(request.messages[:index])
             body = message.model_dump(mode="json")
             body["content"] = resolve_messages_replay(
                 cast(list[JsonValue], body["content"])
@@ -57,6 +113,9 @@ def normalize_messages_history(request: MessagesRequest) -> MessagesRequest:
             messages.append(Message.model_validate(body))
     except HistoryReplayError as error:
         raise InvalidRequestError(str(error)) from error
+
+    if messages is None:
+        return request
     return request.model_copy(update={"messages": messages})
 
 
@@ -212,9 +271,16 @@ def history_retry_body(
                 if protocol == "chat":
                     assistant = result["messages"][path[1]]
                     if context:
-                        assistant["content"] = (
-                            (assistant.get("content") or "") + "\n\n" + context
-                        )
+                        existing_content = assistant.get("content")
+                        if isinstance(existing_content, list):
+                            existing_content.append({"type": "text", "text": context})
+                        elif (
+                            isinstance(existing_content, str)
+                            and existing_content.strip()
+                        ):
+                            assistant["content"] = f"{existing_content}\n\n{context}"
+                        else:
+                            assistant["content"] = context
                     if not parent:
                         assistant.pop("reasoning_details", None)
         return result

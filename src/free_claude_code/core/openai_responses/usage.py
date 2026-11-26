@@ -18,15 +18,9 @@ _encoder_lock = threading.Lock()
 
 
 def _load_encoder() -> _TokenEncoder | None:
-    try:
-        import tiktoken
-    except ImportError:
-        return None
+    from free_claude_code.core.anthropic.tokens import get_tiktoken_encoder
 
-    try:
-        return tiktoken.get_encoding("cl100k_base")
-    except ValueError:
-        return None
+    return get_tiktoken_encoder()
 
 
 def _get_encoder() -> _TokenEncoder | None:

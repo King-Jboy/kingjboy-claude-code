@@ -138,6 +138,7 @@ class ResponsesHandler:
                 self._settings,
                 exc,
                 context="CREATE_RESPONSE_ERROR",
+                request_id=request_id,
             )
             return FastJSONResponse(
                 status_code=http_status_for_unexpected_api_exception(exc),

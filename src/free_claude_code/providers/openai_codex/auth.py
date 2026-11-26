@@ -509,7 +509,7 @@ class OpenAIAuthManager:
         try:
             await asyncio.to_thread(self._delete_credentials_unlocked)
         finally:
-            await asyncio.to_thread(file_lock.release)
+            await asyncio.shield(asyncio.to_thread(file_lock.release))
 
     def _delete_credentials_unlocked(self) -> None:
         self._credential_path.unlink(missing_ok=True)

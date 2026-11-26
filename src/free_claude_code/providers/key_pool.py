@@ -65,6 +65,7 @@ class ApiKeyPool:
             tuple[asyncio.AbstractEventLoop, asyncio.TimerHandle] | None
         ) = None
         self._cooldown_timer_deadline: float = 0.0
+        self._last_published_rate: int | None = None
 
     def active_key_count(self, now: float | None = None) -> int:
         """Return how many credentials are currently eligible for traffic."""
@@ -125,12 +126,16 @@ class ApiKeyPool:
     def sync_capacity(self) -> None:
         """Re-publish current eligible key capacity to the admission limiter."""
         with self._lock:
+            self._last_published_rate = None
             self._notify_capacity(time.monotonic())
 
     def _notify_capacity(self, now: float | None = None) -> None:
         check_now = time.monotonic() if now is None else now
         if self._on_capacity_change is not None:
-            self._on_capacity_change(self.active_rate_limit(check_now))
+            rate = self.active_rate_limit(check_now)
+            if rate != self._last_published_rate:
+                self._last_published_rate = rate
+                self._on_capacity_change(rate)
         self._schedule_next_cooldown_wakeup(check_now)
 
     def _schedule_next_cooldown_wakeup(self, now: float) -> None:

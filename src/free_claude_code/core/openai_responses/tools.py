@@ -1,11 +1,12 @@
 """Tool conversion helpers for the OpenAI Responses adapter."""
 
 import hashlib
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
+
+import orjson
 
 from free_claude_code.core.json_utils import fast_json_dumps
 
@@ -137,13 +138,13 @@ def responses_tool_name_to_anthropic_name(
     return f"{combined[:prefix_len]}_{digest}"
 
 
-def responses_tool_identity_from_anthropic_name(
-    tools: list[dict[str, Any]] | None, anthropic_name: str
-) -> ResponsesToolIdentity:
-    """Return the Responses namespace/name represented by an Anthropic tool name."""
-
+def build_responses_tool_identity_map(
+    tools: list[dict[str, Any]] | None,
+) -> dict[str, ResponsesToolIdentity]:
+    """Build an O(1) lookup map from Anthropic tool name to ResponsesToolIdentity."""
+    mapping: dict[str, ResponsesToolIdentity] = {}
     if tools is None:
-        return ResponsesToolIdentity(kind="function", name=anthropic_name)
+        return mapping
     for tool in tools:
         if not isinstance(tool, dict):
             continue
@@ -151,17 +152,19 @@ def responses_tool_identity_from_anthropic_name(
         if tool_type == "function":
             source = tool.get("function")
             function = source if isinstance(source, dict) else tool
-            if (name := optional_str(function.get("name"))) and (
-                responses_tool_name_to_anthropic_name(name) == anthropic_name
-            ):
-                return ResponsesToolIdentity(kind="function", name=name)
+            if name := optional_str(function.get("name")):
+                mapping.setdefault(
+                    responses_tool_name_to_anthropic_name(name),
+                    ResponsesToolIdentity(kind="function", name=name),
+                )
             continue
         if tool_type == "custom":
             source = _custom_source(tool)
-            if (name := optional_str(source.get("name"))) and (
-                responses_tool_name_to_anthropic_name(name) == anthropic_name
-            ):
-                return ResponsesToolIdentity(kind="custom", name=name)
+            if name := optional_str(source.get("name")):
+                mapping.setdefault(
+                    responses_tool_name_to_anthropic_name(name),
+                    ResponsesToolIdentity(kind="custom", name=name),
+                )
             continue
         if tool_type != "namespace":
             continue
@@ -176,24 +179,40 @@ def responses_tool_identity_from_anthropic_name(
             if nested_tool_type == "function":
                 source = nested_tool.get("function")
                 function = source if isinstance(source, dict) else nested_tool
-                if (name := optional_str(function.get("name"))) and (
-                    responses_tool_name_to_anthropic_name(name, namespace=namespace)
-                    == anthropic_name
-                ):
-                    return ResponsesToolIdentity(
-                        kind="function", name=name, namespace=namespace
+                if name := optional_str(function.get("name")):
+                    mapping.setdefault(
+                        responses_tool_name_to_anthropic_name(
+                            name, namespace=namespace
+                        ),
+                        ResponsesToolIdentity(
+                            kind="function", name=name, namespace=namespace
+                        ),
                     )
                 continue
             if nested_tool_type == "custom":
                 source = _custom_source(nested_tool)
-                if (name := optional_str(source.get("name"))) and (
-                    responses_tool_name_to_anthropic_name(name, namespace=namespace)
-                    == anthropic_name
-                ):
-                    return ResponsesToolIdentity(
-                        kind="custom", name=name, namespace=namespace
+                if name := optional_str(source.get("name")):
+                    mapping.setdefault(
+                        responses_tool_name_to_anthropic_name(
+                            name, namespace=namespace
+                        ),
+                        ResponsesToolIdentity(
+                            kind="custom", name=name, namespace=namespace
+                        ),
                     )
-    return ResponsesToolIdentity(kind="function", name=anthropic_name)
+    return mapping
+
+
+def responses_tool_identity_from_anthropic_name(
+    tools: list[dict[str, Any]] | None, anthropic_name: str
+) -> ResponsesToolIdentity:
+    """Return the Responses namespace/name represented by an Anthropic tool name."""
+
+    if tools is None:
+        return ResponsesToolIdentity(kind="function", name=anthropic_name)
+    return build_responses_tool_identity_map(tools).get(
+        anthropic_name, ResponsesToolIdentity(kind="function", name=anthropic_name)
+    )
 
 
 def parse_arguments(value: Any) -> dict[str, Any]:
@@ -206,8 +225,8 @@ def parse_arguments(value: Any) -> dict[str, Any]:
     if value.strip() == "null":
         return {}
     try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError as exc:
+        parsed = orjson.loads(value)
+    except orjson.JSONDecodeError as exc:
         raise ResponsesConversionError(
             f"Responses function_call arguments are invalid JSON: {exc.msg}"
         ) from exc
@@ -253,8 +272,8 @@ def custom_tool_input_text_from_arguments(arguments: str) -> str:
     if not arguments:
         return ""
     try:
-        parsed = json.loads(arguments)
-    except json.JSONDecodeError:
+        parsed = orjson.loads(arguments)
+    except orjson.JSONDecodeError:
         return arguments
     return custom_tool_input_text_from_anthropic(parsed)
 
@@ -396,6 +415,6 @@ def _tool_name_part(value: str) -> str:
 
 def _json_dumps(value: Any) -> str:
     try:
-        return json.dumps(value)
+        return fast_json_dumps(value)
     except TypeError:
         return str(value)

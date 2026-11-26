@@ -128,6 +128,33 @@ def extract_command_prefix(command: str) -> str:
         return cmd_parts[0] if cmd_parts else "none"
 
 
+def _unquote_token(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+        return token[1:-1]
+    return token
+
+
+_READING_FLAGS_WITH_ARGS: dict[str, frozenset[str]] = {
+    "head": frozenset({"-n", "-c", "--lines", "--bytes"}),
+    "tail": frozenset({"-n", "-c", "--lines", "--bytes"}),
+    "bat": frozenset(
+        {
+            "-l",
+            "-r",
+            "-H",
+            "--language",
+            "--line-range",
+            "--highlight-line",
+            "--theme",
+            "--style",
+            "--color",
+            "--paging",
+            "--tabs",
+        }
+    ),
+}
+
+
 def extract_filepaths_from_command(command: str, output: str) -> str:
     """Extract file paths from a command locally without API call.
 
@@ -161,17 +188,28 @@ def extract_filepaths_from_command(command: str, output: str) -> str:
         if not cmd_parts:
             return "<filepaths>\n</filepaths>"
 
-        base_cmd = cmd_parts[0].split("/")[-1].split("\\")[-1].lower()
+        base_cmd = _unquote_token(cmd_parts[0]).split("/")[-1].split("\\")[-1].lower()
 
         if base_cmd in listing_commands:
             return "<filepaths>\n</filepaths>"
 
         if base_cmd in reading_commands:
+            flags_with_args = _READING_FLAGS_WITH_ARGS.get(base_cmd, frozenset())
             filepaths = []
+            skip_next = False
+            end_of_flags = False
             for part in cmd_parts[1:]:
-                if part.startswith("-"):
+                if skip_next:
+                    skip_next = False
                     continue
-                filepaths.append(part)
+                if not end_of_flags and part == "--":
+                    end_of_flags = True
+                    continue
+                if not end_of_flags and part.startswith("-"):
+                    if part in flags_with_args:
+                        skip_next = True
+                    continue
+                filepaths.append(_unquote_token(part))
 
             if filepaths:
                 paths_str = "\n".join(filepaths)
@@ -184,17 +222,21 @@ def extract_filepaths_from_command(command: str, output: str) -> str:
             positional = []
 
             skip_next = False
+            end_of_flags = False
             for part in cmd_parts[1:]:
                 if skip_next:
                     skip_next = False
                     continue
-                if part.startswith("-"):
+                if not end_of_flags and part == "--":
+                    end_of_flags = True
+                    continue
+                if not end_of_flags and part.startswith("-"):
                     if part in flags_with_args:
                         if part in {"-e", "-f"}:
                             pattern_provided_via_flag = True
                         skip_next = True
                     continue
-                positional.append(part)
+                positional.append(_unquote_token(part))
 
             filepaths = positional if pattern_provided_via_flag else positional[1:]
             if filepaths:

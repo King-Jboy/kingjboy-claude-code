@@ -77,12 +77,16 @@ class StrictSlidingWindowLimiter:
         new_limit = int(rate_limit)
         waiters_to_wake: list[_CapacityWaiter] = []
         with self._state_lock:
-            increased = new_limit > self._rate_limit
+            prev_limit = self._rate_limit
             self._rate_limit = new_limit
-            if increased and self._capacity_waiters:
-                waiters_to_wake = list(self._capacity_waiters)
-                for waiter in waiters_to_wake:
-                    waiter.woken = True
+            slots = new_limit - prev_limit
+            if slots > 0 and self._capacity_waiters:
+                for waiter in self._capacity_waiters:
+                    if not waiter.woken:
+                        waiter.woken = True
+                        waiters_to_wake.append(waiter)
+                        if len(waiters_to_wake) >= slots:
+                            break
         for waiter in waiters_to_wake:
             if not waiter.loop.is_closed():
                 with contextlib.suppress(RuntimeError):

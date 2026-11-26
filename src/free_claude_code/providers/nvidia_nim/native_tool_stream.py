@@ -1,6 +1,5 @@
 """Normalize native MiniMax-M3 tool markup exposed by NVIDIA NIM."""
 
-import json
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from free_claude_code.core.anthropic.tool_schema import (
     coerce_text_argument,
     schema_type,
 )
+from free_claude_code.core.json_utils import fast_json_dumps
 from free_claude_code.providers.failure_policy import RetryableToolProtocolError
 from free_claude_code.providers.http import maybe_await_aclose
 
@@ -93,10 +93,10 @@ class _MiniMaxM3ToolFramer:
         return self._tool_block
 
     def feed(self, text: str) -> str:
-        if self._mode is _FramingMode.FINISHED:
-            raise RuntimeError("MiniMax-M3 tool framer is already finished")
         if not text:
             return ""
+        if self._mode is _FramingMode.FINISHED:
+            raise RuntimeError("MiniMax-M3 tool framer is already finished")
         if self._mode is _FramingMode.TOOL_BLOCK:
             self._feed_tool_block(text)
             return ""
@@ -316,6 +316,13 @@ def _normalized_chunks(
     structured_calls = getattr(source_delta, "tool_calls", None)
     source_finish_reason = getattr(source_choice, "finish_reason", None)
     source_usage = getattr(source_chunk, "usage", None)
+    source_role = getattr(source_delta, "role", None)
+    source_alt_reasoning = getattr(source_delta, "reasoning", None)
+    source_reasoning_details = getattr(source_delta, "reasoning_details", None)
+    chunk_id = getattr(source_chunk, "id", None)
+    chunk_model = getattr(source_chunk, "model", None)
+    chunk_created = getattr(source_chunk, "created", None)
+    chunk_object = getattr(source_chunk, "object", None)
 
     if (
         not generated_calls
@@ -328,6 +335,8 @@ def _normalized_chunks(
     has_source_payload = (
         bool(content)
         or bool(reasoning_content)
+        or bool(source_alt_reasoning)
+        or bool(source_reasoning_details)
         or _has_structured_tool_calls(structured_calls)
     )
     if has_source_payload or not generated_calls:
@@ -336,13 +345,36 @@ def _normalized_chunks(
                 content=content,
                 reasoning_content=reasoning_content,
                 tool_calls=structured_calls,
+                role=source_role,
+                reasoning=source_alt_reasoning,
+                reasoning_details=source_reasoning_details,
+                chunk_id=chunk_id,
+                model=chunk_model,
+                created=chunk_created,
+                object_type=chunk_object,
             )
         )
 
-    chunks.extend(_tool_call_chunk(call) for call in generated_calls)
+    chunks.extend(
+        _tool_call_chunk(
+            call,
+            chunk_id=chunk_id,
+            model=chunk_model,
+            created=chunk_created,
+            object_type=chunk_object,
+        )
+        for call in generated_calls
+    )
 
     if not chunks:
-        chunks.append(_chunk())
+        chunks.append(
+            _chunk(
+                chunk_id=chunk_id,
+                model=chunk_model,
+                created=chunk_created,
+                object_type=chunk_object,
+            )
+        )
 
     if terminal:
         chunks[-1].choices[0].finish_reason = source_finish_reason
@@ -404,36 +436,69 @@ def _chunk(
     content: Any = None,
     reasoning_content: Any = None,
     tool_calls: Any = None,
+    role: Any = None,
+    reasoning: Any = None,
+    reasoning_details: Any = None,
+    chunk_id: Any = None,
+    model: Any = None,
+    created: Any = None,
+    object_type: Any = None,
 ) -> Any:
-    return SimpleNamespace(
-        choices=[
+    delta_fields: dict[str, Any] = {
+        "content": content,
+        "reasoning_content": reasoning_content,
+        "tool_calls": tool_calls,
+    }
+    if role is not None:
+        delta_fields["role"] = role
+    if reasoning is not None:
+        delta_fields["reasoning"] = reasoning
+    if reasoning_details is not None:
+        delta_fields["reasoning_details"] = reasoning_details
+
+    chunk_fields: dict[str, Any] = {
+        "choices": [
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    content=content,
-                    reasoning_content=reasoning_content,
-                    tool_calls=tool_calls,
-                ),
+                delta=SimpleNamespace(**delta_fields),
                 finish_reason=None,
             )
         ],
-        usage=None,
-    )
+        "usage": None,
+    }
+    if chunk_id is not None:
+        chunk_fields["id"] = chunk_id
+    if model is not None:
+        chunk_fields["model"] = model
+    if created is not None:
+        chunk_fields["created"] = created
+    if object_type is not None:
+        chunk_fields["object"] = object_type
+    return SimpleNamespace(**chunk_fields)
 
 
-def _tool_call_chunk(call: _NativeToolCall) -> Any:
+def _tool_call_chunk(
+    call: _NativeToolCall,
+    *,
+    chunk_id: Any = None,
+    model: Any = None,
+    created: Any = None,
+    object_type: Any = None,
+) -> Any:
     tool_call = SimpleNamespace(
         index=call.index,
         id=f"call_nim_native_{uuid.uuid4().hex}",
         function=SimpleNamespace(
             name=call.name,
-            arguments=json.dumps(
-                call.arguments,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
+            arguments=fast_json_dumps(call.arguments),
         ),
     )
-    return _chunk(tool_calls=[tool_call])
+    return _chunk(
+        tool_calls=[tool_call],
+        chunk_id=chunk_id,
+        model=model,
+        created=created,
+        object_type=object_type,
+    )
 
 
 def _parse_tool_block(

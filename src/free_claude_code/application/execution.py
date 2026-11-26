@@ -177,90 +177,12 @@ class ProviderExecutor:
                     response_model=gateway_model,
                     reasoning=routed.reasoning,
                 )
-                loop = asyncio.get_running_loop()
-                current_task = asyncio.current_task()
-                timeout_s = self._progress_timeout_seconds
-                scheduled_deadline = loop.time() + timeout_s
-                in_yield = False
-                timed_out = False
-                watchdog: asyncio.TimerHandle | None = None
-
-                def _is_non_progress_chunk(text: str) -> bool:
-                    first = text[0]
-                    if first == ":":
-                        return True
-                    if first == "e":
-                        return text.startswith("event: ping\n") or text == "event: ping"
-                    if first <= " ":
-                        stripped = text.strip()
-                        return (
-                            stripped.startswith(":")
-                            or stripped.startswith("event: ping\n")
-                            or stripped == "event: ping"
-                        )
-                    return False
-
-                def _on_progress_watchdog() -> None:
-                    nonlocal watchdog, timed_out
-                    watchdog = None
-                    if in_yield:
-                        return
-                    now = loop.time()
-                    if now >= scheduled_deadline - 1e-6:
-                        timed_out = True
-                        if current_task is not None and not current_task.done():
-                            current_task.cancel()
-                        return
-                    watchdog = loop.call_at(scheduled_deadline, _on_progress_watchdog)
-
-                watchdog = loop.call_at(scheduled_deadline, _on_progress_watchdog)
-                try:
-                    async for chunk in provider_stream:
-                        if not chunk:
-                            if loop.time() >= scheduled_deadline:
-                                raise self._progress_timeout_failure(
-                                    request_id=request_id,
-                                    provider_id=routed.resolved.provider_id,
-                                )
-                            await asyncio.sleep(0)
-                            continue
-                        is_non_progress = _is_non_progress_chunk(chunk)
-                        remaining_budget = (
-                            max(0.0, scheduled_deadline - loop.time())
-                            if is_non_progress
-                            else timeout_s
-                        )
-                        in_yield = True
-                        try:
-                            yield chunk
-                        finally:
-                            in_yield = False
-                        if not is_non_progress:
-                            scheduled_deadline = loop.time() + timeout_s
-                        else:
-                            if remaining_budget <= 0.0:
-                                raise self._progress_timeout_failure(
-                                    request_id=request_id,
-                                    provider_id=routed.resolved.provider_id,
-                                )
-                            scheduled_deadline = loop.time() + remaining_budget
-                        if watchdog is None:
-                            watchdog = loop.call_at(
-                                scheduled_deadline, _on_progress_watchdog
-                            )
-                except asyncio.CancelledError as exc:
-                    if not timed_out:
-                        raise
-                    if current_task is not None and current_task.uncancel() > 0:
-                        raise
-                    raise self._progress_timeout_failure(
-                        request_id=request_id,
-                        provider_id=routed.resolved.provider_id,
-                    ) from exc
-                finally:
-                    if watchdog is not None:
-                        watchdog.cancel()
-                        watchdog = None
+                async for chunk in self._watch_progress(
+                    provider_stream,
+                    request_id=request_id,
+                    provider_id=routed.resolved.provider_id,
+                ):
+                    yield chunk
             finally:
                 if token_count_task is not None:
                     if not token_count_task.done():
@@ -303,3 +225,166 @@ class ProviderExecutor:
             chunk_event=None,
             extra=stream_trace,
         )
+
+    def wrap_passthrough_stream(
+        self,
+        provider_stream: AsyncIterator[str],
+        *,
+        provider_id: str,
+        gateway_model: str,
+        request_id: str,
+        raw_log_label: str | None = None,
+        raw_log_payload: object = None,
+    ) -> AsyncIterator[str]:
+        """Apply progress-timeout protection and egress tracing to a passthrough stream."""
+        if self._log_raw_payloads and raw_log_label is not None:
+            logger.debug(f"{raw_log_label} [{{}}]: {{}}", request_id, raw_log_payload)
+
+        async def passthrough_body() -> AsyncIterator[str]:
+            try:
+                async for chunk in self._watch_progress(
+                    provider_stream,
+                    request_id=request_id,
+                    provider_id=provider_id,
+                ):
+                    yield chunk
+            finally:
+                await close_stream_input(
+                    provider_stream,
+                    owner="provider_executor_passthrough",
+                    source="api",
+                    preserved_error=sys.exception(),
+                )
+
+        stream_trace: dict[str, object] = {
+            "request_id": request_id,
+            "provider_id": provider_id,
+            "gateway_model": gateway_model,
+            "wire_api": "chat_completions",
+            "passthrough": True,
+        }
+        if self._generation_id is not None:
+            stream_trace["generation_id"] = self._generation_id
+
+        return traced_async_stream(
+            passthrough_body(),
+            stage="egress",
+            source="api",
+            complete_event="free_claude_code.api.response.stream_completed",
+            interrupted_event="free_claude_code.api.response.stream_interrupted",
+            chunk_event=None,
+            extra=stream_trace,
+        )
+
+    async def _watch_progress(
+        self,
+        provider_stream: AsyncIterator[str],
+        *,
+        request_id: str,
+        provider_id: str,
+    ) -> AsyncIterator[str]:
+        loop = asyncio.get_running_loop()
+        timeout_s = self._progress_timeout_seconds
+        scheduled_deadline = loop.time() + timeout_s
+        in_yield = False
+        timed_out = False
+        active_task: asyncio.Task[Any] | None = None
+        cancelled_task: asyncio.Task[Any] | None = None
+        watchdog: asyncio.TimerHandle | None = None
+
+        def _is_non_progress_chunk(text: str) -> bool:
+            first = text[0]
+            if first == ":":
+                return True
+            if first == "e":
+                return text.startswith("event: ping\n") or text == "event: ping"
+            if first <= " ":
+                stripped = text.strip()
+                return (
+                    stripped.startswith(":")
+                    or stripped.startswith("event: ping\n")
+                    or stripped == "event: ping"
+                )
+            return False
+
+        def _on_progress_watchdog() -> None:
+            nonlocal watchdog, timed_out, cancelled_task
+            watchdog = None
+            if in_yield:
+                return
+            now = loop.time()
+            if now >= scheduled_deadline - 1e-6:
+                timed_out = True
+                target = active_task
+                if target is not None and not target.done():
+                    cancelled_task = target
+                    target.cancel()
+                return
+            watchdog = loop.call_at(scheduled_deadline, _on_progress_watchdog)
+
+        provider_iter = aiter(provider_stream)
+        watchdog = loop.call_at(scheduled_deadline, _on_progress_watchdog)
+        try:
+            while True:
+                active_task = asyncio.current_task()
+                try:
+                    chunk = await anext(provider_iter)
+                except StopAsyncIteration:
+                    break
+                finally:
+                    active_task = None
+
+                if not chunk:
+                    if loop.time() >= scheduled_deadline:
+                        raise self._progress_timeout_failure(
+                            request_id=request_id,
+                            provider_id=provider_id,
+                        )
+                    active_task = asyncio.current_task()
+                    try:
+                        await asyncio.sleep(0)
+                    finally:
+                        active_task = None
+                    continue
+
+                is_non_progress = _is_non_progress_chunk(chunk)
+                remaining_budget = (
+                    max(0.0, scheduled_deadline - loop.time())
+                    if is_non_progress
+                    else timeout_s
+                )
+                in_yield = True
+                try:
+                    yield chunk
+                finally:
+                    in_yield = False
+                if not is_non_progress:
+                    scheduled_deadline = loop.time() + timeout_s
+                else:
+                    if remaining_budget <= 0.0:
+                        raise self._progress_timeout_failure(
+                            request_id=request_id,
+                            provider_id=provider_id,
+                        )
+                    scheduled_deadline = loop.time() + remaining_budget
+                if watchdog is None:
+                    watchdog = loop.call_at(scheduled_deadline, _on_progress_watchdog)
+        except asyncio.CancelledError as exc:
+            if not timed_out:
+                raise
+            current = asyncio.current_task()
+            if (
+                current is None
+                or cancelled_task is None
+                or current is not cancelled_task
+                or current.uncancel() > 0
+            ):
+                raise
+            raise self._progress_timeout_failure(
+                request_id=request_id,
+                provider_id=provider_id,
+            ) from exc
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+                watchdog = None

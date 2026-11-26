@@ -159,16 +159,20 @@ class ManagedClaudeSession:
                     self.process = process
                     if process.pid:
                         register_pid(process.pid)
-                    if process.stdin:
-                        # A CLI that exits before reading reports that through
-                        # its exit code, which the stdout loop below surfaces.
-                        try:
-                            process.stdin.write(prompt.encode("utf-8"))
-                            await process.stdin.drain()
-                        except BrokenPipeError, ConnectionResetError:
-                            pass
-                        finally:
-                            process.stdin.close()
+
+                if process.stdin:
+                    # A CLI that exits before reading reports that through
+                    # its exit code, which the stdout loop below surfaces.
+                    try:
+                        process.stdin.write(prompt.encode("utf-8"))
+                        await process.stdin.drain()
+                    except BrokenPipeError, ConnectionResetError:
+                        pass
+                    except asyncio.CancelledError, GeneratorExit:
+                        await asyncio.shield(self.stop())
+                        raise
+                    finally:
+                        process.stdin.close()
 
                 if not process.stdout:
                     yield {"type": "exit", "code": 1}
@@ -230,10 +234,12 @@ class ManagedClaudeSession:
                                 }
                                 return
 
-                            line = buffer[:newline_pos]
-                            buffer = buffer[newline_pos + 1 :]
-
-                            line_str = line.decode("utf-8", errors="replace").strip()
+                            line_str = (
+                                buffer[:newline_pos]
+                                .decode("utf-8", errors="replace")
+                                .strip()
+                            )
+                            del buffer[: newline_pos + 1]
                             if line_str:
                                 async for event in self._handle_line_gen(
                                     line_str, parse_state

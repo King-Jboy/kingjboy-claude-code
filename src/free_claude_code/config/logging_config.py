@@ -12,6 +12,7 @@ import re
 import threading
 from pathlib import Path
 
+import orjson
 from loguru import logger
 
 _configured = False
@@ -83,11 +84,24 @@ _API_KEY_PARAM_RE = re.compile(
 
 def _redact_sensitive_substrings(message: str) -> str:
     """Remove obvious API tokens and secrets before JSON log line emission."""
-    text = _TELEGRAM_BOT_RE.sub(r"\1bot<redacted>\3", message)
-    text = _TELEGRAM_BARE_TOKEN_RE.sub("<redacted>", text)
-    text = _AUTH_BEARER_RE.sub(r"\1<redacted>", text)
-    text = _API_KEY_HEADER_RE.sub(r"\1<redacted>", text)
-    return _API_KEY_PARAM_RE.sub(r"\1<redacted>", text)
+    has_colon = ":" in message
+    has_eq = "=" in message
+    if not has_colon and not has_eq:
+        return message
+    text = message
+    lower_msg = text.lower()
+    if has_colon:
+        if "api.telegram.org" in lower_msg:
+            text = _TELEGRAM_BOT_RE.sub(r"\1bot<redacted>\3", text)
+        if len(text) >= 37:
+            text = _TELEGRAM_BARE_TOKEN_RE.sub("<redacted>", text)
+        if "authorization" in lower_msg and "bearer" in lower_msg:
+            text = _AUTH_BEARER_RE.sub(r"\1<redacted>", text)
+        if "api-key" in lower_msg:
+            text = _API_KEY_HEADER_RE.sub(r"\1<redacted>", text)
+    if has_eq and ("key" in lower_msg or "access_token" in lower_msg):
+        text = _API_KEY_PARAM_RE.sub(r"\1<redacted>", text)
+    return text
 
 
 def _serialize_with_context(record) -> str:
@@ -113,7 +127,10 @@ def _serialize_with_context(record) -> str:
                 continue
             out[tk] = tv
         out["trace"] = True
-    record["_json"] = json.dumps(out, default=str)
+    try:
+        record["_json"] = orjson.dumps(out, default=str).decode("utf-8")
+    except TypeError, ValueError, orjson.JSONEncodeError:
+        record["_json"] = json.dumps(out, ensure_ascii=False, default=str)
     return "{_json}\n"
 
 

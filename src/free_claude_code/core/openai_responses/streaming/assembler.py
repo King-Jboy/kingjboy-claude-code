@@ -19,7 +19,10 @@ from ..ids import (
     tool_item_id_prefix,
 )
 from ..models import OpenAIResponsesRequest
-from ..tools import responses_tool_identity_from_anthropic_name
+from ..tools import (
+    ResponsesToolIdentity,
+    build_responses_tool_identity_map,
+)
 from . import event_builders as events
 from .blocks import ReasoningBlockState, TextBlockState, ToolBlockState
 from .completion import ResponseBlockCompleter, reasoning_output_item, tool_item
@@ -47,6 +50,7 @@ class ResponsesStreamAssembler:
         self._started = False
         self._stop_reason: str | None = None
         self._provisional_error: dict[str, Any] | None = None
+        self._tool_identity_map: dict[str, ResponsesToolIdentity] | None = None
         self.terminal = False
         self.completed_response_pending = False
         self.final_response: dict[str, Any] | None = None
@@ -371,8 +375,13 @@ class ResponsesStreamAssembler:
         chunks = self._complete_existing_block(index)
         if self.terminal:
             return chunks
-        identity = responses_tool_identity_from_anthropic_name(
-            self._request.tools, _string_value(block.get("name"))
+        if self._tool_identity_map is None:
+            self._tool_identity_map = build_responses_tool_identity_map(
+                self._request.tools
+            )
+        raw_name = _string_value(block.get("name"))
+        identity = self._tool_identity_map.get(
+            raw_name, ResponsesToolIdentity(kind="function", name=raw_name)
         )
         state = ToolBlockState(
             index=index,

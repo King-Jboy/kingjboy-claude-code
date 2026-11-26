@@ -188,6 +188,10 @@ class ServerSupervisor:
             log_config=(
                 uvicorn.config.LOGGING_CONFIG if self._console_logging else None
             ),
+            access_log=settings.log_level.upper() == "DEBUG",
+            ws="none",
+            server_header=False,
+            date_header=False,
             timeout_keep_alive=600,
             timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_SECONDS,
             loop="auto",

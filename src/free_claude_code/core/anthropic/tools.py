@@ -318,7 +318,11 @@ class HeuristicToolParser:
         )
 
     def _extract_web_tool_json_calls(self) -> tuple[str, list[dict[str, Any]]]:
-        if not self._allowed_web_tools or "{" not in self._buffer:
+        if (
+            not self._allowed_web_tools
+            or "{" not in self._buffer
+            or "web" not in self._buffer.lower()
+        ):
             return self._buffer, []
 
         detected_tools: list[dict[str, Any]] = []
@@ -414,7 +418,8 @@ class HeuristicToolParser:
         ):
             return text, []
         self._buffer += text
-        self._buffer = self._strip_control_tokens(self._buffer)
+        if _CONTROL_TOKEN_START in self._buffer:
+            self._buffer = self._strip_control_tokens(self._buffer)
         self._buffer, detected_tools = self._extract_web_tool_json_calls()
         filtered_output_parts: list[str] = []
 
@@ -478,13 +483,14 @@ class HeuristicToolParser:
                         filtered_output_parts.append(self._buffer[:idx])
                         self._buffer = self._buffer[idx:]
                     finished_tool_call = True
-                elif (stripped := self._buffer.strip()) and not stripped.startswith(
-                    "<"
+                elif (
+                    (stripped := self._buffer.strip())
+                    and not stripped.startswith("<")
+                    and "<parameter=" not in self._buffer
                 ):
-                    if "<parameter=" not in self._buffer:
-                        filtered_output_parts.append(self._buffer)
-                        self._buffer = ""
-                        finished_tool_call = True
+                    filtered_output_parts.append(self._buffer)
+                    self._buffer = ""
+                    finished_tool_call = True
 
                 if finished_tool_call:
                     detected_tools.append(
@@ -508,7 +514,8 @@ class HeuristicToolParser:
 
     def flush(self) -> list[dict[str, Any]]:
         """Flush any remaining tool call in the buffer."""
-        self._buffer = self._strip_control_tokens(self._buffer)
+        if _CONTROL_TOKEN_START in self._buffer:
+            self._buffer = self._strip_control_tokens(self._buffer)
         detected_tools = []
         if self._state == ParserState.PARSING_PARAMETERS:
             partial_matches = re.finditer(
@@ -540,7 +547,11 @@ class HeuristicToolParser:
         """
         if self._state == ParserState.PARSING_PARAMETERS:
             return ""
-        text = self._strip_control_tokens(self._buffer)
+        text = (
+            self._strip_control_tokens(self._buffer)
+            if _CONTROL_TOKEN_START in self._buffer
+            else self._buffer
+        )
         self._buffer = ""
         self._state = ParserState.TEXT
         return text

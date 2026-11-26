@@ -1,6 +1,7 @@
 """Message and tool format converters."""
 
 import json
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -391,7 +392,7 @@ class _OpenAIChatHistoryLedger:
 
     def __init__(self) -> None:
         self._output: list[dict[str, Any]] = []
-        self._segments: list[_TranscriptSegment] = []
+        self._segments: deque[_TranscriptSegment] = deque()
         self._tool_results: dict[str, _OpenAIChatToolResult] = {}
 
     def add_plain(self, messages: list[dict[str, Any]]) -> None:
@@ -430,7 +431,7 @@ class _OpenAIChatHistoryLedger:
                 f"missing tool_result blocks for tool_use ids: {missing}"
             )
         while self._segments:
-            segment = self._segments.pop(0)
+            segment = self._segments.popleft()
             if isinstance(segment, _PlainSegment):
                 self._output.extend(segment.messages)
                 continue
@@ -463,7 +464,7 @@ class _OpenAIChatHistoryLedger:
             segment = self._segments[0]
             if isinstance(segment, _PlainSegment):
                 self._output.extend(segment.messages)
-                self._segments.pop(0)
+                self._segments.popleft()
                 continue
 
             if not segment.assistant_emitted:
@@ -478,7 +479,7 @@ class _OpenAIChatHistoryLedger:
             if missing:
                 break
 
-            self._segments.pop(0)
+            self._segments.popleft()
             results = [
                 self._tool_results.pop(tool_id) for tool_id in segment.required_tool_ids
             ]

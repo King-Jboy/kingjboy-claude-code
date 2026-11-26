@@ -42,6 +42,7 @@ class ChatCompletionsPassthroughProvider(Protocol):
         *,
         request_id: str | None = None,
         response_model: str | None = None,
+        reasoning: ReasoningPolicy | None = None,
     ) -> AsyncIterator[str]: ...
 
 

@@ -21,6 +21,8 @@ from free_claude_code.core.openai_responses import (
     openai_error_type_for_failure,
 )
 
+from .response_streams import FastJSONResponse
+
 WireApi = Literal["messages", "responses", "chat_completions"]
 
 
@@ -37,14 +39,14 @@ def ordinary_application_error_response(
 ) -> JSONResponse:
     """Serialize a deterministic application error without terminal headers."""
     if wire_api in ("responses", "chat_completions"):
-        return JSONResponse(
+        return FastJSONResponse(
             status_code=error.status_code,
             content=openai_error_payload(
                 message=error.message,
                 error_type=openai_error_type_for_failure(error.kind),
             ),
         )
-    return JSONResponse(
+    return FastJSONResponse(
         status_code=error.status_code,
         content=anthropic_error_payload(
             error_type=anthropic_error_type_for_failure(error.kind),

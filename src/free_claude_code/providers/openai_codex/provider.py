@@ -376,14 +376,14 @@ class OpenAICodexProvider(BaseProvider):
                             message_started_committed = True
                             yield anthropic_ping_frame()
                 except BaseException:
+                    if not send_task.done():
+                        await _discard_pending_task(send_task)
                     if (
                         send_task.done()
                         and not send_task.cancelled()
                         and send_task.exception() is None
                     ):
                         response = send_task.result()
-                    else:
-                        await _discard_pending_task(send_task)
                     raise
                 response = send_task.result()
                 if response.status_code == 401 and not authentication_recovered:

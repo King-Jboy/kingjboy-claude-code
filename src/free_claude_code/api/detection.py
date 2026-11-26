@@ -104,7 +104,11 @@ def _request_system_text(request_data: MessagesRequest) -> str:
     return _inspect_request(request_data).system_text
 
 
-def is_quota_check_request(request_data: MessagesRequest) -> bool:
+def is_quota_check_request(
+    request_data: MessagesRequest,
+    *,
+    _view: _RequestInspectionView | None = None,
+) -> bool:
     """Check if this is a quota probe request.
 
     Quota checks are typically simple requests with max_tokens=1
@@ -112,13 +116,17 @@ def is_quota_check_request(request_data: MessagesRequest) -> bool:
     """
     if getattr(request_data, "max_tokens", None) != 1:
         return False
-    text = _inspect_request(request_data).sole_user_text
+    text = (_view or _inspect_request(request_data)).sole_user_text
     if text is None:
         return False
     return "quota" in text.lower()
 
 
-def is_title_generation_request(request_data: MessagesRequest) -> bool:
+def is_title_generation_request(
+    request_data: MessagesRequest,
+    *,
+    _view: _RequestInspectionView | None = None,
+) -> bool:
     """Check if this is a conversation title generation request.
 
     Title generation requests are detected by a system prompt containing
@@ -129,7 +137,7 @@ def is_title_generation_request(request_data: MessagesRequest) -> bool:
     """
     if getattr(request_data, "tools", None):
         return False
-    view = _inspect_request(request_data)
+    view = _view or _inspect_request(request_data)
     if getattr(request_data, "messages", None) and view.sole_user_turn is None:
         return False
     system_text = view.system_text_lower
@@ -142,7 +150,11 @@ def is_title_generation_request(request_data: MessagesRequest) -> bool:
     )
 
 
-def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, str]:
+def is_prefix_detection_request(
+    request_data: MessagesRequest,
+    *,
+    _view: _RequestInspectionView | None = None,
+) -> tuple[bool, str]:
     """Check if this is a fast prefix detection request.
 
     Prefix detection requests contain a policy_spec block and
@@ -153,7 +165,7 @@ def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, st
     """
     if getattr(request_data, "tools", None):
         return False, ""
-    content = _inspect_request(request_data).sole_user_text
+    content = (_view or _inspect_request(request_data)).sole_user_text
     if content is None:
         return False, ""
 
@@ -167,12 +179,16 @@ def is_prefix_detection_request(request_data: MessagesRequest) -> tuple[bool, st
     return False, ""
 
 
-def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
+def is_safety_classifier_request(
+    request_data: MessagesRequest,
+    *,
+    _view: _RequestInspectionView | None = None,
+) -> bool:
     """Return whether this is Claude Code's auto-mode safety classifier prompt."""
     if getattr(request_data, "tools", None):
         return False
 
-    view = _inspect_request(request_data)
+    view = _view or _inspect_request(request_data)
     system_text = view.top_system_text
     if view.sole_user_turn is not None and len(request_data.messages) == 1:
         messages_text = view.sole_user_text or ""
@@ -186,7 +202,11 @@ def is_safety_classifier_request(request_data: MessagesRequest) -> bool:
     return "<transcript>" in combined and has_verdict_instruction
 
 
-def is_suggestion_mode_request(request_data: MessagesRequest) -> bool:
+def is_suggestion_mode_request(
+    request_data: MessagesRequest,
+    *,
+    _view: _RequestInspectionView | None = None,
+) -> bool:
     """Check if this is a suggestion mode request.
 
     Suggestion mode requests carry no tools and contain "[SUGGESTION MODE:"
@@ -197,12 +217,21 @@ def is_suggestion_mode_request(request_data: MessagesRequest) -> bool:
     messages = request_data.messages
     if not messages or messages[-1].role != "user":
         return False
-    last_text = extract_text_from_content(messages[-1].content)
+    if (
+        _view is not None
+        and _view.sole_user_turn is messages[-1]
+        and _view._sole_user_text is not None
+    ):
+        last_text = _view._sole_user_text
+    else:
+        last_text = extract_text_from_content(messages[-1].content)
     return "[SUGGESTION MODE:" in last_text
 
 
 def is_filepath_extraction_request(
     request_data: MessagesRequest,
+    *,
+    _view: _RequestInspectionView | None = None,
 ) -> tuple[bool, str, str]:
     """Check if this is a filepath extraction request.
 
@@ -215,7 +244,7 @@ def is_filepath_extraction_request(
     """
     if getattr(request_data, "tools", None):
         return False, "", ""
-    view = _inspect_request(request_data)
+    view = _view or _inspect_request(request_data)
     content = view.sole_user_text
     if content is None:
         return False, "", ""

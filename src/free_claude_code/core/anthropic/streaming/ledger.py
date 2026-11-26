@@ -28,13 +28,17 @@ ENCODER: Any = _ENCODER_UNSET
 def _get_encoder() -> Any:
     global ENCODER
     if ENCODER is _ENCODER_UNSET:
-        try:
-            import tiktoken
+        from free_claude_code.core.anthropic.tokens import get_tiktoken_encoder
 
-            ENCODER = tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            ENCODER = None
+        ENCODER = get_tiktoken_encoder()
     return ENCODER
+
+
+def _encode_tokens(encoder: Any, text: str) -> list[int]:
+    try:
+        return encoder.encode(text, disallowed_special=())
+    except TypeError:
+        return encoder.encode(text)
 
 
 def _safe_usage_int(value: object) -> int:
@@ -50,9 +54,60 @@ class ToolBlockState:
     name: str
     extra_content: dict[str, Any] | None = None
     started: bool = False
-    task_arg_buffer: str = ""
+    task_arg_parts: list[str] = field(default_factory=list)
+    task_arg_depth: int = 0
+    task_arg_in_str: bool = False
+    task_arg_escape: bool = False
+    task_arg_seen_open: bool = False
     task_args_emitted: bool = False
     pre_start_args: str = ""
+
+    @property
+    def task_arg_buffer(self) -> str:
+        return "".join(self.task_arg_parts)
+
+    @task_arg_buffer.setter
+    def task_arg_buffer(self, value: str) -> None:
+        self.task_arg_parts.clear()
+        self.task_arg_depth = 0
+        self.task_arg_in_str = False
+        self.task_arg_escape = False
+        self.task_arg_seen_open = False
+        if value:
+            self.append_task_args(value)
+
+    def append_task_args(self, args: str) -> None:
+        self.task_arg_parts.append(args)
+        depth = self.task_arg_depth
+        in_str = self.task_arg_in_str
+        escape = self.task_arg_escape
+        seen_open = self.task_arg_seen_open
+        for ch in args:
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+                seen_open = True
+            elif ch == "}":
+                depth -= 1
+        self.task_arg_depth = depth
+        self.task_arg_in_str = in_str
+        self.task_arg_escape = escape
+        self.task_arg_seen_open = seen_open
+
+    def clear_task_args(self) -> None:
+        self.task_arg_parts.clear()
+        self.task_arg_depth = 0
+        self.task_arg_in_str = False
+        self.task_arg_escape = False
+        self.task_arg_seen_open = False
 
 
 @dataclass(slots=True)
@@ -128,7 +183,13 @@ class StreamBlockLedger:
         if state is None or state.task_args_emitted:
             return None
 
-        state.task_arg_buffer += args
+        state.append_task_args(args)
+        if (
+            not state.task_arg_seen_open
+            or state.task_arg_in_str
+            or state.task_arg_depth > 0
+        ):
+            return None
         try:
             args_json = fast_json_loads(state.task_arg_buffer)
         except Exception:
@@ -138,18 +199,19 @@ class StreamBlockLedger:
 
         _normalize_task_run_in_background(args_json)
         state.task_args_emitted = True
-        state.task_arg_buffer = ""
+        state.clear_task_args()
         return args_json
 
     def flush_task_arg_buffers(self) -> list[tuple[int, str]]:
         results: list[tuple[int, str]] = []
         for tool_index, state in list(self.tool_states.items()):
-            if not state.task_arg_buffer or state.task_args_emitted:
+            if not state.task_arg_parts or state.task_args_emitted:
                 continue
 
+            buffered = state.task_arg_buffer
             out = "{}"
             try:
-                args_json = repair_json_loads(state.task_arg_buffer)
+                args_json = repair_json_loads(buffered)
                 if isinstance(args_json, dict):
                     _normalize_task_run_in_background(args_json)
                     out = fast_json_dumps(args_json)
@@ -157,18 +219,18 @@ class StreamBlockLedger:
                     raise ValueError("Task args did not decode to an object")
             except Exception as exc:
                 digest = hashlib.sha256(
-                    state.task_arg_buffer.encode("utf-8", errors="replace")
+                    buffered.encode("utf-8", errors="replace")
                 ).hexdigest()[:16]
                 logger.warning(
                     "Task args invalid JSON (id={} len={} buffer_sha256_prefix={}): {}",
                     state.tool_id or "unknown",
-                    len(state.task_arg_buffer),
+                    len(buffered),
                     digest,
                     exc,
                 )
 
             state.task_args_emitted = True
-            state.task_arg_buffer = ""
+            state.clear_task_args()
             results.append((tool_index, out))
         return results
 
@@ -483,13 +545,13 @@ class AnthropicStreamLedger:
         accumulated_reasoning = self.accumulated_reasoning
         encoder = _get_encoder()
         if encoder:
-            text_tokens = len(encoder.encode(accumulated_text))
-            reasoning_tokens = len(encoder.encode(accumulated_reasoning))
+            text_tokens = len(_encode_tokens(encoder, accumulated_text))
+            reasoning_tokens = len(_encode_tokens(encoder, accumulated_reasoning))
             tool_tokens = 0
             tool_count = 0
             for name, content in self._iter_tool_token_payloads():
-                tool_tokens += len(encoder.encode(name))
-                tool_tokens += len(encoder.encode(content))
+                tool_tokens += len(_encode_tokens(encoder, name))
+                tool_tokens += len(_encode_tokens(encoder, content))
                 tool_tokens += 15
                 tool_count += 1
 

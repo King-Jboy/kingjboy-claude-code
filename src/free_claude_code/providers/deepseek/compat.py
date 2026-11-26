@@ -445,11 +445,14 @@ def _analyze_tool_history_models(messages: list[Message]) -> tuple[bool, bool]:
                     if not saw_tool_use and not has_thinking:
                         all_tool_calls_replayable = False
                     saw_tool_use = True
-        elif role == "user":
-            if not has_tool_history and any(
+        elif (
+            role == "user"
+            and not has_tool_history
+            and any(
                 get_block_type(block) in _USER_TOOL_RESULT_TYPES for block in content
-            ):
-                has_tool_history = True
+            )
+        ):
+            has_tool_history = True
     return has_tool_history, (found_tool_call and all_tool_calls_replayable)
 
 
@@ -596,15 +599,16 @@ def _downgrade_forced_tool_choice_value(
 def _apply_deepseek_chat_extras(
     body: dict[str, Any], _request_data: MessagesRequest, policy: ReasoningPolicy
 ) -> None:
-    extra_body = body.setdefault("extra_body", {})
-    if not isinstance(extra_body, dict):
-        return
     if policy.control is ReasoningControl.OFF:
-        extra_body["thinking"] = {"type": "disabled"}
+        extra_body = body.setdefault("extra_body", {})
+        if isinstance(extra_body, dict):
+            extra_body["thinking"] = {"type": "disabled"}
         return
     if policy.effort in {ReasoningEffort.XHIGH, ReasoningEffort.MAX}:
         body["reasoning_effort"] = "max"
     elif policy.effort is not None:
         body["reasoning_effort"] = "high"
     elif policy.requests_reasoning:
-        extra_body["thinking"] = {"type": "enabled"}
+        extra_body = body.setdefault("extra_body", {})
+        if isinstance(extra_body, dict):
+            extra_body["thinking"] = {"type": "enabled"}

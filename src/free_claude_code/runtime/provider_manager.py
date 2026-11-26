@@ -136,6 +136,13 @@ class ProviderRuntimeManager:
         return self._current.generation_id
 
     async def acquire(self) -> ProviderGenerationLease:
+        if not self._replace_lock.locked():
+            if self._closing or self._closed:
+                raise ApplicationUnavailableError("Provider runtime is shutting down.")
+            generation = self._current
+            generation.active_leases += 1
+            generation.drained.clear()
+            return ProviderGenerationLease(self, generation)
         async with self._replace_lock:
             if self._closing or self._closed:
                 raise ApplicationUnavailableError("Provider runtime is shutting down.")
@@ -320,7 +327,6 @@ class ProviderRuntimeManager:
                 model_cache_provider_ids_for_settings(settings, connected)
             )
             self._last_cache_scope_key = (candidate.generation_id, connected)
-            self._publish_model_catalog()
             previous.retired = True
             self._retired[previous.generation_id] = previous
             self._trace_published(candidate, previous=previous, reason=reason)
@@ -330,6 +336,7 @@ class ProviderRuntimeManager:
                 self._refresh_generation_in_background(candidate, only_missing=False)
             )
             should_close_previous = previous.active_leases == 0
+        self._publish_model_catalog()
         if should_close_previous:
             await self._close_generation(previous, forced=False)
         return candidate.generation_id

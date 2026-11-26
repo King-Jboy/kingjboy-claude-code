@@ -456,3 +456,57 @@ async def test_cancelling_progress_wait_remains_cancellation() -> None:
         await task
 
     assert provider.stream_close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_wrap_passthrough_stream_enforces_progress_timeout_and_closes_source() -> (
+    None
+):
+    closed = False
+
+    async def stalled_stream() -> AsyncIterator[str]:
+        nonlocal closed
+        try:
+            yield 'data: {"id":"1"}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            closed = True
+
+    executor = ProviderExecutor(
+        lambda _provider_id: FakeProvider(),
+        progress_timeout_seconds=0.02,
+    )
+    wrapped = executor.wrap_passthrough_stream(
+        stalled_stream(),
+        provider_id="provider",
+        gateway_model="gateway-model",
+        request_id="req_passthrough_timeout",
+    )
+
+    assert await anext(wrapped) == 'data: {"id":"1"}\n\n'
+    with pytest.raises(ExecutionFailure) as exc_info:
+        await anext(wrapped)
+
+    assert exc_info.value.kind == FailureKind.TIMEOUT
+    assert closed is True
+
+
+@pytest.mark.asyncio
+async def test_watch_progress_multi_chunk_does_not_leak_cancelled_error() -> None:
+    second_wait = WaitStep()
+    provider = ControlledProvider(["first", second_wait, "second", "third"])
+    stream = _executor_stream(
+        provider,
+        timeout_seconds=0.05,
+        request_id="req_multi_chunk",
+    )
+
+    assert await anext(stream) == "first"
+    next_task = asyncio.ensure_future(anext(stream))
+    await second_wait.started.wait()
+    await asyncio.sleep(0.02)
+    second_wait.release.set()
+    assert await next_task == "second"
+    remaining = [chunk async for chunk in stream]
+    assert remaining == ["third"]
+    assert provider.stream_close_calls == 1

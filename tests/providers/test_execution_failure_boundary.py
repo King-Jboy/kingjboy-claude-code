@@ -2,6 +2,7 @@
 
 from collections import deque
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,9 @@ from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.providers.base import ProviderConfig
 from free_claude_code.providers.http import close_provider_stream
 from free_claude_code.providers.nvidia_nim import NvidiaNimProvider
+from free_claude_code.providers.nvidia_nim.native_tool_stream import (
+    normalize_nim_native_tool_stream,
+)
 from tests.providers.request_factory import make_messages_request
 from tests.providers.support import immediate_admission
 
@@ -262,3 +266,84 @@ async def test_closing_public_openai_stream_closes_raw_stream_once() -> None:
         await stream.aclose()
 
     assert raw_stream.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_minimax_m3_framer_handles_empty_trailing_chunk_after_finish() -> None:
+    valid_markup = (
+        "]<]minimax[>[<tool_call>"
+        ']<]minimax[>[<invoke name="Read">'
+        "]<]minimax[>[<path>x.py]<]minimax[>[</path>"
+        "]<]minimax[>[</invoke>"
+        "]<]minimax[>[</tool_call>"
+    )
+    chunks = [
+        SimpleNamespace(
+            id="chat_1",
+            model="minimax-m3",
+            created=1234,
+            object="chat.completion.chunk",
+            usage=None,
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    delta=SimpleNamespace(
+                        content=valid_markup,
+                        reasoning_content=None,
+                        tool_calls=None,
+                        role="assistant",
+                        reasoning=None,
+                        reasoning_details=None,
+                    ),
+                )
+            ],
+        ),
+        SimpleNamespace(
+            id="chat_1",
+            model="minimax-m3",
+            created=1234,
+            object="chat.completion.chunk",
+            usage={"total_tokens": 9},
+            choices=[
+                SimpleNamespace(
+                    finish_reason=None,
+                    delta=SimpleNamespace(
+                        content="",
+                        reasoning_content=None,
+                        tool_calls=None,
+                        role=None,
+                        reasoning=None,
+                        reasoning_details=None,
+                    ),
+                )
+            ],
+        ),
+    ]
+
+    async def raw_stream():
+        for chunk in chunks:
+            yield chunk
+
+    normalized = normalize_nim_native_tool_stream(
+        raw_stream(),
+        {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    emitted = [chunk async for chunk in normalized]
+    assert len(emitted) == 2
+    assert emitted[0].id == "chat_1"
+    assert emitted[0].model == "minimax-m3"
+    assert emitted[0].choices[0].delta.tool_calls[0].function.name == "Read"
+    assert emitted[1].usage == {"total_tokens": 9}

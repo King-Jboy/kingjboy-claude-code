@@ -43,8 +43,14 @@ class ResponsesStore:
                 raise ResponsesConversionError(
                     "previous_response_id does not reference a stored completed response."
                 )
-            history = copy.deepcopy(record["input"])
-            history.extend(copy.deepcopy(record["output"]))
+            encoded = self._record_bytes.get(response_id)
+            if encoded is not None:
+                cloned = orjson.loads(encoded)
+                history = cloned["input"]
+                history.extend(cloned["output"])
+            else:
+                history = _fast_json_clone(record["input"])
+                history.extend(_fast_json_clone(record["output"]))
             history.extend(_input_items(request.input))
         return request.model_copy(
             update={
@@ -67,13 +73,21 @@ class ResponsesStore:
             raise ValueError("Completed Responses output must include a response id.")
         if not isinstance(output, list):
             raise ValueError("Completed Responses output must include an output list.")
-        record = {
-            "input": _input_items(request.input),
-            "output": copy.deepcopy(output),
+        raw_input = (
+            []
+            if request.input is None
+            else request.input
+            if isinstance(request.input, list)
+            else [request.input]
+        )
+        raw_record = {
+            "input": raw_input,
+            "output": output,
             "instructions": request.instructions,
         }
         # Reject non-JSON state before mutating the in-memory continuation chain.
-        encoded_record = _encode_json_bytes(record)
+        encoded_record = _encode_json_bytes(raw_record)
+        record = orjson.loads(encoded_record)
         with self._lock:
             self._load_locked()
             self._records.pop(response_id, None)
@@ -145,12 +159,19 @@ class ResponsesStore:
             temporary.unlink(missing_ok=True)
 
 
+def _fast_json_clone(value: Any) -> Any:
+    try:
+        return orjson.loads(orjson.dumps(value))
+    except TypeError, ValueError:
+        return copy.deepcopy(value)
+
+
 def _input_items(value: Any) -> list[Any]:
     if value is None:
         return []
     if isinstance(value, list):
-        return copy.deepcopy(value)
-    return [copy.deepcopy(value)]
+        return _fast_json_clone(value)
+    return [_fast_json_clone(value)]
 
 
 def _valid_record(value: object) -> bool:

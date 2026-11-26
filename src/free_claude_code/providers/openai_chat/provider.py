@@ -308,17 +308,20 @@ class OpenAIChatProvider(BaseProvider):
         self._client = self._build_client(api_key_provider or self._api_key)
         self._key_clients_owner: Any = self._client
         self._key_clients: dict[str, Any] = {}
+        self._last_synced_rate_limit: int | None = None
+        self._hedge_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._key_pool = (
             ApiKeyPool(
                 config.api_keys,
                 rate_limit=config.key_rate_limit,
                 rate_window=config.key_rate_window,
-                on_capacity_change=getattr(self._admission, "set_rate_limit", None),
+                on_capacity_change=self._sync_pool_rate_limit,
             )
             if config.api_keys and config.key_rate_limit is not None
             else None
         )
-        # Counts as activity so a freshly started provider still pre-warms.
+        # Counts as activity so a freshly started provider stays eligible for
+        # periodic keep-warm pings after the first interval.
         self._last_activity_at = time.monotonic()
         self._keepalive_task: asyncio.Task[None] | None = None
         try:
@@ -326,6 +329,22 @@ class OpenAIChatProvider(BaseProvider):
             self._keepalive_task = loop.create_task(self._prewarm_and_keepalive())
         except RuntimeError:
             pass
+
+    def _sync_pool_rate_limit(self, pool_rate_limit: int) -> None:
+        """Apply eligible key-pool capacity without exceeding configured rate_limit."""
+        set_rate_limit = getattr(self._admission, "set_rate_limit", None)
+        if set_rate_limit is None:
+            return
+        rate_cap = self._config.rate_limit
+        effective = (
+            min(max(1, pool_rate_limit), max(1, rate_cap))
+            if rate_cap is not None
+            else max(1, pool_rate_limit)
+        )
+        if effective == self._last_synced_rate_limit:
+            return
+        self._last_synced_rate_limit = effective
+        set_rate_limit(effective)
 
     def _build_client(
         self, credential: str | OpenAIAsyncCredentialProvider
@@ -402,6 +421,13 @@ class OpenAIChatProvider(BaseProvider):
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
+        hedge_tasks = list(getattr(self, "_hedge_cleanup_tasks", ()))
+        if hedge_tasks:
+            for hedge_task in hedge_tasks:
+                if not hedge_task.done():
+                    hedge_task.cancel()
+            await asyncio.gather(*hedge_tasks, return_exceptions=True)
+            self._hedge_cleanup_tasks.clear()
         key_pool = getattr(self, "_key_pool", None)
         if key_pool is not None:
             key_pool.close()
@@ -653,10 +679,8 @@ class OpenAIChatProvider(BaseProvider):
         while retry_session.can_attempt:
             if isinstance(body.get("model"), str) and body["model"]:
                 retry_session.model = body["model"]
-            if self._key_pool is not None and hasattr(
-                self._admission, "set_rate_limit"
-            ):
-                self._admission.set_rate_limit(self._key_pool.active_rate_limit())
+            if self._key_pool is not None:
+                self._sync_pool_rate_limit(self._key_pool.active_rate_limit())
             attempt = await self._admission.open_attempt(retry_session)
             stream: Any | None = None
             retain_attempt = False
@@ -891,6 +915,7 @@ class OpenAIChatProvider(BaseProvider):
                     return await self._open_chat_stream_sequential(
                         create_body,
                         prior_error=exc,
+                        raw_chunks=raw_chunks,
                     )
                 if isinstance(exc, BaseException):
                     raise exc
@@ -925,6 +950,7 @@ class OpenAIChatProvider(BaseProvider):
                         return await self._open_chat_stream_sequential(
                             create_body,
                             prior_error=exc,
+                            raw_chunks=raw_chunks,
                         )
                     raise
 
@@ -978,6 +1004,7 @@ class OpenAIChatProvider(BaseProvider):
             return await self._open_chat_stream_sequential(
                 create_body,
                 prior_error=last_rotatable,
+                raw_chunks=raw_chunks,
             )
         finally:
             remaining_tasks = list(tasks.keys())
@@ -1006,7 +1033,9 @@ class OpenAIChatProvider(BaseProvider):
                     _cancel_remaining(remaining_tasks, slots_to_release)
                 )
                 _HEDGE_CLEANUP_TASKS.add(cleanup)
+                self._hedge_cleanup_tasks.add(cleanup)
                 cleanup.add_done_callback(_HEDGE_CLEANUP_TASKS.discard)
+                cleanup.add_done_callback(self._hedge_cleanup_tasks.discard)
             elif hedge_slots_held > 0 and hasattr(
                 self._admission, "release_hedge_slot"
             ):
@@ -1088,12 +1117,15 @@ class OpenAIChatProvider(BaseProvider):
         *,
         request_id: str | None = None,
         response_model: str | None = None,
+        reasoning: ReasoningPolicy | None = None,
     ) -> AsyncIterator[str]:
         """Stream an OpenAI Chat Completions body directly without Anthropic conversion."""
         tag = self._provider_name
         req_tag = f" request_id={request_id}" if request_id else ""
         passthrough_body = dict(body)
         _apply_common_openai_chat_policy(passthrough_body, self._profile.request_policy)
+        if reasoning is not None:
+            self._profile.reasoning.encode(passthrough_body, reasoning)
         completion_id = new_chat_completion_id()
         created_ts = int(time.time())
         resolved_model = response_model or str(passthrough_body.get("model") or "")
@@ -1109,6 +1141,7 @@ class OpenAIChatProvider(BaseProvider):
             async with aclosing(_chunks_with_keepalive(stream)) as chunks:
                 async for chunk in chunks:
                     if chunk is _KEEPALIVE:
+                        emitted_any = True
                         yield ": keepalive\n\n"
                         continue
                     if not attempt.accepted:
@@ -1389,14 +1422,14 @@ class _OpenAIChatStreamRunner:
                                 yield event
                             yield anthropic_ping_frame()
                 except BaseException:
+                    if not create_task.done():
+                        await _discard_pending_task(create_task)
                     if (
                         create_task.done()
                         and not create_task.cancelled()
                         and create_task.exception() is None
                     ):
                         stream, _, attempt = create_task.result()
-                    else:
-                        await _discard_pending_task(create_task)
                     raise
                 stream, body, attempt = create_task.result()
                 stream_opened = True

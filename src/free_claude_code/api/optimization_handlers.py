@@ -5,6 +5,7 @@ optimization is enabled, otherwise None.
 """
 
 import uuid
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -21,12 +22,34 @@ from .command_utils import (
     has_unquoted_shell_operator,
 )
 from .detection import (
+    _inspect_request,
+    _RequestInspectionView,
     is_filepath_extraction_request,
     is_prefix_detection_request,
     is_quota_check_request,
     is_suggestion_mode_request,
     is_title_generation_request,
 )
+
+_BUILTIN_DETECTORS = frozenset(
+    {
+        is_quota_check_request,
+        is_prefix_detection_request,
+        is_title_generation_request,
+        is_suggestion_mode_request,
+        is_filepath_extraction_request,
+    }
+)
+
+
+def _call_detector[R](
+    detector: Callable[..., R],
+    request_data: MessagesRequest,
+    view: _RequestInspectionView | None,
+) -> R:
+    if view is not None and detector in _BUILTIN_DETECTORS:
+        return detector(request_data, _view=view)
+    return detector(request_data)
 
 
 def _text_response(
@@ -46,13 +69,18 @@ def _text_response(
 
 
 def try_prefix_detection(
-    request_data: MessagesRequest, settings: Settings
+    request_data: MessagesRequest,
+    settings: Settings,
+    *,
+    _view: _RequestInspectionView | None = None,
 ) -> MessagesResponse | None:
     """Fast prefix detection - return command prefix without API call."""
     if not settings.fast_prefix_detection:
         return None
 
-    is_prefix_req, command = is_prefix_detection_request(request_data)
+    is_prefix_req, command = _call_detector(
+        is_prefix_detection_request, request_data, _view
+    )
     if not is_prefix_req:
         return None
 
@@ -73,12 +101,15 @@ def try_prefix_detection(
 
 
 def try_quota_mock(
-    request_data: MessagesRequest, settings: Settings
+    request_data: MessagesRequest,
+    settings: Settings,
+    *,
+    _view: _RequestInspectionView | None = None,
 ) -> MessagesResponse | None:
     """Mock quota probe requests."""
     if not settings.enable_network_probe_mock:
         return None
-    if not is_quota_check_request(request_data):
+    if not _call_detector(is_quota_check_request, request_data, _view):
         return None
 
     logger.info("Optimization: Intercepted and mocked quota probe")
@@ -91,12 +122,15 @@ def try_quota_mock(
 
 
 def try_title_skip(
-    request_data: MessagesRequest, settings: Settings
+    request_data: MessagesRequest,
+    settings: Settings,
+    *,
+    _view: _RequestInspectionView | None = None,
 ) -> MessagesResponse | None:
     """Skip title generation requests."""
     if not settings.enable_title_generation_skip:
         return None
-    if not is_title_generation_request(request_data):
+    if not _call_detector(is_title_generation_request, request_data, _view):
         return None
 
     logger.info("Optimization: Skipped title generation request")
@@ -109,12 +143,15 @@ def try_title_skip(
 
 
 def try_suggestion_skip(
-    request_data: MessagesRequest, settings: Settings
+    request_data: MessagesRequest,
+    settings: Settings,
+    *,
+    _view: _RequestInspectionView | None = None,
 ) -> MessagesResponse | None:
     """Skip suggestion mode requests."""
     if not settings.enable_suggestion_mode_skip:
         return None
-    if not is_suggestion_mode_request(request_data):
+    if not _call_detector(is_suggestion_mode_request, request_data, _view):
         return None
 
     logger.info("Optimization: Skipped suggestion mode request")
@@ -127,13 +164,18 @@ def try_suggestion_skip(
 
 
 def try_filepath_mock(
-    request_data: MessagesRequest, settings: Settings
+    request_data: MessagesRequest,
+    settings: Settings,
+    *,
+    _view: _RequestInspectionView | None = None,
 ) -> MessagesResponse | None:
     """Mock filepath extraction requests."""
     if not settings.enable_filepath_extraction_mock:
         return None
 
-    is_fp, cmd, output = is_filepath_extraction_request(request_data)
+    is_fp, cmd, output = _call_detector(
+        is_filepath_extraction_request, request_data, _view
+    )
     if not is_fp:
         return None
 
@@ -155,6 +197,7 @@ OPTIMIZATION_HANDLERS = [
     try_suggestion_skip,
     try_filepath_mock,
 ]
+_VIEW_AWARE_HANDLERS = frozenset(OPTIMIZATION_HANDLERS)
 
 
 def try_optimizations(
@@ -164,8 +207,13 @@ def try_optimizations(
     response_model: str | None = None,
 ) -> MessagesResponse | None:
     """Run optimization handlers in order. Returns first match or None."""
+    view = _inspect_request(request_data)
     for handler in OPTIMIZATION_HANDLERS:
-        result = handler(request_data, settings)
+        result = (
+            handler(request_data, settings, _view=view)
+            if handler in _VIEW_AWARE_HANDLERS
+            else handler(request_data, settings)
+        )
         if result is not None:
             if response_model is None:
                 return result

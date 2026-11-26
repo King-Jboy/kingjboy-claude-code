@@ -2,6 +2,7 @@
 
 import base64
 import json
+import math
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -61,7 +62,7 @@ class AssociatedReplayRecord(ReplayRecord):
     part: Literal["anchor", "final"]
 
 
-def _json_copy(value: object) -> JsonObject:
+def _validate_json_tree(value: object) -> None:
     if not isinstance(value, Mapping):
         raise HistoryReplayError("History replay must contain a native object.")
     pending: list[tuple[object, int]] = [(value, 0)]
@@ -73,13 +74,20 @@ def _json_copy(value: object) -> JsonObject:
             pending.extend((child, depth + 1) for child in item.values())
         elif isinstance(item, list):
             pending.extend((child, depth + 1) for child in item)
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise HistoryReplayError(
+                "History replay requires finite, representable JSON."
+            )
+
+
+def _json_copy(value: object) -> JsonObject:
+    _validate_json_tree(value)
     try:
-        return cast(
-            JsonObject,
-            json.loads(
-                json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
-            ),
-        )
+        try:
+            raw = orjson.dumps(value)
+        except TypeError:
+            raw = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        return cast(JsonObject, orjson.loads(raw))
     except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         raise HistoryReplayError(
             "History replay requires finite, representable JSON."
@@ -197,13 +205,12 @@ def decode_replay(value: str) -> ReplayRecord:
         raise HistoryReplayError("Unsupported history replay version.")
     try:
         encoded = value[len(prefix) :]
-        payload = _json_copy(
-            json.loads(
-                base64.b64decode(
-                    encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
-                ).decode("utf-8")
-            )
+        raw = base64.b64decode(
+            encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
         )
+        decoded = orjson.loads(raw)
+        _validate_json_tree(decoded)
+        payload = cast(JsonObject, decoded)
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise HistoryReplayError("Malformed history replay.") from exc
     if prefix == _LEGACY_PREFIX:
@@ -356,9 +363,11 @@ def _replay_readable(
 
 def tool_history_context(item: Mapping[str, JsonValue]) -> str:
     """Keep available tool data as quoted history, never as new instructions."""
-    return "[Earlier tool record]\n" + json.dumps(
-        dict(item), ensure_ascii=False, separators=(",", ":")
-    )
+    try:
+        encoded = orjson.dumps(dict(item)).decode("utf-8")
+    except TypeError, ValueError:
+        encoded = json.dumps(dict(item), ensure_ascii=False, separators=(",", ":"))
+    return "[Earlier tool record]\n" + encoded
 
 
 def validate_hosted_tool_history(blocks: list[JsonObject]) -> None:
@@ -380,7 +389,7 @@ def validate_hosted_tool_history(blocks: list[JsonObject]) -> None:
 def reasoning_detail(value: str) -> list[JsonValue]:
     """Decode older Chat detail strings while retaining unknown opaque state."""
     try:
-        parsed = json.loads(value)
+        parsed = orjson.loads(value)
     except ValueError:
         parsed = None
     if isinstance(parsed, dict):
@@ -477,10 +486,11 @@ def prepare_history(
                 projected.append(_context_item(text))
         result["input"] = projected
         return result
-    result = deepcopy(dict(body))
-    messages = result.get("messages")
-    if not isinstance(messages, list):
+    result = dict(body)
+    raw_messages = result.get("messages")
+    if not isinstance(raw_messages, list):
         return result
+    messages: list[JsonValue] = list(raw_messages)
     last_user = max(
         (
             index
@@ -495,10 +505,26 @@ def prepare_history(
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         if destination.protocol == "messages":
-            _prepare_messages_content(message, destination)
+            content = message.get("content")
+            if not isinstance(content, list) or not any(
+                isinstance(block, dict)
+                and block.get("type") in {"thinking", "redacted_thinking"}
+                for block in content
+            ):
+                continue
+            copied = deepcopy(message)
+            _prepare_messages_content(copied, destination)
+            messages[index] = copied
         else:
+            if not (
+                "reasoning_details" in message
+                or "reasoning_content" in message
+                or "reasoning" in message
+            ):
+                continue
+            copied = deepcopy(message)
             _prepare_chat_content(
-                message,
+                copied,
                 destination,
                 native_text=scope == HistoryScope.ALL
                 or (
@@ -512,6 +538,7 @@ def prepare_history(
                 reasoning_field=reasoning_field,
                 structured_details=structured_details,
             )
+            messages[index] = copied
     result["messages"] = [
         message
         for message in messages

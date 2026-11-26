@@ -366,3 +366,37 @@ def test_non_validation_failures_cannot_discard_history(status):
         )
         is None
     )
+
+
+def test_chat_encrypted_reasoning_rejection_handles_list_assistant_content():
+    body = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "answer"}],
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.summary",
+                        "id": "rs_chat",
+                        "data": "opaque",
+                        "summary": "checked facts",
+                    }
+                ],
+            }
+        ]
+    }
+    result = history_retry_body(
+        _error(
+            "Invalid encrypted content for item 'rs_chat'",
+            code="invalid_encrypted_content",
+        ),
+        body,
+        "chat",
+    )
+    assert result is not None
+    assistant = result["messages"][0]
+    assert "reasoning_details" not in assistant
+    assert assistant["content"] == [
+        {"type": "text", "text": "answer"},
+        {"type": "text", "text": "checked facts"},
+    ]

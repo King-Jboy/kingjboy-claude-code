@@ -1,6 +1,5 @@
 """OpenAI-chat tool-call assembly helpers."""
 
-import json
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from free_claude_code.core.anthropic.streaming import (
     parse_complete_tool_input,
     tool_schemas_by_name,
 )
+from free_claude_code.core.json_utils import fast_json_dumps
 
 from .tool_call_identity import (
     ToolCallIdentityResolver,
@@ -135,7 +135,7 @@ def iter_heuristic_tool_use_sse(
     yield ledger.content_block_delta(
         block_idx,
         "input_json_delta",
-        json.dumps(tool_use["input"]),
+        fast_json_dumps(tool_use["input"]),
     )
     yield ledger.content_block_stop(block_idx)
 
@@ -431,7 +431,7 @@ class OpenAIToolCallAssembler:
             if parsed is not None:
                 if aliases:
                     parsed = _restore_tool_argument_alias_value(parsed, aliases)
-                yield ledger.emit_tool_delta(tc_index, json.dumps(parsed))
+                yield ledger.emit_tool_delta(tc_index, fast_json_dumps(parsed))
             return
         if aliases:
             if tool_argument_alias_buffers is None:
@@ -467,13 +467,16 @@ def restore_tool_argument_aliases(
     aliases: dict[str, str],
 ) -> str | None:
     """Restore provider-private argument aliases in one complete JSON object."""
+    stripped = argument_json.strip()
+    if not stripped or (stripped.startswith("{") and not stripped.endswith("}")):
+        return None
     try:
-        parsed = orjson.loads(argument_json)
+        parsed = orjson.loads(stripped)
     except ValueError:
         return None
     if not isinstance(parsed, dict):
         return argument_json
-    return json.dumps(_restore_tool_argument_alias_value(parsed, aliases))
+    return fast_json_dumps(_restore_tool_argument_alias_value(parsed, aliases))
 
 
 def _restore_tool_argument_alias_value(

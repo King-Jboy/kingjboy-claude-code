@@ -179,6 +179,9 @@ _REAL_ASYNC_CLIENT = httpx.AsyncClient
 _SEARCH_CLIENTS: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, httpx.AsyncClient
 ] = weakref.WeakKeyDictionary()
+_FETCH_CLIENTS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, httpx.AsyncClient
+] = weakref.WeakKeyDictionary()
 
 
 def _get_pooled_search_client() -> httpx.AsyncClient:
@@ -200,12 +203,31 @@ def _get_pooled_search_client() -> httpx.AsyncClient:
     return client
 
 
+def _get_pooled_fetch_client() -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    client = _FETCH_CLIENTS.get(loop)
+    if client is None or client.is_closed:
+        client = _REAL_ASYNC_CLIENT(
+            timeout=_REQUEST_TIMEOUT_S,
+            follow_redirects=False,
+            trust_env=False,
+            limits=httpx.Limits(
+                max_keepalive_connections=16,
+                max_connections=32,
+                keepalive_expiry=60.0,
+            ),
+        )
+        _FETCH_CLIENTS[loop] = client
+    return client
+
+
 async def aclose_web_tool_clients() -> None:
     """Close any pooled web-tool HTTP client owned by the current event loop."""
     loop = asyncio.get_running_loop()
-    client = _SEARCH_CLIENTS.pop(loop, None)
-    if client is not None and not client.is_closed:
-        await client.aclose()
+    for pool in (_SEARCH_CLIENTS, _FETCH_CLIENTS):
+        client = pool.pop(loop, None)
+        if client is not None and not client.is_closed:
+            await client.aclose()
 
 
 async def _run_web_search(query: str) -> list[dict[str, str]]:
@@ -263,11 +285,8 @@ async def _run_web_fetch(url: str, egress: WebFetchEgressPolicy) -> dict[str, st
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _REQUEST_TIMEOUT_S
 
-    async with httpx.AsyncClient(
-        timeout=_REQUEST_TIMEOUT_S,
-        follow_redirects=False,
-        trust_env=False,
-    ) as client:
+    async def _fetch_with_client(client: httpx.AsyncClient) -> dict[str, str]:
+        nonlocal current_url, redirect_hops
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -334,22 +353,29 @@ async def _run_web_fetch(url: str, egress: WebFetchEgressPolicy) -> dict[str, st
                 redirect_hops += 1
                 continue
 
-            break
+            try:
+                text = body_bytes.decode(encoding, errors="replace")
+            except LookupError:
+                text = body_bytes.decode("utf-8", errors="replace")
+            title = final_url
+            data = text
+            if "html" in content_type.lower():
+                parser = HTMLTextParser()
+                parser.feed(text)
+                title = parser.title or final_url
+                data = "\n".join(parser.text_parts)
+            return {
+                "url": final_url,
+                "title": title,
+                "media_type": "text/plain",
+                "data": data[:_MAX_FETCH_CHARS],
+            }
 
-    try:
-        text = body_bytes.decode(encoding, errors="replace")
-    except LookupError:
-        text = body_bytes.decode("utf-8", errors="replace")
-    title = final_url
-    data = text
-    if "html" in content_type.lower():
-        parser = HTMLTextParser()
-        parser.feed(text)
-        title = parser.title or final_url
-        data = "\n".join(parser.text_parts)
-    return {
-        "url": final_url,
-        "title": title,
-        "media_type": "text/plain",
-        "data": data[:_MAX_FETCH_CHARS],
-    }
+    if httpx.AsyncClient is _REAL_ASYNC_CLIENT:
+        return await _fetch_with_client(_get_pooled_fetch_client())
+    async with httpx.AsyncClient(
+        timeout=_REQUEST_TIMEOUT_S,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        return await _fetch_with_client(client)

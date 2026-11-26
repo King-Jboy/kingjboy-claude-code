@@ -15,6 +15,7 @@ from free_claude_code.core.anthropic.models import (
     construct_content_block,
 )
 from free_claude_code.core.anthropic.sse_parse import iter_sse_events
+from free_claude_code.core.async_iterators import try_close_async_iterator
 from free_claude_code.core.failures import ExecutionFailure, FailureKind
 from free_claude_code.core.json_utils import (
     fast_json_dumps,
@@ -122,13 +123,17 @@ def build_passthrough_chat_body(
     if force_reasoning_off:
         body.pop("reasoning_effort", None)
         body.pop("thinking", None)
+        body.pop("reasoning", None)
         extra = body.get("extra_body")
         if isinstance(extra, dict):
             extra = dict(extra)
-            extra["thinking"] = {"type": "disabled"}
-            body["extra_body"] = extra
-        else:
-            body["extra_body"] = {"thinking": {"type": "disabled"}}
+            extra.pop("reasoning_effort", None)
+            extra.pop("thinking", None)
+            extra.pop("reasoning", None)
+            if extra:
+                body["extra_body"] = extra
+            else:
+                body.pop("extra_body", None)
 
     return body
 
@@ -596,8 +601,16 @@ async def iter_openai_chat_sse_from_anthropic(
                 if isinstance(usage, dict):
                     if usage.get("output_tokens") is not None:
                         output_tokens = int(usage["output_tokens"])
-                    if usage.get("input_tokens") is not None and input_tokens == 0:
-                        input_tokens = int(usage["input_tokens"])
+                    if input_tokens == 0 and (
+                        usage.get("input_tokens") is not None
+                        or usage.get("cache_read_input_tokens") is not None
+                        or usage.get("cache_creation_input_tokens") is not None
+                    ):
+                        input_tokens = (
+                            int(usage.get("input_tokens") or 0)
+                            + int(usage.get("cache_read_input_tokens") or 0)
+                            + int(usage.get("cache_creation_input_tokens") or 0)
+                        )
                 continue
 
             if ev_type == "error":
@@ -641,87 +654,101 @@ async def collect_openai_chat_completion_from_sse(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_calls_by_index: dict[int, dict[str, Any]] = {}
+    tool_arg_parts_by_index: dict[int, list[str]] = {}
     finish_reason: str | None = None
     usage: dict[str, Any] | None = None
 
-    async for frame in sse_chunks:
-        for line in frame.splitlines():
-            if not line.startswith("data:"):
-                continue
-            payload_text = line[5:].strip()
-            if not payload_text or payload_text == "[DONE]":
-                continue
-            try:
-                parsed = fast_json_loads(payload_text)
-            except Exception:
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            raw_error = parsed.get("error")
-            if isinstance(raw_error, dict):
-                err_msg = (
-                    str(raw_error.get("message"))
-                    if raw_error.get("message")
-                    else "Upstream stream error."
-                )
-                raise ExecutionFailure(
-                    kind=FailureKind.UPSTREAM,
-                    status_code=502,
-                    message=err_msg,
-                    retryable=False,
-                )
-            if isinstance(parsed.get("id"), str) and parsed["id"]:
-                resolved_id = parsed["id"]
-            if isinstance(parsed.get("model"), str) and parsed["model"]:
-                resolved_model = parsed["model"]
-            if isinstance(parsed.get("created"), int):
-                created_ts = parsed["created"]
-            if isinstance(parsed.get("usage"), dict):
-                usage = parsed["usage"]
-            choices = parsed.get("choices")
-            if not isinstance(choices, list) or not choices:
-                continue
-            choice = choices[0]
-            if not isinstance(choice, dict):
-                continue
-            if isinstance(choice.get("finish_reason"), str):
-                finish_reason = choice["finish_reason"]
-            delta = choice.get("delta")
-            if not isinstance(delta, dict):
-                continue
-            text = delta.get("content")
-            if isinstance(text, str) and text:
-                content_parts.append(text)
-            reasoning = delta.get("reasoning_content")
-            if not isinstance(reasoning, str):
-                reasoning = delta.get("reasoning")
-            if isinstance(reasoning, str) and reasoning:
-                reasoning_parts.append(reasoning)
-            raw_tcs = delta.get("tool_calls")
-            if isinstance(raw_tcs, list):
-                for tc in raw_tcs:
-                    if not isinstance(tc, dict):
-                        continue
-                    idx = tc.get("index")
-                    tc_index = idx if isinstance(idx, int) else len(tool_calls_by_index)
-                    entry = tool_calls_by_index.setdefault(
-                        tc_index,
-                        {
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        },
+    try:
+        async for frame in sse_chunks:
+            for line in frame.splitlines():
+                if not line.startswith("data:"):
+                    continue
+                payload_text = line[5:].strip()
+                if not payload_text or payload_text == "[DONE]":
+                    continue
+                try:
+                    parsed = fast_json_loads(payload_text)
+                except Exception:
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                raw_error = parsed.get("error")
+                if isinstance(raw_error, dict):
+                    err_msg = (
+                        str(raw_error.get("message"))
+                        if raw_error.get("message")
+                        else "Upstream stream error."
                     )
-                    if isinstance(tc.get("id"), str) and tc["id"]:
-                        entry["id"] = tc["id"]
-                    if isinstance(tc.get("type"), str) and tc["type"]:
-                        entry["type"] = tc["type"]
-                    fn = tc.get("function")
-                    if isinstance(fn, dict):
-                        if isinstance(fn.get("name"), str) and fn["name"]:
-                            entry["function"]["name"] += fn["name"]
-                        if isinstance(fn.get("arguments"), str) and fn["arguments"]:
-                            entry["function"]["arguments"] += fn["arguments"]
+                    raise ExecutionFailure(
+                        kind=FailureKind.UPSTREAM,
+                        status_code=502,
+                        message=err_msg,
+                        retryable=False,
+                    )
+                if isinstance(parsed.get("id"), str) and parsed["id"]:
+                    resolved_id = parsed["id"]
+                if isinstance(parsed.get("model"), str) and parsed["model"]:
+                    resolved_model = parsed["model"]
+                if isinstance(parsed.get("created"), int):
+                    created_ts = parsed["created"]
+                if isinstance(parsed.get("usage"), dict):
+                    usage = parsed["usage"]
+                choices = parsed.get("choices")
+                if not isinstance(choices, list) or not choices:
+                    continue
+                choice = choices[0]
+                if not isinstance(choice, dict):
+                    continue
+                if isinstance(choice.get("finish_reason"), str):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                text = delta.get("content")
+                if isinstance(text, str) and text:
+                    content_parts.append(text)
+                reasoning = delta.get("reasoning_content")
+                if not isinstance(reasoning, str):
+                    reasoning = delta.get("reasoning")
+                if isinstance(reasoning, str) and reasoning:
+                    reasoning_parts.append(reasoning)
+                raw_tcs = delta.get("tool_calls")
+                if isinstance(raw_tcs, list):
+                    for tc in raw_tcs:
+                        if not isinstance(tc, dict):
+                            continue
+                        idx = tc.get("index")
+                        tc_index = (
+                            idx if isinstance(idx, int) else len(tool_calls_by_index)
+                        )
+                        entry = tool_calls_by_index.setdefault(
+                            tc_index,
+                            {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            },
+                        )
+                        if isinstance(tc.get("id"), str) and tc["id"]:
+                            entry["id"] = tc["id"]
+                        if isinstance(tc.get("type"), str) and tc["type"]:
+                            entry["type"] = tc["type"]
+                        fn = tc.get("function")
+                        if isinstance(fn, dict):
+                            name = fn.get("name")
+                            if isinstance(name, str) and name:
+                                prev_name = entry["function"]["name"]
+                                if not prev_name or name.startswith(prev_name):
+                                    entry["function"]["name"] = name
+                                elif not prev_name.startswith(name):
+                                    entry["function"]["name"] = prev_name + name
+                            args = fn.get("arguments")
+                            if isinstance(args, str) and args:
+                                tool_arg_parts_by_index.setdefault(tc_index, []).append(
+                                    args
+                                )
+    finally:
+        await try_close_async_iterator(sse_chunks)
 
     message: dict[str, Any] = {
         "role": "assistant",
@@ -730,6 +757,8 @@ async def collect_openai_chat_completion_from_sse(
     if reasoning_parts:
         message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls_by_index:
+        for tc_index, arg_parts in tool_arg_parts_by_index.items():
+            tool_calls_by_index[tc_index]["function"]["arguments"] = "".join(arg_parts)
         message["tool_calls"] = [
             tool_calls_by_index[idx] for idx in sorted(tool_calls_by_index)
         ]

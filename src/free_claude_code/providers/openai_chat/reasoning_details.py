@@ -1,11 +1,13 @@
 """OpenRouter-format structured reasoning replay and stream conversion."""
 
-import json
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Literal
 
+import orjson
+
 from free_claude_code.core.anthropic.models import MessagesRequest
 from free_claude_code.core.anthropic.streaming import AnthropicStreamLedger
+from free_claude_code.core.json_utils import fast_json_dumps
 from free_claude_code.core.openai_chat import (
     is_synthetic_chat_tool_turn_boundary as is_synthetic_openai_tool_turn_boundary,
 )
@@ -149,14 +151,14 @@ def _preserved_reasoning_detail(detail: Any) -> str | None:
         or "summary" in kind
         or _reasoning_detail_text(detail) is None
     ):
-        return json.dumps(dict(detail), separators=(",", ":"))
+        return fast_json_dumps(dict(detail))
     return None
 
 
 def _json_payload(value: str) -> Any:
     try:
-        return json.loads(value)
-    except json.JSONDecodeError:
+        return orjson.loads(value)
+    except orjson.JSONDecodeError, ValueError:
         return None
 
 

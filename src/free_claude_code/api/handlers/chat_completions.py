@@ -41,6 +41,7 @@ from free_claude_code.core.openai_responses import (
     openai_error_type_for_failure,
     openai_failure_payload,
 )
+from free_claude_code.core.reasoning import ReasoningPolicy
 from free_claude_code.core.trace import trace_event
 
 
@@ -99,21 +100,36 @@ class ChatCompletionsHandler:
                     route_trace["generation_id"] = self._generation_id
                 trace_event(**route_trace)
 
+                force_reasoning_off = (
+                    resolved.reasoning_preference is ReasoningPreference.OFF
+                )
                 body = build_passthrough_chat_body(
                     request_data,
                     provider_model=resolved.provider_model,
-                    force_reasoning_off=(
-                        resolved.reasoning_preference is ReasoningPreference.OFF
-                    ),
+                    force_reasoning_off=force_reasoning_off,
                 )
-                sse_stream = provider.stream_openai_chat_passthrough(
+                request_payload: Any = (
+                    request_data.model_dump(mode="json", exclude_none=True)
+                    if self._settings.log_raw_api_payloads
+                    else None
+                )
+                raw_sse_stream = provider.stream_openai_chat_passthrough(
                     body,
                     request_id=request_id,
                     response_model=resolved.original_model,
+                    reasoning=ReasoningPolicy.off() if force_reasoning_off else None,
+                )
+                sse_stream = self._provider_executor.wrap_passthrough_stream(
+                    raw_sse_stream,
+                    provider_id=resolved.provider_id,
+                    gateway_model=resolved.original_model,
+                    request_id=request_id,
+                    raw_log_label="FULL_CHAT_COMPLETIONS_PAYLOAD",
+                    raw_log_payload=request_payload,
                 )
             else:
                 # Universal fallback for non-Chat upstreams (Codex, Gemini, Bedrock, etc.).
-                request_payload: Any = (
+                request_payload = (
                     request_data.model_dump(mode="json", exclude_none=True)
                     if self._settings.log_raw_api_payloads
                     else None
@@ -151,6 +167,7 @@ class ChatCompletionsHandler:
                     pre_start_error_response=lambda exc: self._pre_start_error_response(
                         exc, request_id=request_id
                     ),
+                    request_id=request_id,
                 )
 
             completion = await collect_openai_chat_completion_from_sse(

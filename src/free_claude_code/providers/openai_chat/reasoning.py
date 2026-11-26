@@ -38,22 +38,25 @@ class NamedEffortReasoning:
     use_extra_body: bool = False
 
     def encode(self, body: dict[str, Any], policy: ReasoningPolicy) -> None:
-        target = _extra_body(body) if self.use_extra_body else body
         if policy.control is ReasoningControl.OFF:
             if self.disabled_value is not None:
+                target = _extra_body(body) if self.use_extra_body else body
                 target[self.field] = self.disabled_value
             return
 
         if policy.budget_tokens is not None and self.budget_field is not None:
+            target = _extra_body(body) if self.use_extra_body else body
             target[self.budget_field] = policy.budget_tokens
             return
 
         effort = dict(self.efforts).get(policy.effort)
         if effort is not None:
+            target = _extra_body(body) if self.use_extra_body else body
             target[self.field] = effort
             return
 
         if policy.control is ReasoningControl.ON and self.enabled_value is not None:
+            target = _extra_body(body) if self.use_extra_body else body
             target[self.field] = self.enabled_value
 
 

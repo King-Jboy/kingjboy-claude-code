@@ -15,6 +15,7 @@ from free_claude_code.api.response_streams import (
     ManagedStreamingResponse,
     anthropic_sse_streaming_response,
     bind_response_lifetime,
+    openai_chat_sse_streaming_response,
     terminal_execution_error_response,
 )
 from free_claude_code.core.anthropic import (
@@ -665,3 +666,28 @@ async def test_lease_release_cancellation_propagates() -> None:
         await response.aclose()
 
     release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_post_start_error_emits_error_frame_and_done() -> None:
+    response = await openai_chat_sse_streaming_response(
+        _body_then_raises(
+            ['data: {"id":"chatcmpl_1","choices":[{"delta":{"content":"hi"}}]}\n\n'],
+            ExecutionFailure(
+                kind=FailureKind.RATE_LIMIT,
+                status_code=429,
+                message="rate limited",
+                retryable=False,
+            ),
+        ),
+        headers={"cache-control": "no-cache"},
+        pre_start_error_response=_json_error,
+        request_id="req_chat_err",
+    )
+
+    assert isinstance(response, ManagedStreamingResponse)
+    drained = await _drain(response)
+    assert '"content":"hi"' in drained
+    assert '"error"' in drained
+    assert "rate limited" in drained
+    assert drained.endswith("data: [DONE]\n\n")

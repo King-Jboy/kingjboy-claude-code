@@ -128,7 +128,9 @@ class BrowserAuthorization:
                             req_state = query.get("state", [None])[0]
                             req_error = query.get("error", [None])[0]
                             req_code = query.get("code", [None])[0]
-                            if req_state != state:
+                            if not isinstance(
+                                req_state, str
+                            ) or not secrets.compare_digest(req_state, state):
                                 response = _http_response(400, "State mismatch")
                             elif req_error:
                                 description = (
@@ -260,14 +262,19 @@ async def wait_for_device_grant(
 ) -> AuthorizationGrant:
     """Poll until OpenAI issues the PKCE-backed authorization code."""
 
-    while time.time() < authorization.expires_at:
-        response = await client.post(
-            OPENAI_DEVICE_TOKEN_URL,
-            json={
-                "device_auth_id": authorization.device_auth_id,
-                "user_code": authorization.user_code,
-            },
-        )
+    while (remaining := authorization.expires_at - time.time()) > 0:
+        delay = authorization.interval
+        try:
+            response = await client.post(
+                OPENAI_DEVICE_TOKEN_URL,
+                json={
+                    "device_auth_id": authorization.device_auth_id,
+                    "user_code": authorization.user_code,
+                },
+            )
+        except httpx.RequestError:
+            await asyncio.sleep(min(delay, max(0.0, remaining)))
+            continue
         if response.is_success:
             payload = response.json()
             code = payload.get("authorization_code")
@@ -281,9 +288,17 @@ async def wait_for_device_grant(
                 redirect_uri=OPENAI_DEVICE_REDIRECT_URI,
                 code_verifier=verifier,
             )
-        if response.status_code not in {403, 404}:
+        if response.status_code == 429:
+            retry_after_raw = response.headers.get("retry-after")
+            if retry_after_raw:
+                with contextlib.suppress(ValueError):
+                    delay = max(delay, float(retry_after_raw))
+        elif response.status_code not in {403, 404} and response.status_code < 500:
             response.raise_for_status()
-        await asyncio.sleep(authorization.interval)
+        remaining = authorization.expires_at - time.time()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(delay, remaining))
     raise OpenAILoginError("OpenAI device sign-in timed out.")
 
 

@@ -177,13 +177,12 @@ class ResponsesProviderStream:
     def _ensure_reasoning_started(
         self, state: _ReasoningState, *, completed: bool
     ) -> list[str]:
-        events = [] if completed else self._close_text()
-        if state.block_index is None:
-            state.block_index = self.ledger.blocks.allocate_index()
-            events.append(
-                self.ledger.content_block_start(state.block_index, "thinking")
-            )
-            self.generated_output = True
+        if state.block_index is not None:
+            return []
+        events = self._close_text()
+        state.block_index = self.ledger.blocks.allocate_index()
+        events.append(self.ledger.content_block_start(state.block_index, "thinking"))
+        self.generated_output = True
         return events
 
     def _item_readable(self, item: dict[str, Any], *, completed: bool) -> list[str]:
@@ -349,6 +348,7 @@ class ResponsesProviderStream:
                 state.stopped = True
                 return events
             if isinstance(encrypted, str) and encrypted:
+                events.extend(self._close_text())
                 index = self.ledger.blocks.allocate_index()
                 events.append(
                     self.ledger.content_block_start(

@@ -2,7 +2,7 @@
 
 import re
 import unicodedata
-from functools import cache
+from functools import cache, lru_cache
 from typing import Any
 
 _CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
@@ -69,6 +69,7 @@ def translate_tool_schema_patterns(schema: Any) -> Any:
     return result if changed else schema
 
 
+@lru_cache(maxsize=2048)
 def _translate_pattern(pattern: str) -> str:
     # A bounded scanner for four standalone atoms in ordinary negated classes,
     # not a general regex transpiler. Never partially translate unsupported input.

@@ -1,7 +1,6 @@
 """Claude Messages API product flow."""
 
 import asyncio
-import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -16,7 +15,6 @@ from free_claude_code.api.request_errors import (
     http_status_for_unexpected_api_exception,
     log_unexpected_api_exception,
     require_non_empty_messages,
-    unexpected_http_exception,
 )
 from free_claude_code.api.request_ids import new_request_id
 from free_claude_code.api.response_streams import (
@@ -57,6 +55,7 @@ from free_claude_code.core.anthropic.streaming.emitter import format_sse_event
 from free_claude_code.core.async_iterators import try_close_async_iterator
 from free_claude_code.core.diagnostics import safe_exception_message
 from free_claude_code.core.failures import ExecutionFailure, find_execution_failure
+from free_claude_code.core.json_utils import fast_json_dumps
 from free_claude_code.core.reasoning import ReasoningControl, ReasoningPolicy
 from free_claude_code.core.trace import trace_event
 
@@ -169,9 +168,11 @@ class MessagesHandler:
             failure = find_execution_failure(exc)
             if failure is not None:
                 return self._execution_failure_response(failure, request_id=request_id)
-            raise unexpected_http_exception(
-                self._settings, exc, context="CREATE_MESSAGE_ERROR"
-            ) from exc
+            return self._unexpected_execution_error_response(
+                exc,
+                request_id=request_id,
+                context="CREATE_MESSAGE_ERROR",
+            )
 
     async def _to_public_response(
         self,
@@ -540,7 +541,9 @@ async def _messages_response_to_sse_stream(
             )
             raw_input = block_dict.get("input", {})
             input_str = (
-                json.dumps(raw_input) if not isinstance(raw_input, str) else raw_input
+                fast_json_dumps(raw_input)
+                if not isinstance(raw_input, str)
+                else raw_input
             )
             if input_str:
                 yield format_sse_event(

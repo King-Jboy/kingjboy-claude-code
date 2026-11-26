@@ -26,6 +26,14 @@ def _get_encoder() -> tiktoken.Encoding:
         return _encoder
 
 
+def get_tiktoken_encoder() -> tiktoken.Encoding | None:
+    """Return the process-wide cl100k_base tiktoken encoder, if available."""
+    try:
+        return _get_encoder()
+    except Exception:
+        return None
+
+
 # Counts are cached by a digest of the text, not the text itself: history is
 # replayed every turn, so the same blocks recur, but keying on the strings
 # would pin every file read and tool result of a long session in memory.
